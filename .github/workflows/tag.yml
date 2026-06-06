@@ -74,6 +74,6 @@ jobs:
 
       - name: Publish to NPM
         if: steps.check.outputs.published == 'false'
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-          npm publish --access public
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
