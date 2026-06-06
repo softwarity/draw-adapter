@@ -60,12 +60,11 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -w -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:esm": "node scripts/check-esm-subpaths.mjs",
     "verify": "npm run build && npm test && npm run test:esm",
-    "link:siblings": "node scripts/link-into-siblings.mjs",
-    "build:link": "npm run build && npm run link:siblings",
     "prepublishOnly": "npm run build && npm test && npm run test:esm"
   },
   "engines": {
