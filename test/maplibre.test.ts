@@ -1,0 +1,193 @@
+// @vitest-environment jsdom
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { MapLibreAdapter } from "../src/maplibre.js";
+import type { LayerSpec, PointerEvent } from "../src/index.js";
+
+// jsdom never fires `Image.onload`, so `loadSpriteImage` (used by registerSymbols)
+// would hang. Stub a synchronous-ish image that resolves on `src` assignment.
+class FakeImage {
+  onload: (() => void) | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  constructor(_w?: number, _h?: number) {}
+  set src(_v: string) { queueMicrotask(() => this.onload?.()); }
+}
+beforeAll(() => vi.stubGlobal("Image", FakeImage));
+afterAll(() => vi.unstubAllGlobals());
+
+const LAYERS: LayerSpec[] = [
+  { id: "area", kind: "fill" },
+  { id: "guide", kind: "line" },
+  { id: "symbols", kind: "symbol" },
+  { id: "label", kind: "text" },
+  { id: "handles", kind: "circle" },
+];
+
+interface MlLayer { id: string; type: string; source: string; paint?: Record<string, unknown>; layout?: Record<string, unknown>; filter?: unknown }
+
+/** A record-only stand-in for `maplibregl.Map` — no WebGL, just captures what the
+ *  adapter builds so we can assert the data-driven contract. */
+class FakeMlMap {
+  sources = new Map<string, { data: unknown }>();
+  layers: MlLayer[] = [];
+  images = new Set<string>();
+  paint: Record<string, Record<string, unknown>> = {};
+  handlers = new Map<string, ((e: unknown) => void)[]>();
+  queryResult: { layer: { id: string }; properties: Record<string, unknown> }[] = [];
+  dragPan = { enable: vi.fn(), disable: vi.fn() };
+  doubleClickZoom = { enable: vi.fn(), disable: vi.fn() };
+  private canvas = { style: {} as Record<string, string> };
+  private container = document.createElement("div");
+
+  isStyleLoaded() { return true; }
+  addSource(id: string, def: { data: unknown }) { this.sources.set(id, { data: def.data }); }
+  getSource(id: string) {
+    const s = this.sources.get(id);
+    return s ? { setData: (d: unknown) => (s.data = d) } : undefined;
+  }
+  addLayer(l: MlLayer) { this.layers.push(l); }
+  getLayer(id: string) { return this.layers.find((l) => l.id === id); }
+  removeLayer(id: string) { this.layers = this.layers.filter((l) => l.id !== id); }
+  removeSource(id: string) { this.sources.delete(id); }
+  setPaintProperty(id: string, k: string, v: unknown) { (this.paint[id] ??= {})[k] = v; }
+  hasImage(id: string) { return this.images.has(id); }
+  addImage(id: string) { this.images.add(id); }
+  removeImage(id: string) { this.images.delete(id); }
+  on(ev: string, fn: (e: unknown) => void) { (this.handlers.get(ev) ?? this.handlers.set(ev, []).get(ev)!).push(fn); }
+  off() {}
+  once() {}
+  emit(ev: string, payload: unknown) { for (const fn of this.handlers.get(ev) ?? []) fn(payload); }
+  queryRenderedFeatures() { return this.queryResult; }
+  project(_: [number, number]) { return { x: 1, y: 2 }; }
+  unproject(_: [number, number]) { return { lat: 3, lng: 4 }; }
+  getCenter() { return { lat: 10, lng: 20 }; }
+  getBounds() { return { getEast: () => 30, getWest: () => 10, getNorth: () => 40, getSouth: () => 20 }; }
+  getCanvas() { return this.canvas; }
+  getContainer() { return this.container; }
+}
+
+function build(hitOverlays?: Set<string>) {
+  const map = new FakeMlMap();
+  const adapter = new MapLibreAdapter({ map: map as never, layers: LAYERS, ...(hitOverlays ? { hitOverlays } : {}) });
+  return { map, adapter };
+}
+
+const layer = (m: FakeMlMap, id: string) => m.layers.find((l) => l.id === id)!;
+
+describe("MapLibreAdapter — overlay manifest → layers", () => {
+  it("creates one geojson source per overlay", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    for (const l of LAYERS) expect(map.sources.has(l.id)).toBe(true);
+  });
+
+  it("fill ⇒ a fill layer + an optional outline (`__stroke`) line layer", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    expect(layer(map, "area").type).toBe("fill");
+    const stroke = layer(map, "area__stroke");
+    expect(stroke.type).toBe("line");
+    expect(stroke.filter).toEqual(["has", "stroke"]);
+  });
+
+  it("line ⇒ main line (no dash) + `__dash` (has dash) + `__fill` (polygons)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    expect(layer(map, "guide").filter).toEqual(["!", ["has", "dash"]]);
+    expect(layer(map, "guide__dash").filter).toEqual(["has", "dash"]);
+    expect(layer(map, "guide__fill").filter).toEqual(["==", ["geometry-type"], "Polygon"]);
+  });
+
+  it("circle ⇒ a circle layer + a `__icon` symbol layer (handle glyphs)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    expect(layer(map, "handles").type).toBe("circle");
+    expect(layer(map, "handles__icon").type).toBe("symbol");
+    expect(layer(map, "handles__icon").filter).toEqual(["any", ["has", "icon"], ["has", "symbol"]]);
+  });
+
+  it("text ⇒ text-max-width is PX→EM (maxWidth / textSize), not raw px", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const mw = layer(map, "label").layout!["text-max-width"];
+    expect(mw).toEqual(["/", ["coalesce", ["get", "maxWidth"], 130], ["coalesce", ["get", "textSize"], 13]]);
+  });
+
+  it("circle paint reads radius/fill/stroke/strokeWidth from feature props", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const p = layer(map, "handles").paint!;
+    expect(p["circle-radius"]).toEqual(["coalesce", ["get", "radius"], 5]);
+    expect(p["circle-color"]).toEqual(["coalesce", ["get", "fill"], "#ffffff"]);
+  });
+});
+
+describe("MapLibreAdapter — setOverlay & dash", () => {
+  it("pushes the FeatureCollection onto the source", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const fc = { type: "FeatureCollection" as const, features: [] };
+    adapter.setOverlay("area", fc);
+    expect(map.sources.get("area")!.data).toBe(fc);
+  });
+
+  it("sets `line-dasharray` on the `__dash` sub-layer from a baked `dash` prop", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setOverlay("guide", {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] }, properties: { dash: [2, 3] } }],
+    });
+    expect(map.paint["guide__dash"]!["line-dasharray"]).toEqual([2, 3]);
+  });
+});
+
+describe("MapLibreAdapter — hit-testing", () => {
+  it("returns the first HITTABLE overlay in MapLibre's top-first order", async () => {
+    const { map, adapter } = build(new Set(["handles", "area"]));
+    await adapter.ready();
+    let lastHit: PointerEvent["hit"];
+    adapter.onPointer((e) => { if (e.type === "move") lastHit = e.hit; });
+    // queryRenderedFeatures yields top-first; `label` is not hittable → skipped.
+    map.queryResult = [
+      { layer: { id: "label" }, properties: { text: "x" } },
+      { layer: { id: "handles" }, properties: { role: "v0" } },
+      { layer: { id: "area" }, properties: {} },
+    ];
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    expect(lastHit?.overlay).toBe("handles");
+    expect(lastHit?.props["role"]).toBe("v0");
+  });
+
+  it("maps `__dash`/`__fill` sub-layers back to their overlay id", async () => {
+    const { map, adapter } = build(new Set(["guide"]));
+    await adapter.ready();
+    let lastHit: PointerEvent["hit"];
+    adapter.onPointer((e) => { if (e.type === "move") lastHit = e.hit; });
+    map.queryResult = [{ layer: { id: "guide__dash" }, properties: { role: "lon" } }];
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    expect(lastHit?.overlay).toBe("guide");
+  });
+});
+
+describe("MapLibreAdapter — symbols & teardown", () => {
+  it("registerSymbols adds a default-tinted image and tracks it", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    await adapter.registerSymbols({ MOD: "<svg>currentColor</svg>" });
+    expect(map.images.has("MOD")).toBe(true);
+  });
+
+  it("destroy removes every layer, source, image and re-enables map gestures", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    await adapter.registerSymbols({ MOD: "<svg>currentColor</svg>" });
+    expect(map.layers.length).toBeGreaterThan(0);
+    adapter.destroy();
+    expect(map.layers.length).toBe(0);
+    expect(map.sources.size).toBe(0);
+    expect(map.images.size).toBe(0);
+    expect(map.dragPan.enable).toHaveBeenCalled();
+    expect(map.doubleClickZoom.enable).toHaveBeenCalled();
+  });
+});
