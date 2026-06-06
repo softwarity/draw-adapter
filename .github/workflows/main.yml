@@ -15,7 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['18', '20', '22']
+        # vitest 4 (rolldown) needs Node >= 20.12 (uses `node:util` styleText), so
+        # 18 is dev-tooling-only-excluded. The published lib still runs on Node >= 18.
+        node-version: ['20', '22']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
