@@ -1,0 +1,68 @@
+name: Create Tag/Release
+run-name: ${{ github.actor }} release ${{ inputs.bump }} on ${{ github.repository }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump, tag and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }} # PAT so the pushed tag triggers tag.yml (publish)
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install, build and smoke test
+        run: |
+          npm ci
+          npm run build
+          npm test
+          npm run test:esm
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          npm version ${{ github.event.inputs.bump }} --no-git-tag-version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare next release-notes section
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${{ steps.bump.outputs.version }}"
+          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          sed -i "s/^# Release Notes$/# Release Notes\n\n## $NEXT_VERSION\n\n---/" RELEASE_NOTES.md
+
+      - name: Commit, tag and push
+        run: |
+          git add package.json package-lock.json RELEASE_NOTES.md
+          git commit -m "${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push
+          git push --tags

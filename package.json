@@ -1,0 +1,59 @@
+{
+  "name": "@softwarity/draw-adapter",
+  "version": "0.1.0",
+  "description": "Headless map adapter (grafts on MapLibre / OpenLayers / Leaflet, Terra-Draw-style) for the @softwarity drawing libs. Generic, data-driven, zero domain types.",
+  "keywords": [
+    "map", "adapter", "maplibre", "openlayers", "leaflet", "geojson",
+    "drawing", "terra-draw", "headless", "sigmet", "sigwx", "softwarity"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/softwarity/draw-adapter#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/softwarity/draw-adapter.git" },
+  "bugs": { "url": "https://github.com/softwarity/draw-adapter/issues" },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./maplibre": { "types": "./dist/maplibre.d.ts", "import": "./dist/maplibre.js" },
+    "./openlayers": { "types": "./dist/openlayers.d.ts", "import": "./dist/openlayers.js" },
+    "./leaflet": { "types": "./dist/leaflet.d.ts", "import": "./dist/leaflet.js" },
+    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+  },
+  "files": ["dist", "src", "LICENSE", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:esm": "node scripts/check-esm-subpaths.mjs",
+    "verify": "npm run build && npm test && npm run test:esm",
+    "link:siblings": "node scripts/link-into-siblings.mjs",
+    "build:link": "npm run build && npm run link:siblings",
+    "prepublishOnly": "npm run build && npm test && npm run test:esm"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@types/geojson": "^7946.0.14"
+  },
+  "peerDependencies": {
+    "maplibre-gl": ">=5",
+    "ol": ">=9",
+    "leaflet": ">=1.9"
+  },
+  "peerDependenciesMeta": {
+    "maplibre-gl": { "optional": true },
+    "ol": { "optional": true },
+    "leaflet": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12",
+    "jsdom": "^29.1.1",
+    "leaflet": "^1.9.4",
+    "maplibre-gl": "^5.24.0",
+    "ol": "^10.9.0",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.8"
+  }
+}

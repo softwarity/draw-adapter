@@ -1,0 +1,49 @@
+name: CI
+run-name: ${{ github.actor }} build & test on ${{ github.repository }}
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['18', '20', '22']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build package
+        run: npm run build
+
+      - name: Check sub-path ESM imports (the check bundlers hide)
+        run: npm run test:esm
+
+      - name: Check build output
+        run: |
+          for f in index maplibre openlayers leaflet testing; do
+            if [ ! -f "dist/$f.js" ] || [ ! -f "dist/$f.d.ts" ]; then
+              echo "Build failed: dist/$f.{js,d.ts} missing"
+              exit 1
+            fi
+          done
+          echo "Build successful — all sub-path entry points + types present."

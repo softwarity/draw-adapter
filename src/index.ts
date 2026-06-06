@@ -1,0 +1,201 @@
+/**
+ * `@softwarity/draw-adapter` — the shared, **generic** map adapter for the
+ * @softwarity drawing libs (`sigmet-draw`, `sigwx-draw`, …).
+ *
+ * An adapter *grafts* a drawing onto a host-owned map (à la Terra Draw): the host
+ * owns the basemap, controls, projection and zoom; the adapter only adds the
+ * drawing overlays, reports pointer events in lon/lat, registers a glyph sprite
+ * atlas and optionally renders a native toolbar.
+ *
+ * The adapter is **dumb**: it knows no domain type. It is driven by a declarative
+ * {@link LayerSpec}[] manifest (provided by the consumer) and reads a fixed set of
+ * **render props** off each feature, picked by the layer's {@link LayerKind}. The
+ * controller in each product resolves its domain style into these props *before*
+ * calling {@link MapAdapter.setOverlay} — so styling is entirely data-driven and
+ * the three engine adapters (MapLibre / OpenLayers / Leaflet) render identically.
+ *
+ * ### Feature render-prop contract (read by the adapters, baked by the controller)
+ *
+ * | `kind`   | props read on each feature |
+ * |----------|----------------------------|
+ * | `fill`   | `fillColor`, `fillOpacity`, `stroke?`, `strokeWidth?`, `strokeOpacity?` |
+ * | `line`   | `stroke`, `strokeWidth`, `dash?` (number[]), `strokeOpacity?` |
+ * | `symbol` | `symbol` (sprite id), `size?` (×spritePx), `rotation?` (deg, cw), `symbolColor?` |
+ * | `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `maxWidth?`, `rotation?` |
+ * | `circle` | `role?`, `control?`, `collinear?`, `fill?`, `stroke?`, `radius?`, `strokeWidth?`, `icon?` (data-URI), `symbol?` (sprite id), `iconRotate?` (deg, cw), `symbolColor?` |
+ *
+ * Cross-cutting conventions:
+ *  - **`role`** marks a draggable handle/guide and names what the drag targets
+ *    (`"center"`, `"radius"`, `"v0"`, `"a1"`, `"lon"`, …).
+ *  - **`featureId`** on hit-testable features lets a click resolve to a domain object.
+ *  - **`control: true`** styles a control handle distinctly (left to the controller's props).
+ *  - **`collinear: true`** marks a redundant vertex (greyed by the controller's props).
+ *  - rotation (`rotation`/`iconRotate`) is **degrees, clockwise**, identical on all engines.
+ */
+import type { FeatureCollection } from "geojson";
+
+export type { FeatureCollection } from "geojson";
+
+/** A geographic position in decimal degrees (lon/lat, GeoJSON-aligned). */
+export interface LatLng {
+  /** Latitude in decimal degrees, south negative. Range [-90, 90]. */
+  lat: number;
+  /** Longitude in decimal degrees, west negative. Range [-180, 180]. */
+  lon: number;
+}
+
+/** How a layer is rendered. The overlay's source shares the layer `id`. */
+export type LayerKind = "fill" | "line" | "symbol" | "text" | "circle";
+
+/** One overlay layer in the manifest. Order = bottom → top (z-order). */
+export interface LayerSpec {
+  id: string;
+  kind: LayerKind;
+}
+
+/** A glyph atlas: sprite id → inline SVG markup. Registered before first render. */
+export type SymbolSprites = Record<string, string>;
+
+export interface PointerEvent {
+  type: "down" | "move" | "up" | "click" | "dblclick";
+  lngLat: LatLng;
+  /** The overlay hit + that feature's prop bag (`role`, `featureId`, …). */
+  hit?: { overlay: string; props: Record<string, unknown> };
+}
+
+/** A hit returned by an adapter's internal hit-test. */
+export interface Hit {
+  overlay: string;
+  props: Record<string, unknown>;
+}
+
+/** Generic floating-tooltip style (supplied by the consumer; not a domain type). */
+export interface TooltipStyle {
+  background: string;
+  color: string;
+  fontSize: number;
+  padding: string;
+  borderRadius: string;
+  maxWidth: string;
+}
+
+export type ToolbarPosition =
+  | "top" | "top-left" | "top-right"
+  | "bottom" | "bottom-left" | "bottom-right"
+  | "left" | "left-top" | "left-bottom"
+  | "right" | "right-top" | "right-bottom";
+
+export type ToolbarPadding =
+  | string
+  | { top?: string; right?: string; bottom?: string; left?: string };
+
+export interface ToolbarOptions {
+  position?: ToolbarPosition;
+  orientation?: "horizontal" | "vertical";
+  padding?: ToolbarPadding;
+  gap?: string;
+  className?: string;
+  /** Tool ids to show (and their order); defaults to all passed. */
+  tools?: string[];
+  /** Include the "clear all" button (default true). */
+  clear?: boolean;
+}
+
+export interface ToolbarItem {
+  id: string;
+  title: string;
+  label: string;
+  svg?: string;
+  toggle?: boolean;
+  onClick: () => void;
+}
+
+/** Options every engine adapter accepts. The manifest + hit set are consumer-owned. */
+export interface AdapterOptions {
+  /** The overlay manifest (bottom → top). One source + renderer per entry. */
+  layers: LayerSpec[];
+  /** Overlays a pointer hit may resolve against. Omit ⇒ every overlay is hittable. */
+  hitOverlays?: Set<string>;
+  /** Sprite pixel size (icon-size 1 ⇒ this many px). Default {@link SPRITE_PX}. */
+  spritePx?: number;
+  /** Ink used for symbol/icon features that carry no `symbolColor`. Default `#000000`. */
+  defaultSymbolColor?: string;
+}
+
+/**
+ * The generic map adapter. All three engines implement the full surface; a product
+ * simply never calls the methods it does not need (e.g. sigmet ignores `project` /
+ * `unproject` / `onViewChange` / `registerSymbols`).
+ */
+export interface MapAdapter {
+  /** Resolves once the adapter has attached its overlays to the host map. */
+  ready(): Promise<void>;
+
+  /** Register (or replace) the glyph sprite atlas used by symbol/icon features. */
+  registerSymbols(sprites: SymbolSprites): Promise<void>;
+
+  /** Push a FeatureCollection (already styled via props) into overlay `id`. */
+  setOverlay(id: string, data: FeatureCollection): void;
+
+  /** Floating tooltip at `at` (lon/lat); hidden when `text` is null. Optional
+   *  generic style supplied by the consumer (the lib has no domain style). */
+  setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void;
+
+  /** Native toolbar (shared DOM); returns the container for live mutation. */
+  addToolbar(items: ToolbarItem[], options?: ToolbarOptions): HTMLElement;
+
+  getCenter(): LatLng;
+  /** Rough lon/lat span of the current view, for sizing dropped default geometry. */
+  getViewSpan(): number;
+
+  /** lon/lat → screen pixels (for the call-out placement pass). null if off-view. */
+  project(p: LatLng): [number, number] | null;
+  /** screen pixels → lon/lat. */
+  unproject(px: [number, number]): LatLng | null;
+  /** Notify on pan/zoom end, so the label placement pass can re-run. */
+  onViewChange(cb: () => void): void;
+
+  setPanEnabled(enabled: boolean): void;
+  /** Toggle the host map's double-click-zoom (disabled while drawing a path). */
+  setDoubleClickZoom(enabled: boolean): void;
+  /** Set the map cursor (`"crosshair"` while drawing; `""` resets it). */
+  setCursor(cursor: string): void;
+
+  onPointer(cb: (ev: PointerEvent) => void): void;
+
+  /** Detach everything this adapter added; MUST NOT destroy the host map. Idempotent. */
+  destroy(): void;
+}
+
+/**
+ * Cursor to show when hovering a hit (used by the engine adapters on hover-move).
+ * An explicit per-feature **`cursor`** prop wins — the controller bakes the precise
+ * cursor it wants (`ew-resize`, `ns-resize`, `move`, …), keeping the lib domain-free.
+ * Otherwise a sensible default:
+ *  - a whole-shape **move** handle (`move: true`) → `"move"`,
+ *  - any other draggable handle/guide (`role` present, or `control: true`) → `"grab"`,
+ *  - any other hit → `"pointer"`,
+ *  - no hit → `""` (reset).
+ */
+export function cursorForHit(hit?: Hit): string {
+  if (!hit) return "";
+  const p = hit.props;
+  if (typeof p["cursor"] === "string" && p["cursor"]) return p["cursor"];
+  if (p["move"] === true) return "move";
+  if (p["role"] != null || p["control"] === true) return "grab";
+  return "pointer";
+}
+
+/** An empty FeatureCollection (shared, never mutated). */
+export const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
+
+export {
+  SPRITE_PX,
+  colorizeSprite,
+  svgToDataUrl,
+  loadSpriteImage,
+} from "./symbols.js";
+
+export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
+export { applyTooltipStyle } from "./tooltip.js";
+export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";
