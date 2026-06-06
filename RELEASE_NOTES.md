@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.1
+
+---
+
 ## 0.1.0
 
 First release. Extracts the generic, data-driven map adapter from `sigwx-draw`
