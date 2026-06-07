@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.6
+
+---
+
 ## 0.2.5
 
 - **Fix:** clipboard copy now works — the write is issued synchronously within the click (the capture promise is fed to `ClipboardItem`), instead of after the capture `await` where Safari/Chrome silently reject it (lost user gesture).
