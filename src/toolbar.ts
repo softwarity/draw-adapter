@@ -79,7 +79,7 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
     } else {
       button.addEventListener("click", (e) => {
         e.preventDefault();
-        item.onClick();
+        item.onClick(e); // pass the MouseEvent so handlers can read modifier keys
         if (item.toggle) setActive(button);
         else el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
       });

@@ -186,15 +186,20 @@ engine, so optional peer deps stay optional.
 
 ## Snapshots (PNG)
 
-Capture the current map — basemap **and** overlays — as a PNG `Blob`:
+Capture the current map — basemap **and** overlays — as a PNG `Blob`. The capture
+always returns the Blob; `target` optionally **delivers** it too:
 
 ```ts
-const blob = await adapter.snapshot();           // "as on screen" (devicePixelRatio)
-const hi   = await adapter.snapshot({ scale: 3 }); // supersample (best-effort)
+const blob = await adapter.snapshot();                          // just the Blob ("as on screen")
+await adapter.snapshot({ scale: 3 });                           // supersample (best-effort)
+await adapter.snapshot({ target: "download", filename: "x.png" }); // capture + download the file
+await adapter.snapshot({ target: "clipboard" });               // capture + copy to clipboard
 ```
 
 - Always resolves to an `image/png` Blob. `scale` is the output **pixel-ratio**
   (device px per CSS px); it defaults to `window.devicePixelRatio`.
+- `target` (`"blob"` default · `"download"` · `"clipboard"`) is what `snapshot()`
+  does with the PNG — the Blob is returned in every case.
 - Capture happens **inside the engine's render frame**, so the host map needs **no
   special flag** (in particular, no `preserveDrawingBuffer` on the MapLibre/WebGL map).
 - **Leaflet is not supported yet** — `snapshot()` rejects (tiles are `<img>` and
@@ -202,27 +207,35 @@ const hi   = await adapter.snapshot({ scale: 3 }); // supersample (best-effort)
   approach is planned.
 - `scale > 1` (`medium`/`high`) is **supersampling, best-effort**: it re-scales the
   captured composition, which enlarges but does not add real map detail.
+- **Clipboard** uses the async Clipboard API — it needs a **secure context**
+  (HTTPS/localhost), a user gesture, and only `image/png` is broadly supported.
 
-### Toolbar button
+### Toolbar button — one button, two deliveries
 
-Pass a `snapshot` preset to `addToolbar` and the adapter adds a camera button that
-downloads `map.png` on click — no wiring needed on your side:
+Pass a `snapshot` preset to `addToolbar` and the adapter adds a single camera button.
+It always offers **both** deliveries: a plain click runs `onClick` (default
+`"download"`); a **modifier-click** (Ctrl on PC/Linux, ⌘ on Mac) runs the other one.
 
 ```ts
-adapter.addToolbar(tools, { snapshot: "native" }); // default; "none" disables it
+adapter.addToolbar(tools, { snapshot: "native" });   // click → download, ⌘/Ctrl-click → copy
+adapter.addToolbar(tools, { snapshot: { state: "high", onClick: "clipboard" } }); // swapped
+adapter.addToolbar(tools, { snapshot: "none" });     // no button
 ```
 
-| preset | output pixel-ratio | notes |
+| `state` preset | output pixel-ratio | notes |
 |--------|--------------------|-------|
 | `none` | — | no button |
 | `low` | `1` | CSS-pixel resolution |
 | `native` *(default)* | `window.devicePixelRatio` | capture as on screen |
 | `medium` / `high` | `2` / `3` | supersample (best-effort) |
 
+`onClick` (`"download"` | `"clipboard"`) just picks which delivery is on the plain
+click; the order defines the default, the other is always one modifier-click away.
+The button's tooltip spells both out (e.g. *"Download map — ⌘-click to copy"*).
+
 On the **Leaflet** adapter the button is rendered **disabled**, with the
-unavailability message as its tooltip. The preset→scale mapping is the exported
-pure function `snapshotScale(level)`; `downloadPng(blob, name?)` triggers the
-browser download.
+unavailability message as its tooltip. Exported helpers: `snapshotScale(level)`
+(preset→ratio), `downloadPng(blob, name?)`, `copyPng(blob)`.
 
 ## API surface
 

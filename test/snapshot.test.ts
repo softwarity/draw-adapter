@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as L from "leaflet";
 
-import { snapshotScale, downloadPng } from "../src/index.js";
-import { snapshotToolbarItem, SNAPSHOT_ICON_SVG } from "../src/snapshot.js";
+import { snapshotScale, downloadPng, copyPng } from "../src/index.js";
+import { snapshotToolbarItem, deliverSnapshot, SNAPSHOT_ICON_SVG } from "../src/snapshot.js";
 import { populateToolbar } from "../src/toolbar.js";
 import { LeafletAdapter } from "../src/leaflet.js";
 import { FakeAdapter } from "../src/testing.js";
@@ -26,22 +26,47 @@ describe("snapshotScale — preset → output pixel-ratio", () => {
     expect(snapshotScale("none")).toBe((typeof window !== "undefined" && window.devicePixelRatio) || 1));
 });
 
-describe("snapshotToolbarItem", () => {
+describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-click)", () => {
   const cap = (supported: boolean, snapshot = vi.fn().mockResolvedValue(new Blob())) =>
     ({ supported, ...(supported ? {} : { reason: "nope" }), snapshot });
 
-  it("returns null for the `none` preset (no button)", () =>
-    expect(snapshotToolbarItem("none", cap(true))).toBeNull());
+  it("returns null for the `none` preset (no button)", () => {
+    expect(snapshotToolbarItem("none", cap(true))).toBeNull();
+    expect(snapshotToolbarItem({ state: "none", onClick: "clipboard" }, cap(true))).toBeNull();
+  });
 
-  it("supported ⇒ an enabled camera button calling snapshot({scale}) on click", () => {
+  it("supported ⇒ enabled camera button; plain click delivers the `onClick` target", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
-    const item = snapshotToolbarItem("high", cap(true, snapshot))!;
+    const item = snapshotToolbarItem("high", cap(true, snapshot))!; // default onClick = "download"
     expect(item.id).toBe("snapshot");
     expect(item.svg).toBe(SNAPSHOT_ICON_SVG);
-    expect(item.title).toBe("Capture map");
     expect(item.disabled).toBeUndefined();
+    expect(item.title).toContain("Download map");
+    expect(item.title).toContain("click to copy");
+    item.onClick(); // no event ⇒ primary
+    expect(snapshot).toHaveBeenCalledWith({ scale: 3, target: "download" });
+  });
+
+  it("a modifier-click (ctrl OR meta) delivers the OTHER target", () => {
+    const snapshot = vi.fn().mockResolvedValue(new Blob());
+    const item = snapshotToolbarItem("low", cap(true, snapshot))!; // primary download, secondary clipboard
+    item.onClick({ ctrlKey: true } as MouseEvent);
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: 1, target: "clipboard" });
+    item.onClick({ metaKey: true } as MouseEvent);
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: 1, target: "clipboard" });
+    item.onClick(); // plain ⇒ back to primary
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: 1, target: "download" });
+  });
+
+  it("onClick: 'clipboard' swaps the roles (plain = copy, modifier = download)", () => {
+    const snapshot = vi.fn().mockResolvedValue(new Blob());
+    const item = snapshotToolbarItem({ state: "native", onClick: "clipboard" }, cap(true, snapshot))!;
+    expect(item.title).toContain("Copy map to clipboard");
+    expect(item.title).toContain("click to download");
     item.onClick();
-    expect(snapshot).toHaveBeenCalledWith({ scale: 3 });
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "clipboard" });
+    item.onClick({ metaKey: true } as MouseEvent);
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download" });
   });
 
   it("unsupported ⇒ a DISABLED button whose title is the reason, click is a no-op", () => {
@@ -51,6 +76,52 @@ describe("snapshotToolbarItem", () => {
     expect(item.title).toBe("nope");
     item.onClick();
     expect(snapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("deliverSnapshot — routes a captured Blob by target", () => {
+  it("'blob'/undefined ⇒ returns the Blob, no side effect", async () => {
+    const blob = new Blob([], { type: "image/png" });
+    expect(await deliverSnapshot(blob)).toBe(blob);
+    expect(await deliverSnapshot(blob, { target: "blob" })).toBe(blob);
+  });
+
+  it("'clipboard' ⇒ writes via the Clipboard API and returns the Blob", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", class { constructor(public items: unknown) {} });
+    vi.stubGlobal("navigator", { clipboard: { write } });
+    const blob = new Blob([], { type: "image/png" });
+    expect(await deliverSnapshot(blob, { target: "clipboard" })).toBe(blob);
+    expect(write).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it("'download' ⇒ triggers a download and returns the Blob", async () => {
+    vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: vi.fn() } as never);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const blob = new Blob([], { type: "image/png" });
+    expect(await deliverSnapshot(blob, { target: "download", filename: "x.png" })).toBe(blob);
+    expect(click).toHaveBeenCalledOnce();
+    click.mockRestore();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("copyPng", () => {
+  it("writes a PNG ClipboardItem via the async Clipboard API", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", class { constructor(public items: unknown) {} });
+    vi.stubGlobal("navigator", { clipboard: { write } });
+    await copyPng(new Blob([], { type: "image/png" }));
+    expect(write).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects when image clipboard write is unavailable (no secure context / support)", async () => {
+    vi.stubGlobal("ClipboardItem", undefined);
+    vi.stubGlobal("navigator", {});
+    await expect(copyPng(new Blob([], { type: "image/png" }))).rejects.toThrow(/Clipboard image write is unavailable/);
+    vi.unstubAllGlobals();
   });
 });
 

@@ -2,6 +2,19 @@
 
 ## 0.2.1
 
+Snapshot can now **download or copy to clipboard** — additive, non-breaking.
+
+- `snapshot()` gains `target` (`"blob"` default · `"download"` · `"clipboard"`) and
+  `filename`: it captures, optionally **delivers** the PNG, and always returns the Blob.
+- Toolbar: one camera button now offers **both** deliveries. `ToolbarOptions.snapshot`
+  accepts `{ state, onClick }` — `onClick` (`"download"` | `"clipboard"`, default
+  `"download"`) is the plain-click delivery; the **other** runs on a modifier-click
+  (Ctrl on PC/Linux, ⌘ on Mac). The string form (`snapshot: "high"`) still works.
+- Clipboard uses the async Clipboard API (needs a secure context — HTTPS/localhost;
+  the click is the required user gesture).
+- New export `copyPng(blob)`; new `SnapshotTarget` / `SnapshotDelivery` types;
+  `ToolbarItem.onClick` now receives the `MouseEvent` (for modifier keys).
+
 ---
 
 ## 0.2.0

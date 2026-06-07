@@ -100,22 +100,35 @@ export interface ToolbarOptions {
   /** Include the "clear all" button (default true). */
   clear?: boolean;
   /**
-   * Add a "capture map" (PNG) button, sized to the chosen preset (default
-   * `"native"`). `"none"` ⇒ no button. The preset picks an output pixel-ratio
-   * (see {@link SnapshotLevel}). On the Leaflet adapter the button is shown but
-   * DISABLED (snapshot is not supported there yet).
+   * Add a "capture map" (PNG) button. Either a preset string (output size, default
+   * `"native"`; `"none"` ⇒ no button) or `{ state, onClick }`.
+   *
+   * The button always offers **both** deliveries: `onClick` (default `"download"`)
+   * is wired to a plain click, the **other** one to a modifier-click (Ctrl on
+   * PC/Linux, ⌘ on Mac). On the Leaflet adapter the button is shown but DISABLED.
    */
-  snapshot?: SnapshotLevel;
+  snapshot?: SnapshotLevel | { state: SnapshotLevel; onClick?: SnapshotDelivery };
 }
 
 /** Snapshot quality preset → output pixel-ratio (see `snapshotScale`). */
 export type SnapshotLevel = "none" | "native" | "low" | "medium" | "high";
+
+/** What `snapshot()` does with the captured PNG. `"blob"` ⇒ just return it. */
+export type SnapshotTarget = "blob" | "download" | "clipboard";
+
+/** A delivery a toolbar click can be wired to (the side-effecting subset). */
+export type SnapshotDelivery = "download" | "clipboard";
 
 export interface SnapshotOptions {
   /** Pixel-ratio of the output (device px per CSS px). Default =
    *  `window.devicePixelRatio` (render "as on screen"). >1 = supersampling
    *  (re-render at higher DPI, best-effort). */
   scale?: number;
+  /** What to do with the PNG: just return the `"blob"` (default), `"download"` a
+   *  file, or copy to the `"clipboard"`. The Blob is returned in every case. */
+  target?: SnapshotTarget;
+  /** Filename for `target: "download"`. Default `"map.png"`. */
+  filename?: string;
 }
 
 export interface ToolbarItem {
@@ -126,7 +139,9 @@ export interface ToolbarItem {
   toggle?: boolean;
   /** Render the button disabled (no click wiring); used for the Leaflet snapshot button. */
   disabled?: boolean;
-  onClick: () => void;
+  /** The click handler. Receives the `MouseEvent` so it can read modifier keys
+   *  (e.g. the snapshot button uses Ctrl/⌘-click for its alternate delivery). */
+  onClick: (e?: MouseEvent) => void;
 }
 
 /** Options every engine adapter accepts. The manifest + hit set are consumer-owned. */
@@ -226,6 +241,6 @@ export {
 } from "./symbols.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
-export { snapshotScale, downloadPng, SNAPSHOT_ICON_SVG } from "./snapshot.js";
+export { snapshotScale, downloadPng, copyPng, SNAPSHOT_ICON_SVG } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";

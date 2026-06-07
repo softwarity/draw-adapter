@@ -48,7 +48,7 @@ import { cursorForHit } from "./index.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
-import { snapshotToolbarItem } from "./snapshot.js";
+import { deliverSnapshot, snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** True when a hit is something the user grabs to drag (any handle/guide carrying
@@ -143,7 +143,7 @@ export class OpenLayersAdapter implements MapAdapter {
     if (this.toolbarEl) return this.toolbarEl;
     const el = document.createElement("div");
     el.className = "ol-control draw-adapter-toolbar";
-    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+    const snap = snapshotToolbarItem(options?.snapshot, {
       supported: this.snapshotSupported,
       snapshot: (o) => this.snapshot(o),
     });
@@ -151,6 +151,11 @@ export class OpenLayersAdapter implements MapAdapter {
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). */
+  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+    return this.capture(opts).then((b) => deliverSnapshot(b, opts));
   }
 
   /**
@@ -161,7 +166,7 @@ export class OpenLayersAdapter implements MapAdapter {
    * pre-multiplied by `scale`, so `low` stays at CSS resolution and `medium`/`high`
    * supersample (best-effort).
    */
-  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+  private capture(opts?: SnapshotOptions): Promise<Blob> {
     const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     const targetScale = opts?.scale ?? ratio;
     const size = this.map.getSize();

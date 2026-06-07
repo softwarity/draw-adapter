@@ -37,7 +37,7 @@ import type {
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
-import { snapshotToolbarItem } from "./snapshot.js";
+import { deliverSnapshot, snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void;
@@ -207,7 +207,7 @@ export class MapLibreAdapter implements MapAdapter {
     if (this.toolbarEl) return this.toolbarEl;
     const el = document.createElement("div");
     el.className = "maplibregl-ctrl maplibregl-ctrl-group draw-adapter-toolbar";
-    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+    const snap = snapshotToolbarItem(options?.snapshot, {
       supported: this.snapshotSupported,
       snapshot: (o) => this.snapshot(o),
     });
@@ -217,6 +217,11 @@ export class MapLibreAdapter implements MapAdapter {
     return el;
   }
 
+  /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). */
+  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+    return this.capture(opts).then((b) => deliverSnapshot(b, opts));
+  }
+
   /**
    * Capture the GL canvas inside a render frame (no `preserveDrawingBuffer`
    * needed): listen for the next `render`, then read the canvas. `scale` defaults
@@ -224,7 +229,7 @@ export class MapLibreAdapter implements MapAdapter {
    * a different `scale` re-draws the composition onto a resized canvas — a downscale
    * (`low`) is clean, an upscale (`medium`/`high`) is a best-effort enlargement.
    */
-  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+  private capture(opts?: SnapshotOptions): Promise<Blob> {
     const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     const targetScale = opts?.scale ?? ratio;
     return new Promise<Blob>((resolve, reject) => {

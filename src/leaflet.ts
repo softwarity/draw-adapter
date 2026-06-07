@@ -196,7 +196,7 @@ export class LeafletAdapter implements MapAdapter {
     ensureLeafletToolbarStyle();
     const el = document.createElement("div");
     el.className = "leaflet-bar draw-adapter-toolbar draw-adapter-leaflet-toolbar";
-    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+    const snap = snapshotToolbarItem(options?.snapshot, {
       supported: this.snapshotSupported,
       reason: LEAFLET_SNAPSHOT_UNSUPPORTED,
       snapshot: () => this.snapshot(),
