@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.4
+
+---
+
 ## 0.2.3
 
 Adds a **curtain shutter effect** as capture feedback, plus clearer icons.
