@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.2
+
+---
+
 ## 0.2.1
 
 Snapshot can now **download or copy to clipboard** — additive, non-breaking.
