@@ -7,9 +7,9 @@ import { snapshotToolbarItem, deliverSnapshot, SNAPSHOT_ICON_SVG } from "../src/
 import { populateToolbar } from "../src/toolbar.js";
 import { LeafletAdapter } from "../src/leaflet.js";
 import { FakeAdapter } from "../src/testing.js";
-import type { LayerSpec, SnapshotLevel } from "../src/index.js";
+import type { LayerSpec } from "../src/index.js";
 
-describe("snapshotScale — preset → output pixel-ratio", () => {
+describe("snapshotScale — quality → output pixel-ratio", () => {
   it("low → 1", () => expect(snapshotScale("low")).toBe(1));
   it("medium → 2", () => expect(snapshotScale("medium")).toBe(2));
   it("high → 3", () => expect(snapshotScale("high")).toBe(3));
@@ -22,22 +22,30 @@ describe("snapshotScale — preset → output pixel-ratio", () => {
     expect(snapshotScale("native")).toBe(2.5);
     Object.defineProperty(window, "devicePixelRatio", { value: prev, configurable: true });
   });
-  it("none falls back to native (button is built only for non-none)", () =>
-    expect(snapshotScale("none")).toBe((typeof window !== "undefined" && window.devicePixelRatio) || 1));
 });
 
 describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-click)", () => {
   const cap = (supported: boolean, snapshot = vi.fn().mockResolvedValue(new Blob())) =>
     ({ supported, ...(supported ? {} : { reason: "nope" }), snapshot });
 
-  it("returns null for the `none` preset (no button)", () => {
+  it("hides the button for any explicit off value (`null`/`false`/`\"none\"`)", () => {
     expect(snapshotToolbarItem("none", cap(true))).toBeNull();
-    expect(snapshotToolbarItem({ state: "none", onClick: "clipboard" }, cap(true))).toBeNull();
+    expect(snapshotToolbarItem(null, cap(true))).toBeNull();
+    expect(snapshotToolbarItem(false, cap(true))).toBeNull();
+  });
+
+  it("`undefined` ⇒ a button with defaults (native quality, download)", () => {
+    const snapshot = vi.fn().mockResolvedValue(new Blob());
+    const item = snapshotToolbarItem(undefined, cap(true, snapshot))!;
+    expect(item).not.toBeNull();
+    expect(item.title).toContain("Download map");
+    item.onClick();
+    expect(snapshot).toHaveBeenCalledWith({ scale: snapshotScale("native"), target: "download" });
   });
 
   it("supported ⇒ enabled camera button; plain click delivers the `onClick` target", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
-    const item = snapshotToolbarItem("high", cap(true, snapshot))!; // default onClick = "download"
+    const item = snapshotToolbarItem({ quality: "high" }, cap(true, snapshot))!; // default onClick = "download"
     expect(item.id).toBe("snapshot");
     expect(item.svg).toBe(SNAPSHOT_ICON_SVG);
     expect(item.disabled).toBeUndefined();
@@ -49,7 +57,7 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
 
   it("a modifier-click (ctrl OR meta) delivers the OTHER target", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
-    const item = snapshotToolbarItem("low", cap(true, snapshot))!; // primary download, secondary clipboard
+    const item = snapshotToolbarItem({ quality: "low" }, cap(true, snapshot))!; // primary download, secondary clipboard
     item.onClick({ ctrlKey: true } as MouseEvent);
     expect(snapshot).toHaveBeenLastCalledWith({ scale: 1, target: "clipboard" });
     item.onClick({ metaKey: true } as MouseEvent);
@@ -60,7 +68,7 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
 
   it("onClick: 'clipboard' swaps the roles (plain = copy, modifier = download)", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
-    const item = snapshotToolbarItem({ state: "native", onClick: "clipboard" }, cap(true, snapshot))!;
+    const item = snapshotToolbarItem({ quality: "native", onClick: "clipboard" }, cap(true, snapshot))!;
     expect(item.title).toContain("Copy map to clipboard");
     expect(item.title).toContain("click to download");
     item.onClick();
@@ -71,11 +79,37 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
 
   it("unsupported ⇒ a DISABLED button whose title is the reason, click is a no-op", () => {
     const snapshot = vi.fn();
-    const item = snapshotToolbarItem("native", cap(false, snapshot))!;
+    const item = snapshotToolbarItem({ quality: "native" }, cap(false, snapshot))!;
     expect(item.disabled).toBe(true);
     expect(item.title).toBe("nope");
     item.onClick();
     expect(snapshot).not.toHaveBeenCalled();
+    expect(item.onRender).toBeUndefined(); // no live preview wiring for a disabled button
+  });
+
+  it("hovering + holding a modifier swaps the icon/tooltip; leaving stops listening", () => {
+    const item = snapshotToolbarItem({ quality: "native" }, cap(true))!; // primary download
+    const btn = document.createElement("button");
+    item.onRender!(btn);
+    // jsdom rewrites SVG markup on innerHTML readback, so assert on a per-icon marker:
+    const isCamera = () => btn.innerHTML.includes("<circle");   // SNAPSHOT_ICON_SVG
+    const isClipboard = () => btn.innerHTML.includes("<rect");  // SNAPSHOT_CLIPBOARD_ICON
+
+    btn.dispatchEvent(new MouseEvent("mouseenter")); // plain hover ⇒ primary (download)
+    expect(isCamera()).toBe(true);
+    expect(btn.title).toContain("Download map");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true })); // ⇒ alternate (clipboard)
+    expect(isClipboard()).toBe(true);
+    expect(btn.title).toContain("Copy map to clipboard");
+
+    window.dispatchEvent(new KeyboardEvent("keyup")); // released ⇒ back to primary
+    expect(isCamera()).toBe(true);
+    expect(btn.title).toContain("Download map");
+
+    btn.dispatchEvent(new MouseEvent("mouseleave")); // unhook key listeners
+    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
+    expect(isCamera()).toBe(true); // no longer reacts after leave
   });
 });
 

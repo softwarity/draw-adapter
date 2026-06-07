@@ -100,18 +100,19 @@ export interface ToolbarOptions {
   /** Include the "clear all" button (default true). */
   clear?: boolean;
   /**
-   * Add a "capture map" (PNG) button. Either a preset string (output size, default
-   * `"native"`; `"none"` ⇒ no button) or `{ state, onClick }`.
+   * Add a "capture map" (PNG) button. **Omitted/`undefined` ⇒ shown with defaults**
+   * (`quality: "native"`, `onClick: "download"`). Pass `{ quality?, onClick? }` to
+   * configure it, or `null` / `false` / `"none"` to **hide** it.
    *
    * The button always offers **both** deliveries: `onClick` (default `"download"`)
    * is wired to a plain click, the **other** one to a modifier-click (Ctrl on
    * PC/Linux, ⌘ on Mac). On the Leaflet adapter the button is shown but DISABLED.
    */
-  snapshot?: SnapshotLevel | { state: SnapshotLevel; onClick?: SnapshotDelivery };
+  snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery };
 }
 
-/** Snapshot quality preset → output pixel-ratio (see `snapshotScale`). */
-export type SnapshotLevel = "none" | "native" | "low" | "medium" | "high";
+/** Snapshot output size: a pixel-ratio preset (see `snapshotScale`). */
+export type SnapshotQuality = "native" | "low" | "medium" | "high";
 
 /** What `snapshot()` does with the captured PNG. `"blob"` ⇒ just return it. */
 export type SnapshotTarget = "blob" | "download" | "clipboard";
@@ -142,6 +143,9 @@ export interface ToolbarItem {
   /** The click handler. Receives the `MouseEvent` so it can read modifier keys
    *  (e.g. the snapshot button uses Ctrl/⌘-click for its alternate delivery). */
   onClick: (e?: MouseEvent) => void;
+  /** Called once with the created `<button>` for live DOM wiring (e.g. the snapshot
+   *  button swaps its icon/tooltip while a modifier key is held over it). */
+  onRender?: (button: HTMLButtonElement) => void;
 }
 
 /** Options every engine adapter accepts. The manifest + hit set are consumer-owned. */
@@ -241,6 +245,6 @@ export {
 } from "./symbols.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
-export { snapshotScale, downloadPng, copyPng, SNAPSHOT_ICON_SVG } from "./snapshot.js";
+export { snapshotScale, downloadPng, copyPng, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";

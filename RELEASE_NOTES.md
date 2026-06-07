@@ -2,6 +2,19 @@
 
 ## 0.2.2
 
+Tidies the snapshot **toolbar option** — single object form, clearer naming.
+
+- `ToolbarOptions.snapshot` is now `"none" | false | null | { quality?, onClick? }`
+  (no more bare-preset string form). **`undefined` ⇒ defaults** (a button); any
+  explicit falsy value (`null` / `false` / `"none"`) **hides** it.
+- Renamed the size field `state` → **`quality`**, and the type `SnapshotLevel` →
+  **`SnapshotQuality`** (`"native" | "low" | "medium" | "high"` — `"none"` moved out
+  to the option's union, where it belongs).
+- The toolbar button now **live-previews the delivery while hovered**: holding the
+  modifier key swaps its icon (camera ⇄ clipboard) and tooltip to the alternate
+  action. Key listeners are scoped to the hover only (no global churn). New
+  `ToolbarItem.onRender` hook + exported `SNAPSHOT_CLIPBOARD_ICON`.
+
 ---
 
 ## 0.2.1

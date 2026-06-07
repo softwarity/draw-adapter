@@ -212,29 +212,37 @@ await adapter.snapshot({ target: "clipboard" });               // capture + copy
 
 ### Toolbar button — one button, two deliveries
 
-Pass a `snapshot` preset to `addToolbar` and the adapter adds a single camera button.
-It always offers **both** deliveries: a plain click runs `onClick` (default
-`"download"`); a **modifier-click** (Ctrl on PC/Linux, ⌘ on Mac) runs the other one.
+`addToolbar` adds a single camera button. It always offers **both** deliveries: a
+plain click runs `onClick` (default `"download"`); a **modifier-click** (Ctrl on
+PC/Linux, ⌘ on Mac) runs the other one.
 
 ```ts
-adapter.addToolbar(tools, { snapshot: "native" });   // click → download, ⌘/Ctrl-click → copy
-adapter.addToolbar(tools, { snapshot: { state: "high", onClick: "clipboard" } }); // swapped
-adapter.addToolbar(tools, { snapshot: "none" });     // no button
+adapter.addToolbar(tools);                            // defaults: click → download, ⌘/Ctrl-click → copy
+adapter.addToolbar(tools, { snapshot: { quality: "high", onClick: "clipboard" } }); // swapped
+adapter.addToolbar(tools, { snapshot: "none" });     // hide it (also: null / false)
 ```
 
-| `state` preset | output pixel-ratio | notes |
+The `snapshot` option:
+
+- **omitted / `undefined`** ⇒ button with **defaults** (`quality: "native"`, `onClick: "download"`),
+- **`null` / `false` / `"none"`** ⇒ no button,
+- **`{ quality?, onClick? }`** ⇒ configured button.
+
+| `quality` | output pixel-ratio | notes |
 |--------|--------------------|-------|
-| `none` | — | no button |
 | `low` | `1` | CSS-pixel resolution |
 | `native` *(default)* | `window.devicePixelRatio` | capture as on screen |
 | `medium` / `high` | `2` / `3` | supersample (best-effort) |
 
 `onClick` (`"download"` | `"clipboard"`) just picks which delivery is on the plain
-click; the order defines the default, the other is always one modifier-click away.
-The button's tooltip spells both out (e.g. *"Download map — ⌘-click to copy"*).
+click; the other is always one modifier-click away. The button's tooltip spells both
+out (e.g. *"Download map — ⌘-click to copy"*), and **while you hover it, holding the
+modifier live-swaps the icon and tooltip** to the alternate delivery — so you see
+which action a click will trigger. (The key listeners exist only for the hover's
+duration, so there is no global event churn.)
 
 On the **Leaflet** adapter the button is rendered **disabled**, with the
-unavailability message as its tooltip. Exported helpers: `snapshotScale(level)`
+unavailability message as its tooltip. Exported helpers: `snapshotScale(quality)`
 (preset→ratio), `downloadPng(blob, name?)`, `copyPng(blob)`.
 
 ## API surface
