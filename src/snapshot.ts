@@ -57,12 +57,13 @@ export function downloadPng(blob: Blob, filename = "map.png"): void {
 }
 
 /**
- * Copy a PNG Blob to the system clipboard via the async Clipboard API. Needs a
- * **secure context** (HTTPS/localhost) and a **user gesture** (a click) — the
- * toolbar button provides the latter. Rejects when the browser/context can't
- * write an image to the clipboard.
+ * Copy a PNG to the system clipboard via the async Clipboard API. Accepts the Blob or
+ * a **Promise** of it — pass the still-pending capture promise so `clipboard.write()`
+ * is issued **synchronously within the click**: Safari (and strict Chrome) reject a
+ * write made after an `await` (the user gesture is gone). Needs a **secure context**
+ * (HTTPS/localhost). Rejects when the browser/context can't write an image.
  */
-export async function copyPng(blob: Blob): Promise<void> {
+export async function copyPng(blob: Blob | Promise<Blob>): Promise<void> {
   const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
   if (!clip?.write || typeof ClipboardItem === "undefined") {
     throw new Error("Clipboard image write is unavailable (needs a secure context and a supporting browser).");
@@ -71,19 +72,15 @@ export async function copyPng(blob: Blob): Promise<void> {
 }
 
 /** Apply a {@link SnapshotOptions.target} to a captured PNG (download / clipboard /
- *  none) and return the Blob unchanged — the shared delivery used by every adapter's
- *  `snapshot()` so capture and side-effects stay in one place. */
-export async function deliverSnapshot(blob: Blob, opts?: SnapshotOptions): Promise<Blob> {
-  switch (opts?.target) {
-    case "download":
-      downloadPng(blob, opts.filename);
-      break;
-    case "clipboard":
-      await copyPng(blob);
-      break;
-    // "blob" / undefined → just return it
-  }
-  return blob;
+ *  none) and resolve to the Blob — the shared delivery used by every adapter's
+ *  `snapshot()`. Pass the (possibly still-pending) capture promise: for `clipboard`
+ *  the write is issued **synchronously** here, while we're still in the click's call
+ *  stack, so the user gesture isn't lost (see {@link copyPng}). */
+export function deliverSnapshot(blob: Blob | Promise<Blob>, opts?: SnapshotOptions): Promise<Blob> {
+  const ready = Promise.resolve(blob);
+  if (opts?.target === "clipboard") return copyPng(ready).then(() => ready); // write NOW, before any await
+  if (opts?.target === "download") return ready.then((b) => { downloadPng(b, opts.filename); return b; });
+  return ready; // "blob" / undefined → just the Blob
 }
 
 const SHUTTER_STYLE_ID = "draw-adapter-shutter-style";

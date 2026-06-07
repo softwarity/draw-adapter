@@ -154,9 +154,11 @@ export class OpenLayersAdapter implements MapAdapter {
     return el;
   }
 
-  /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). */
+  /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). The
+   *  capture promise is handed to `deliverSnapshot` *pending* so a clipboard write fires
+   *  synchronously within the click (gesture-safe). */
   snapshot(opts?: SnapshotOptions): Promise<Blob> {
-    return this.capture(opts).then((b) => deliverSnapshot(b, opts));
+    return deliverSnapshot(this.capture(opts), opts);
   }
 
   /**

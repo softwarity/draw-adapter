@@ -175,6 +175,18 @@ describe("deliverSnapshot — routes a captured Blob by target", () => {
     vi.unstubAllGlobals();
   });
 
+  it("'clipboard' issues the write SYNCHRONOUSLY, before the capture resolves (gesture-safe)", () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", class { constructor(public items: unknown) {} });
+    vi.stubGlobal("navigator", { clipboard: { write } });
+    let resolveCapture!: (b: Blob) => void;
+    const capture = new Promise<Blob>((r) => { resolveCapture = r; });
+    deliverSnapshot(capture, { target: "clipboard" }); // capture still pending
+    expect(write).toHaveBeenCalledOnce();               // …yet write() already fired
+    resolveCapture(new Blob([], { type: "image/png" }));
+    vi.unstubAllGlobals();
+  });
+
   it("'download' ⇒ triggers a download and returns the Blob", async () => {
     vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: vi.fn() } as never);
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
