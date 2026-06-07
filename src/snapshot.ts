@@ -28,19 +28,20 @@ export function snapshotScale(quality: SnapshotQuality): number {
   }
 }
 
-/** Default camera icon for the snapshot toolbar button (inherits `currentColor`). */
+// Both snapshot icons are the same camera glyph (Feather-style, `currentColor`); the
+// only difference is the lens: FILLED for download, an empty ring for clipboard.
+
+/** Snapshot **download** icon — camera with a **filled** lens. */
 export const SNAPSHOT_ICON_SVG =
-  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+  `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>` +
+  `<circle cx="12" cy="13" r="4" fill="currentColor"/></svg>`;
+
+/** Snapshot **clipboard** icon — same camera with an **empty** (ring-only) lens. */
+export const SNAPSHOT_CLIPBOARD_ICON =
+  `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
   `<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>` +
   `<circle cx="12" cy="13" r="4"/></svg>`;
-
-/** Clipboard icon — shown on the snapshot button when the clipboard delivery is active. */
-export const SNAPSHOT_CLIPBOARD_ICON =
-  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
-  `<rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>` +
-  `<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>`;
 
 /** Download a Blob as a file in the browser (object-URL + a transient `<a download>`). */
 export function downloadPng(blob: Blob, filename = "map.png"): void {
@@ -85,6 +86,55 @@ export async function deliverSnapshot(blob: Blob, opts?: SnapshotOptions): Promi
   return blob;
 }
 
+const SHUTTER_STYLE_ID = "draw-adapter-shutter-style";
+
+function ensureShutterStyle(): void {
+  if (typeof document === "undefined" || document.getElementById(SHUTTER_STYLE_ID)) return;
+  const s = document.createElement("style");
+  s.id = SHUTTER_STYLE_ID;
+  // Two semi-transparent blades (top + bottom, 50% each) slide in to meet at the centre
+  // then retract — a simple curtain shutter. Translucent so the map stays faintly visible;
+  // 50% height each ⇒ they meet exactly with no double-dark overlap line.
+  s.textContent =
+    `.draw-adapter-shutter{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:1000}` +
+    `.draw-adapter-shutter>i{position:absolute;left:0;right:0;height:50%;background:rgba(0,0,0,.55)}` +
+    `.draw-adapter-shutter>i.t{top:0;transform:translateY(-100%);animation:dap-shutter-t var(--dap-shutter,600ms) ease-in-out forwards}` +
+    `.draw-adapter-shutter>i.b{bottom:0;transform:translateY(100%);animation:dap-shutter-b var(--dap-shutter,600ms) ease-in-out forwards}` +
+    `.draw-adapter-shutter.blink{background:rgba(0,0,0,.55);animation:dap-shutter-blink var(--dap-shutter,200ms) ease-out forwards}` +
+    `@keyframes dap-shutter-t{0%{transform:translateY(-100%)}45%,55%{transform:translateY(0)}100%{transform:translateY(-100%)}}` +
+    `@keyframes dap-shutter-b{0%{transform:translateY(100%)}45%,55%{transform:translateY(0)}100%{transform:translateY(100%)}}` +
+    `@keyframes dap-shutter-blink{0%{opacity:0}45%{opacity:1}100%{opacity:0}}`;
+  document.head.appendChild(s);
+}
+
+/**
+ * Play a brief curtain shutter over `container` — two translucent blades close to the
+ * centre and reopen (the map stays faintly visible). Visual feedback for a capture
+ * (handy for the otherwise-silent clipboard copy). Honours `prefers-reduced-motion`
+ * (degrades to a single quick dim). The overlay is `pointer-events:none` and
+ * self-removes. `container` must be a positioned element (the engine map containers are).
+ */
+export function shutterFlash(container: HTMLElement, opts?: { durationMs?: number }): void {
+  if (typeof document === "undefined") return;
+  ensureShutterStyle();
+  const reduce = typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const wrap = document.createElement("div");
+  wrap.className = reduce ? "draw-adapter-shutter blink" : "draw-adapter-shutter";
+  if (opts?.durationMs) wrap.style.setProperty("--dap-shutter", `${opts.durationMs}ms`);
+  const remove = (): void => wrap.remove();
+  let animated: HTMLElement = wrap; // reduced-motion ⇒ the wrapper itself dims
+  if (!reduce) {
+    const top = document.createElement("i"); top.className = "t";
+    const bot = document.createElement("i"); bot.className = "b";
+    wrap.append(top, bot);
+    animated = bot; // both blades share the animation → they end together
+  }
+  animated.addEventListener("animationend", remove, { once: true });
+  container.appendChild(wrap);
+  // Fallback removal if `animationend` never fires (detached node / no animation support).
+  setTimeout(remove, (opts?.durationMs ?? 600) + 120);
+}
+
 /** Label of the modifier key the snapshot button uses for its alternate delivery
  *  (⌘ on Mac, Ctrl elsewhere). */
 function modifierLabel(): string {
@@ -115,17 +165,18 @@ function deliveryTitle(active: SnapshotDelivery, other: SnapshotDelivery): strin
  * Called by each adapter's `addToolbar` (it owns `snapshot`/`snapshotSupported`).
  */
 export function snapshotToolbarItem(
-  config: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery } | undefined,
-  cap: { supported: boolean; reason?: string; snapshot: (opts?: SnapshotOptions) => Promise<Blob> },
+  config: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; basemap?: boolean } | undefined,
+  cap: { supported: boolean; reason?: string; snapshot: (opts?: SnapshotOptions) => Promise<Blob>; flash?: () => void },
 ): ToolbarItem | null {
   if (config === null || config === false || config === "none") return null; // undefined ⇒ defaults
   const cfg = typeof config === "object" ? config : {};
   const scale = snapshotScale(cfg.quality ?? "native");
   const primary: SnapshotDelivery = cfg.onClick ?? "download";
   const secondary: SnapshotDelivery = primary === "download" ? "clipboard" : "download";
+  const shutter = cfg.shutter !== false; // default ON
+  const basemap = cfg.basemap; // undefined ⇒ adapter default (include)
   return {
     id: "snapshot",
-    label: "📷",
     svg: DELIVERY_ICON[primary],
     title: cap.supported
       ? deliveryTitle(primary, secondary)
@@ -134,7 +185,10 @@ export function snapshotToolbarItem(
     onClick: cap.supported
       ? (e?: MouseEvent) => {
           const target: SnapshotDelivery = e?.ctrlKey || e?.metaKey ? secondary : primary;
-          cap.snapshot({ scale, target }).catch(() => { /* capture/deliver failed */ });
+          const opts: SnapshotOptions = { scale, target };
+          if (basemap === false) opts.basemap = false;
+          // Flash only on success → it doubles as the "captured / copied" confirmation.
+          cap.snapshot(opts).then(() => { if (shutter) cap.flash?.(); }).catch(() => { /* failed */ });
         }
       : () => { /* disabled: no-op */ },
     // While the button is hovered, mirror the held modifier in the icon + tooltip so

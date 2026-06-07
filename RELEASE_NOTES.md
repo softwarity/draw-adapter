@@ -2,6 +2,22 @@
 
 ## 0.2.3
 
+Adds a **curtain shutter effect** as capture feedback, plus clearer icons.
+
+- A successful snapshot from the toolbar plays a brief shutter animation over the map —
+  two translucent blades close to the centre and reopen (the map stays faintly visible) —
+  visual confirmation that doubles as the *"copied"* feedback for the otherwise-silent
+  clipboard delivery. Opt out with `snapshot: { shutter: false }` (default `true`).
+- Honours `prefers-reduced-motion` (degrades to a single quick dim); the overlay is
+  `pointer-events:none` and self-removes. The flash plays **only on success**.
+- `snapshot()` gains `basemap` (default `true`): set `false` to capture only the drawing
+  overlays on a transparent background (the basemap layers are hidden during capture and
+  restored after). Also on the toolbar config (`snapshot: { basemap: false }`).
+- The snapshot button icon is a camera; the two deliveries differ only by the **lens** —
+  filled for download (`SNAPSHOT_ICON_SVG`), an empty ring for clipboard
+  (`SNAPSHOT_CLIPBOARD_ICON`) — and the hover preview swaps between them.
+- New export `shutterFlash(container, { durationMs? })` for manual use.
+
 ---
 
 ## 0.2.2
@@ -15,9 +31,9 @@ Tidies the snapshot **toolbar option** — single object form, clearer naming.
   **`SnapshotQuality`** (`"native" | "low" | "medium" | "high"` — `"none"` moved out
   to the option's union, where it belongs).
 - The toolbar button now **live-previews the delivery while hovered**: holding the
-  modifier key swaps its icon (camera ⇄ clipboard) and tooltip to the alternate
-  action. Key listeners are scoped to the hover only (no global churn). New
-  `ToolbarItem.onRender` hook + exported `SNAPSHOT_CLIPBOARD_ICON`.
+  modifier key swaps its icon and tooltip to the alternate action. Key listeners are
+  scoped to the hover only (no global churn). New `ToolbarItem.onRender` hook +
+  exported `SNAPSHOT_CLIPBOARD_ICON`.
 
 ---
 

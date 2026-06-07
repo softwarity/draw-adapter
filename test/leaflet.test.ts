@@ -79,8 +79,8 @@ describe("LeafletAdapter", () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();
     const bar = a.addToolbar([
-      { id: "circle", title: "Circle", label: "○", onClick: vi.fn() },
-      { id: "polygon", title: "Polygon", label: "▱", onClick: vi.fn() },
+      { id: "circle", title: "Circle", onClick: vi.fn() },
+      { id: "polygon", title: "Polygon", onClick: vi.fn() },
     ], { snapshot: "none" });
     expect(Number(bar.style.zIndex)).toBeGreaterThanOrEqual(1000);
     expect(bar.querySelectorAll("button")).toHaveLength(2);

@@ -49,22 +49,27 @@ describe("applyToolbarLayout — orientation & flow", () => {
 });
 
 const mkItems = (): ToolbarItem[] => [
-  { id: "circle", title: "Circle", label: "○", svg: "<svg></svg>", toggle: true, onClick: vi.fn() },
-  { id: "polygon", title: "Polygon", label: "▱", toggle: true, onClick: vi.fn() },
-  { id: "clear", title: "Clear", label: "✕", onClick: vi.fn() },
+  { id: "circle", title: "Circle", svg: "<svg></svg>", toggle: true, onClick: vi.fn() },
+  { id: "polygon", title: "Polygon", svg: "<svg></svg>", toggle: true, onClick: vi.fn() },
+  { id: "clear", title: "Clear", svg: "<svg></svg>", onClick: vi.fn() },
 ];
 
 describe("populateToolbar", () => {
-  it("renders a button per item, svg taking precedence over label", () => {
+  it("renders a button per item with its svg + aria-label", () => {
     const el = document.createElement("div");
     const items = mkItems();
     populateToolbar(el, items);
     const btns = el.querySelectorAll("button");
     expect(btns).toHaveLength(3);
     expect(btns[0]!.innerHTML).toBe("<svg></svg>");
-    expect(btns[1]!.textContent).toBe("▱");
     expect(btns[0]!.dataset["tool"]).toBe("circle");
     expect(btns[0]!.getAttribute("aria-label")).toBe("Circle");
+  });
+
+  it("falls back to a placeholder icon when an item has no svg", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, [{ id: "x", title: "X", onClick: vi.fn() }]);
+    expect(el.querySelector("button svg")).not.toBeNull();
   });
 
   it("honours the `tools` order/subset", () => {

@@ -48,7 +48,7 @@ import { cursorForHit } from "./index.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
-import { deliverSnapshot, snapshotToolbarItem } from "./snapshot.js";
+import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** True when a hit is something the user grabs to drag (any handle/guide carrying
@@ -146,6 +146,7 @@ export class OpenLayersAdapter implements MapAdapter {
     const snap = snapshotToolbarItem(options?.snapshot, {
       supported: this.snapshotSupported,
       snapshot: (o) => this.snapshot(o),
+      flash: () => shutterFlash(this.map.getViewport()),
     });
     populateToolbar(el, snap ? [...items, snap] : items, options);
     this.map.getTargetElement()?.appendChild(el);
@@ -171,8 +172,12 @@ export class OpenLayersAdapter implements MapAdapter {
     const targetScale = opts?.scale ?? ratio;
     const size = this.map.getSize();
     if (!size) return Promise.reject(new Error("snapshot failed: map has no size"));
+    // `basemap: false` ⇒ hide non-adapter layers so only our overlays render (and thus
+    // get composited below); restored once the blob is read.
+    const restore = opts?.basemap === false ? this.hideBasemap() : undefined;
     return new Promise<Blob>((resolve, reject) => {
-      this.map.once("rendercomplete", () => {
+      const settle = (run: () => void): void => { try { run(); } finally { restore?.(); } };
+      this.map.once("rendercomplete", () => settle(() => {
         try {
           const out = document.createElement("canvas");
           out.width = Math.max(1, Math.round(size[0]! * targetScale));
@@ -203,9 +208,23 @@ export class OpenLayersAdapter implements MapAdapter {
         } catch (e) {
           reject(e instanceof Error ? e : new Error("snapshot failed"));
         }
-      });
+      }));
       this.map.renderSync();
     });
+  }
+
+  /** Hide every map layer that isn't one of our overlay layers (basemap, …); returns a
+   *  function that restores their visibility. Used for basemap-less snapshots. */
+  private hideBasemap(): () => void {
+    const ours: Set<unknown> = new Set(this.layers.values());
+    const hidden: BaseLayer[] = [];
+    for (const layer of this.map.getLayers().getArray()) {
+      if (!ours.has(layer) && layer.getVisible()) {
+        layer.setVisible(false);
+        hidden.push(layer);
+      }
+    }
+    return () => { for (const l of hidden) l.setVisible(true); };
   }
 
   getCenter(): LatLng {

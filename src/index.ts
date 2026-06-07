@@ -106,9 +106,11 @@ export interface ToolbarOptions {
    *
    * The button always offers **both** deliveries: `onClick` (default `"download"`)
    * is wired to a plain click, the **other** one to a modifier-click (Ctrl on
-   * PC/Linux, ⌘ on Mac). On the Leaflet adapter the button is shown but DISABLED.
+   * PC/Linux, ⌘ on Mac). `shutter` (default `true`) plays the capture effect;
+   * `basemap: false` captures only the drawing overlays (transparent background).
+   * On the Leaflet adapter the button is shown but DISABLED.
    */
-  snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery };
+  snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; basemap?: boolean };
 }
 
 /** Snapshot output size: a pixel-ratio preset (see `snapshotScale`). */
@@ -130,12 +132,15 @@ export interface SnapshotOptions {
   target?: SnapshotTarget;
   /** Filename for `target: "download"`. Default `"map.png"`. */
   filename?: string;
+  /** Include the host basemap (default `true`). `false` ⇒ capture only the drawing
+   *  overlays on a transparent background (the basemap layers are hidden during capture). */
+  basemap?: boolean;
 }
 
 export interface ToolbarItem {
   id: string;
   title: string;
-  label: string;
+  /** Inline SVG for the button. A neutral placeholder icon is used when omitted. */
   svg?: string;
   toggle?: boolean;
   /** Render the button disabled (no click wiring); used for the Leaflet snapshot button. */
@@ -245,6 +250,6 @@ export {
 } from "./symbols.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
-export { snapshotScale, downloadPng, copyPng, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
+export { snapshotScale, downloadPng, copyPng, shutterFlash, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";

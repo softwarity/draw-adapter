@@ -8,6 +8,11 @@ import type { ToolbarItem, ToolbarOptions } from "./index.js";
 const STYLE_ID = "draw-adapter-toolbar-style";
 const TOOLBAR_CLASS = "draw-adapter-toolbar";
 
+/** Neutral placeholder icon used when a {@link ToolbarItem} provides no `svg`. */
+const FALLBACK_ICON =
+  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg>`;
+
 function ensureToolbarStyle(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -72,8 +77,7 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
     button.dataset["tool"] = item.id;
     button.title = item.title;
     button.setAttribute("aria-label", item.title);
-    if (item.svg) button.innerHTML = item.svg;
-    else button.textContent = item.label;
+    button.innerHTML = item.svg ?? FALLBACK_ICON;
     if (item.disabled) {
       button.disabled = true; // styled via `.draw-adapter-toolbar button:disabled`; title carries the why
     } else {

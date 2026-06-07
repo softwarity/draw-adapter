@@ -37,7 +37,7 @@ import type {
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
-import { deliverSnapshot, snapshotToolbarItem } from "./snapshot.js";
+import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void;
@@ -210,6 +210,7 @@ export class MapLibreAdapter implements MapAdapter {
     const snap = snapshotToolbarItem(options?.snapshot, {
       supported: this.snapshotSupported,
       snapshot: (o) => this.snapshot(o),
+      flash: () => shutterFlash(this.map.getContainer()),
     });
     populateToolbar(el, snap ? [...items, snap] : items, options);
     this.map.getContainer().appendChild(el);
@@ -232,11 +233,14 @@ export class MapLibreAdapter implements MapAdapter {
   private capture(opts?: SnapshotOptions): Promise<Blob> {
     const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     const targetScale = opts?.scale ?? ratio;
+    // `basemap: false` ⇒ hide every layer that isn't ours so the GL canvas keeps only
+    // our overlays on a transparent background; restored once the blob is read.
+    const restore = opts?.basemap === false ? this.hideBasemap() : undefined;
     return new Promise<Blob>((resolve, reject) => {
       this.map.once("render", () => {
         const src = this.map.getCanvas();
-        const fail = (): void => reject(new Error("snapshot failed"));
-        const done = (b: Blob | null): void => (b ? resolve(b) : fail());
+        const fail = (): void => { restore?.(); reject(new Error("snapshot failed")); };
+        const done = (b: Blob | null): void => { restore?.(); b ? resolve(b) : reject(new Error("snapshot failed")); };
         // Native: the canvas is already at `ratio` px/CSS-px — export it directly.
         if (Math.abs(targetScale - ratio) < 1e-3) {
           src.toBlob(done, "image/png");
@@ -253,6 +257,24 @@ export class MapLibreAdapter implements MapAdapter {
       });
       this.map.triggerRepaint();
     });
+  }
+
+  /** Hide every style layer that isn't one of ours (basemap, background, …); returns a
+   *  function that restores their previous `visibility`. Used for basemap-less snapshots. */
+  private hideBasemap(): () => void {
+    const ours = new Set(this.builtLayers);
+    const saved: Array<[string, string | undefined]> = [];
+    for (const layer of this.map.getStyle().layers ?? []) {
+      if (ours.has(layer.id)) continue;
+      const prev = this.map.getLayoutProperty(layer.id, "visibility") as string | undefined;
+      this.map.setLayoutProperty(layer.id, "visibility", "none");
+      saved.push([layer.id, prev]);
+    }
+    return () => {
+      for (const [id, prev] of saved) {
+        if (this.map.getLayer(id)) this.map.setLayoutProperty(id, "visibility", prev ?? "visible");
+      }
+    };
   }
 
   getCenter(): LatLng {

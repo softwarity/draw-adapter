@@ -177,7 +177,7 @@ describe("MapLibreAdapter — snapshot toolbar (supported ⇒ enabled)", () => {
   it("adds an ENABLED snapshot button by default and triggers a repaint on click", async () => {
     const { map, adapter } = build();
     await adapter.ready();
-    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }]);
+    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }]);
     const btn = snapBtn(bar)!;
     expect(btn).not.toBeNull();
     expect(btn.disabled).toBe(false);
@@ -190,7 +190,7 @@ describe("MapLibreAdapter — snapshot toolbar (supported ⇒ enabled)", () => {
   it("omits the snapshot button when snapshot: 'none'", async () => {
     const { adapter } = build();
     await adapter.ready();
-    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }], { snapshot: "none" });
+    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }], { snapshot: "none" });
     expect(snapBtn(bar)).toBeNull();
     adapter.destroy();
   });

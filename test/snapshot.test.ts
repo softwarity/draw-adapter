@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as L from "leaflet";
 
-import { snapshotScale, downloadPng, copyPng } from "../src/index.js";
+import { snapshotScale, downloadPng, copyPng, shutterFlash } from "../src/index.js";
 import { snapshotToolbarItem, deliverSnapshot, SNAPSHOT_ICON_SVG } from "../src/snapshot.js";
 import { populateToolbar } from "../src/toolbar.js";
 import { LeafletAdapter } from "../src/leaflet.js";
@@ -87,16 +87,45 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     expect(item.onRender).toBeUndefined(); // no live preview wiring for a disabled button
   });
 
+  it("plays the shutter flash on a successful capture, but not on failure", async () => {
+    const flash = vi.fn();
+    snapshotToolbarItem({ quality: "native" }, { supported: true, snapshot: vi.fn().mockResolvedValue(new Blob()), flash })!.onClick();
+    await vi.waitFor(() => expect(flash).toHaveBeenCalledOnce());
+
+    const flash2 = vi.fn();
+    snapshotToolbarItem({ quality: "native" }, { supported: true, snapshot: vi.fn().mockRejectedValue(new Error("x")), flash: flash2 })!.onClick();
+    await new Promise((r) => setTimeout(r));
+    expect(flash2).not.toHaveBeenCalled();
+  });
+
+  it("passes basemap:false through to snapshot() (and omits it by default)", () => {
+    const snapshot = vi.fn().mockResolvedValue(new Blob());
+    snapshotToolbarItem({ quality: "native", basemap: false }, { supported: true, snapshot })!.onClick();
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download", basemap: false });
+
+    const snapshot2 = vi.fn().mockResolvedValue(new Blob());
+    snapshotToolbarItem({ quality: "native" }, { supported: true, snapshot: snapshot2 })!.onClick();
+    expect(snapshot2).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download" }); // no basemap key
+  });
+
+  it("shutter:false suppresses the flash even on a successful capture", async () => {
+    const flash = vi.fn();
+    snapshotToolbarItem({ quality: "native", shutter: false }, { supported: true, snapshot: vi.fn().mockResolvedValue(new Blob()), flash })!.onClick();
+    await new Promise((r) => setTimeout(r));
+    expect(flash).not.toHaveBeenCalled();
+  });
+
   it("hovering + holding a modifier swaps the icon/tooltip; leaving stops listening", () => {
     const item = snapshotToolbarItem({ quality: "native" }, cap(true))!; // primary download
     const btn = document.createElement("button");
     item.onRender!(btn);
-    // jsdom rewrites SVG markup on innerHTML readback, so assert on a per-icon marker:
-    const isCamera = () => btn.innerHTML.includes("<circle");   // SNAPSHOT_ICON_SVG
-    const isClipboard = () => btn.innerHTML.includes("<rect");  // SNAPSHOT_CLIPBOARD_ICON
+    // Both icons are the camera; the lens fill is the difference (download = filled,
+    // clipboard = empty ring). Read the <circle> fill straight off the DOM.
+    const isDownload = () => btn.querySelector("circle")?.getAttribute("fill") === "currentColor";
+    const isClipboard = () => !btn.querySelector("circle")?.getAttribute("fill");
 
     btn.dispatchEvent(new MouseEvent("mouseenter")); // plain hover ⇒ primary (download)
-    expect(isCamera()).toBe(true);
+    expect(isDownload()).toBe(true);
     expect(btn.title).toContain("Download map");
 
     window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true })); // ⇒ alternate (clipboard)
@@ -104,12 +133,27 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     expect(btn.title).toContain("Copy map to clipboard");
 
     window.dispatchEvent(new KeyboardEvent("keyup")); // released ⇒ back to primary
-    expect(isCamera()).toBe(true);
+    expect(isDownload()).toBe(true);
     expect(btn.title).toContain("Download map");
 
     btn.dispatchEvent(new MouseEvent("mouseleave")); // unhook key listeners
     window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
-    expect(isCamera()).toBe(true); // no longer reacts after leave
+    expect(isDownload()).toBe(true); // no longer reacts after leave
+  });
+});
+
+describe("shutterFlash", () => {
+  it("overlays a self-removing curtain shutter (two blades) and injects its style once", () => {
+    const c = document.createElement("div");
+    document.body.appendChild(c);
+    shutterFlash(c);
+    const wrap = c.querySelector(".draw-adapter-shutter");
+    expect(wrap).not.toBeNull();
+    expect(wrap!.querySelectorAll("i")).toHaveLength(2); // top + bottom blade
+    expect(document.getElementById("draw-adapter-shutter-style")).not.toBeNull();
+    wrap!.querySelector("i.b")!.dispatchEvent(new Event("animationend")); // both end together
+    expect(c.querySelector(".draw-adapter-shutter")).toBeNull();
+    c.remove();
   });
 });
 
@@ -163,7 +207,7 @@ describe("populateToolbar — disabled items", () => {
   it("renders a disabled <button> with its title and no click wiring", () => {
     const el = document.createElement("div");
     const onClick = vi.fn();
-    populateToolbar(el, [{ id: "snapshot", title: "nope", label: "📷", disabled: true, onClick }]);
+    populateToolbar(el, [{ id: "snapshot", title: "nope", svg: "<svg></svg>", disabled: true, onClick }]);
     const btn = el.querySelector("button")!;
     expect(btn.disabled).toBe(true);
     expect(btn.title).toBe("nope");
@@ -230,7 +274,7 @@ describe("LeafletAdapter — snapshot", () => {
   it("adds a DISABLED snapshot button by default (native preset) with the reason as tooltip", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();
-    const bar = a.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }]);
+    const bar = a.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }]);
     const btn = snapBtn(bar)!;
     expect(btn).not.toBeNull();
     expect(btn.disabled).toBe(true);
@@ -241,7 +285,7 @@ describe("LeafletAdapter — snapshot", () => {
   it("omits the snapshot button when snapshot: 'none'", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();
-    const bar = a.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }], { snapshot: "none" });
+    const bar = a.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }], { snapshot: "none" });
     expect(snapBtn(bar)).toBeNull();
     a.destroy();
   });

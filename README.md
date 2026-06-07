@@ -194,12 +194,16 @@ const blob = await adapter.snapshot();                          // just the Blob
 await adapter.snapshot({ scale: 3 });                           // supersample (best-effort)
 await adapter.snapshot({ target: "download", filename: "x.png" }); // capture + download the file
 await adapter.snapshot({ target: "clipboard" });               // capture + copy to clipboard
+await adapter.snapshot({ basemap: false });                    // overlays only, transparent background
 ```
 
 - Always resolves to an `image/png` Blob. `scale` is the output **pixel-ratio**
   (device px per CSS px); it defaults to `window.devicePixelRatio`.
 - `target` (`"blob"` default · `"download"` · `"clipboard"`) is what `snapshot()`
   does with the PNG — the Blob is returned in every case.
+- `basemap` (default `true`): set `false` to capture **only the drawing overlays** on
+  a transparent background — the basemap layers are hidden during capture and restored
+  after. (Toolbar: `snapshot: { basemap: false }`.)
 - Capture happens **inside the engine's render frame**, so the host map needs **no
   special flag** (in particular, no `preserveDrawingBuffer` on the MapLibre/WebGL map).
 - **Leaflet is not supported yet** — `snapshot()` rejects (tiles are `<img>` and
@@ -241,9 +245,19 @@ modifier live-swaps the icon and tooltip** to the alternate delivery — so you 
 which action a click will trigger. (The key listeners exist only for the hover's
 duration, so there is no global event churn.)
 
+A successful capture plays a brief **curtain shutter** over the map — two translucent
+blades close to the centre and reopen (the map stays faintly visible). It's visual
+feedback that doubles as the *"copied"* confirmation for the otherwise-silent clipboard
+delivery. Turn it off with `snapshot: { shutter: false }` (default `true`). It honours
+`prefers-reduced-motion` (degrades to a single quick dim) and is exported as
+`shutterFlash(container, { durationMs? })` for manual use.
+
+The button icon is a camera; the two deliveries differ only by the **lens** — filled
+for download, an empty ring for clipboard — and the hover preview swaps between them.
+
 On the **Leaflet** adapter the button is rendered **disabled**, with the
 unavailability message as its tooltip. Exported helpers: `snapshotScale(quality)`
-(preset→ratio), `downloadPng(blob, name?)`, `copyPng(blob)`.
+(preset→ratio), `downloadPng(blob, name?)`, `copyPng(blob)`, `shutterFlash(el)`.
 
 ## API surface
 
