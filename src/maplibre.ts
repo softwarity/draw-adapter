@@ -28,6 +28,7 @@ import type {
   LatLng,
   MapAdapter,
   PointerEvent,
+  SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
@@ -36,6 +37,7 @@ import type {
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
+import { snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void;
@@ -75,6 +77,8 @@ export function createMapLibreMap(opts: {
 }
 
 export class MapLibreAdapter implements MapAdapter {
+  /** MapLibre exposes the WebGL canvas → snapshot is supported. */
+  protected readonly snapshotSupported = true;
   private readonly map: MapLibreMap;
   private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
   private readonly overlayIds: string[];
@@ -203,10 +207,47 @@ export class MapLibreAdapter implements MapAdapter {
     if (this.toolbarEl) return this.toolbarEl;
     const el = document.createElement("div");
     el.className = "maplibregl-ctrl maplibregl-ctrl-group draw-adapter-toolbar";
-    populateToolbar(el, items, options);
+    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+      supported: this.snapshotSupported,
+      snapshot: (o) => this.snapshot(o),
+    });
+    populateToolbar(el, snap ? [...items, snap] : items, options);
     this.map.getContainer().appendChild(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  /**
+   * Capture the GL canvas inside a render frame (no `preserveDrawingBuffer`
+   * needed): listen for the next `render`, then read the canvas. `scale` defaults
+   * to the current device-pixel-ratio (the canvas is already at that density);
+   * a different `scale` re-draws the composition onto a resized canvas — a downscale
+   * (`low`) is clean, an upscale (`medium`/`high`) is a best-effort enlargement.
+   */
+  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+    const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const targetScale = opts?.scale ?? ratio;
+    return new Promise<Blob>((resolve, reject) => {
+      this.map.once("render", () => {
+        const src = this.map.getCanvas();
+        const fail = (): void => reject(new Error("snapshot failed"));
+        const done = (b: Blob | null): void => (b ? resolve(b) : fail());
+        // Native: the canvas is already at `ratio` px/CSS-px — export it directly.
+        if (Math.abs(targetScale - ratio) < 1e-3) {
+          src.toBlob(done, "image/png");
+          return;
+        }
+        // Re-scale to the requested pixel-ratio. `src.width` is device px (= css×ratio).
+        const out = document.createElement("canvas");
+        out.width = Math.max(1, Math.round((src.width / ratio) * targetScale));
+        out.height = Math.max(1, Math.round((src.height / ratio) * targetScale));
+        const ctx = out.getContext("2d");
+        if (!ctx) return fail();
+        ctx.drawImage(src, 0, 0, out.width, out.height);
+        out.toBlob(done, "image/png");
+      });
+      this.map.triggerRepaint();
+    });
   }
 
   getCenter(): LatLng {

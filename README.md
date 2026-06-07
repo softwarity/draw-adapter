@@ -38,10 +38,12 @@ feature. Each product's controller resolves its domain style into those props
 | native text box (`textBackground`/`textBorder`) | halo only | ✅ | ✅ |
 | `project`/`unproject`/`onViewChange`/`getViewSpan` | ✅ | ✅ | ✅ |
 | drag-vs-pan guard | n/a² | ✅ (capture-phase) | ✅ (capture-phase) |
+| PNG `snapshot()` (basemap + overlays) | ✅ | ✅ | ❌³ |
 | peer dependency | `maplibre-gl >=5` | `ol >=9` | `leaflet >=1.9` |
 
 ¹ data-URI icons are materialized lazily via `styleimagemissing`; sprites are tinted per `symbolColor`.
 ² MapLibre's `dragPan` is toggled directly by the controller, no capture-phase hack needed.
+³ Leaflet has no single exportable canvas (tiles are `<img>`, overlays SVG/DOM); `snapshot()` rejects and the toolbar button is shown **disabled**. A DOM-snapshot approach is planned.
 *before* `setOverlay`, so styling is entirely **data-driven** and the three engines
 render identically.
 
@@ -182,9 +184,49 @@ and `maplibre-gl` (CJS-only) is imported as a namespace with a runtime ctor
 resolve rather than `import { Map }`. The peer-free entry (`.`) never imports an
 engine, so optional peer deps stay optional.
 
+## Snapshots (PNG)
+
+Capture the current map — basemap **and** overlays — as a PNG `Blob`:
+
+```ts
+const blob = await adapter.snapshot();           // "as on screen" (devicePixelRatio)
+const hi   = await adapter.snapshot({ scale: 3 }); // supersample (best-effort)
+```
+
+- Always resolves to an `image/png` Blob. `scale` is the output **pixel-ratio**
+  (device px per CSS px); it defaults to `window.devicePixelRatio`.
+- Capture happens **inside the engine's render frame**, so the host map needs **no
+  special flag** (in particular, no `preserveDrawingBuffer` on the MapLibre/WebGL map).
+- **Leaflet is not supported yet** — `snapshot()` rejects (tiles are `<img>` and
+  overlays are SVG/DOM, so there is no single exportable canvas). A DOM-snapshot
+  approach is planned.
+- `scale > 1` (`medium`/`high`) is **supersampling, best-effort**: it re-scales the
+  captured composition, which enlarges but does not add real map detail.
+
+### Toolbar button
+
+Pass a `snapshot` preset to `addToolbar` and the adapter adds a camera button that
+downloads `map.png` on click — no wiring needed on your side:
+
+```ts
+adapter.addToolbar(tools, { snapshot: "native" }); // default; "none" disables it
+```
+
+| preset | output pixel-ratio | notes |
+|--------|--------------------|-------|
+| `none` | — | no button |
+| `low` | `1` | CSS-pixel resolution |
+| `native` *(default)* | `window.devicePixelRatio` | capture as on screen |
+| `medium` / `high` | `2` / `3` | supersample (best-effort) |
+
+On the **Leaflet** adapter the button is rendered **disabled**, with the
+unavailability message as its tooltip. The preset→scale mapping is the exported
+pure function `snapshotScale(level)`; `downloadPng(blob, name?)` triggers the
+browser download.
+
 ## API surface
 
-`MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `setTooltip`,
+`MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `snapshot`, `setTooltip`,
 `addToolbar`, `getCenter`, `getViewSpan`, `project`, `unproject`, `onViewChange`,
 `setPanEnabled`, `setDoubleClickZoom`, `setCursor`, `onPointer`, `destroy`.
 

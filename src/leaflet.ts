@@ -33,7 +33,14 @@ import { cursorForHit } from "./index.js";
 import { num, str, rgba } from "./coerce.js";
 import { colorizeSprite } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
+import { snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
+
+/** Why Leaflet can't snapshot yet — shown both as the thrown error and the
+ *  disabled toolbar button's tooltip. */
+const LEAFLET_SNAPSHOT_UNSUPPORTED =
+  "snapshot() is not supported on the Leaflet adapter yet (no native exportable " +
+  "canvas: tiles are <img>, overlays are SVG/DOM). Planned via a DOM-snapshot approach.";
 
 function isDraggableHit(hit: Hit): boolean {
   return hit.props["role"] != null;
@@ -80,6 +87,8 @@ export function createLeafletMap(opts: { container: HTMLElement | string; center
 }
 
 export class LeafletAdapter implements MapAdapter {
+  /** Leaflet has no single exportable canvas (tiles are <img>, overlays SVG/DOM). */
+  protected readonly snapshotSupported = false;
   private readonly map: L.Map;
   private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
   private readonly kindOf: Map<string, LayerKind>;
@@ -155,6 +164,11 @@ export class LeafletAdapter implements MapAdapter {
     if (data.features.length) group.addData(data);
   }
 
+  /** Not supported yet — see {@link LEAFLET_SNAPSHOT_UNSUPPORTED}. (async ⇒ rejects.) */
+  async snapshot(): Promise<Blob> {
+    throw new Error(LEAFLET_SNAPSHOT_UNSUPPORTED);
+  }
+
   setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void {
     if (style) this.tooltipStyle = style;
     if (text == null) {
@@ -182,7 +196,12 @@ export class LeafletAdapter implements MapAdapter {
     ensureLeafletToolbarStyle();
     const el = document.createElement("div");
     el.className = "leaflet-bar draw-adapter-toolbar draw-adapter-leaflet-toolbar";
-    populateToolbar(el, items, options);
+    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+      supported: this.snapshotSupported,
+      reason: LEAFLET_SNAPSHOT_UNSUPPORTED,
+      snapshot: () => this.snapshot(),
+    });
+    populateToolbar(el, snap ? [...items, snap] : items, options);
     // Leaflet panes climb to z-index ~700 and its controls to ~1000, so the
     // generic toolbar's z-index:3 (set by applyToolbarLayout) would hide the bar
     // UNDER the tiles. Lift it above everything Leaflet stacks.

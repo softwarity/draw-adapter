@@ -81,7 +81,7 @@ describe("LeafletAdapter", () => {
     const bar = a.addToolbar([
       { id: "circle", title: "Circle", label: "○", onClick: vi.fn() },
       { id: "polygon", title: "Polygon", label: "▱", onClick: vi.fn() },
-    ]);
+    ], { snapshot: "none" });
     expect(Number(bar.style.zIndex)).toBeGreaterThanOrEqual(1000);
     expect(bar.querySelectorAll("button")).toHaveLength(2);
     expect(bar.classList.contains("draw-adapter-leaflet-toolbar")).toBe(true);

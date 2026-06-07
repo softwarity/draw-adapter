@@ -38,6 +38,7 @@ import type {
   LayerKind,
   MapAdapter,
   PointerEvent,
+  SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
@@ -47,6 +48,7 @@ import { cursorForHit } from "./index.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
+import { snapshotToolbarItem } from "./snapshot.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** True when a hit is something the user grabs to drag (any handle/guide carrying
@@ -65,6 +67,8 @@ export function createOpenLayersMap(opts: { container: HTMLElement | string; cen
 }
 
 export class OpenLayersAdapter implements MapAdapter {
+  /** OpenLayers composites onto `<canvas>` layers → snapshot is supported. */
+  protected readonly snapshotSupported = true;
   private readonly map: OlMap;
   private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
   private readonly kindOf: Map<string, LayerKind>;
@@ -139,10 +143,64 @@ export class OpenLayersAdapter implements MapAdapter {
     if (this.toolbarEl) return this.toolbarEl;
     const el = document.createElement("div");
     el.className = "ol-control draw-adapter-toolbar";
-    populateToolbar(el, items, options);
+    const snap = snapshotToolbarItem(options?.snapshot ?? "native", {
+      supported: this.snapshotSupported,
+      snapshot: (o) => this.snapshot(o),
+    });
+    populateToolbar(el, snap ? [...items, snap] : items, options);
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  /**
+   * Compose every visible layer canvas onto one target canvas inside a
+   * `rendercomplete` frame (OpenLayers' official "export map" pattern). `scale`
+   * defaults to the device-pixel-ratio (OL already renders at that density);
+   * the target canvas is `getSize() × scale` and each layer's CSS transform is
+   * pre-multiplied by `scale`, so `low` stays at CSS resolution and `medium`/`high`
+   * supersample (best-effort).
+   */
+  snapshot(opts?: SnapshotOptions): Promise<Blob> {
+    const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const targetScale = opts?.scale ?? ratio;
+    const size = this.map.getSize();
+    if (!size) return Promise.reject(new Error("snapshot failed: map has no size"));
+    return new Promise<Blob>((resolve, reject) => {
+      this.map.once("rendercomplete", () => {
+        try {
+          const out = document.createElement("canvas");
+          out.width = Math.max(1, Math.round(size[0]! * targetScale));
+          out.height = Math.max(1, Math.round(size[1]! * targetScale));
+          const ctx = out.getContext("2d");
+          if (!ctx) return reject(new Error("snapshot failed"));
+          const viewport = this.map.getViewport();
+          const canvases = viewport.querySelectorAll<HTMLCanvasElement>(".ol-layer canvas, canvas.ol-layer");
+          canvases.forEach((canvas) => {
+            if (canvas.width === 0) return;
+            const parent = canvas.parentNode as HTMLElement | null;
+            const opacity = parent?.style.opacity ?? canvas.style.opacity;
+            ctx.globalAlpha = opacity === "" || opacity == null ? 1 : Number(opacity);
+            // The layer canvas (device px) carries a CSS `matrix(...)` mapping it to
+            // CSS px. Pre-multiply by `targetScale` to land in the target's pixels.
+            const m = /^matrix\(([^)]+)\)$/.exec(canvas.style.transform);
+            const t = m ? m[1]!.split(",").map(Number) : [1, 0, 0, 1, 0, 0];
+            ctx.setTransform(
+              targetScale * t[0]!, targetScale * t[1]!,
+              targetScale * t[2]!, targetScale * t[3]!,
+              targetScale * t[4]!, targetScale * t[5]!,
+            );
+            ctx.drawImage(canvas, 0, 0);
+          });
+          ctx.globalAlpha = 1;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          out.toBlob((b) => (b ? resolve(b) : reject(new Error("snapshot failed"))), "image/png");
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error("snapshot failed"));
+        }
+      });
+      this.map.renderSync();
+    });
   }
 
   getCenter(): LatLng {

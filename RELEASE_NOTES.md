@@ -1,6 +1,24 @@
 # Release Notes
 
-## 0.1.1
+## 0.2.0
+
+Adds **PNG map snapshots** (basemap + overlays) — additive, non-breaking.
+
+- `MapAdapter.snapshot(opts?: SnapshotOptions): Promise<Blob>` — always resolves to
+  an `image/png` Blob. `scale` (output pixel-ratio) defaults to
+  `window.devicePixelRatio`, i.e. captures "as on screen".
+- **MapLibre** and **OpenLayers** are supported. Capture happens *inside the engine's
+  render frame*, so the host map needs **no special flag** (no `preserveDrawingBuffer`).
+- **Leaflet is not supported yet**: `snapshot()` rejects (tiles are `<img>`, overlays
+  are SVG/DOM — no single exportable canvas). A DOM-snapshot approach is planned.
+- Toolbar: new `ToolbarOptions.snapshot` preset — `"none" | "low" | "native" | "medium"
+  | "high"` (default `"native"`). When set, `addToolbar` adds a camera button wired to
+  download a PNG; on Leaflet the button is shown but **disabled** (the reason is its
+  tooltip). Preset → output pixel-ratio via the exported `snapshotScale()`:
+  `low → 1`, `native → devicePixelRatio`, `medium → 2`, `high → 3`. `medium`/`high`
+  are supersampling — best-effort (a re-scale, not extra map detail).
+- New exports: `snapshotScale`, `downloadPng`, `SNAPSHOT_ICON_SVG`, and the
+  `SnapshotOptions` / `SnapshotLevel` types. `ToolbarItem` gains an optional `disabled`.
 
 ---
 

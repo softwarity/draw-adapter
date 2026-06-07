@@ -5,9 +5,10 @@
  */
 import type { FeatureCollection, Feature } from "geojson";
 
-import type { LatLng, MapAdapter, PointerEvent, SymbolSprites, ToolbarItem, TooltipStyle } from "./index.js";
+import type { LatLng, MapAdapter, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, TooltipStyle } from "./index.js";
 
 export class FakeAdapter implements MapAdapter {
+  snapshotSupported = true;
   overlays: Record<string, FeatureCollection> = {};
   tooltip: { text: string | null; at: LatLng; style?: TooltipStyle } | undefined;
   cursor = "";
@@ -21,6 +22,7 @@ export class FakeAdapter implements MapAdapter {
   ready(): Promise<void> { return Promise.resolve(); }
   registerSymbols(_: SymbolSprites): Promise<void> { return Promise.resolve(); }
   setOverlay(id: string, d: FeatureCollection): void { this.overlays[id] = d; }
+  snapshot(_?: SnapshotOptions): Promise<Blob> { return Promise.resolve(new Blob([], { type: "image/png" })); }
   setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void {
     this.tooltip = style ? { text, at, style } : { text, at };
   }

@@ -62,6 +62,7 @@ class FakeMlMap {
   unproject(_: [number, number]) { return { lat: 3, lng: 4 }; }
   getCenter() { return { lat: 10, lng: 20 }; }
   getBounds() { return { getEast: () => 30, getWest: () => 10, getNorth: () => 40, getSouth: () => 20 }; }
+  triggerRepaint = vi.fn();
   getCanvas() { return this.canvas; }
   getContainer() { return this.container; }
 }
@@ -167,6 +168,31 @@ describe("MapLibreAdapter — hit-testing", () => {
     map.queryResult = [{ layer: { id: "guide__dash" }, properties: { role: "lon" } }];
     map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
     expect(lastHit?.overlay).toBe("guide");
+  });
+});
+
+describe("MapLibreAdapter — snapshot toolbar (supported ⇒ enabled)", () => {
+  const snapBtn = (bar: HTMLElement) => bar.querySelector<HTMLButtonElement>('button[data-tool="snapshot"]');
+
+  it("adds an ENABLED snapshot button by default and triggers a repaint on click", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }]);
+    const btn = snapBtn(bar)!;
+    expect(btn).not.toBeNull();
+    expect(btn.disabled).toBe(false);
+    expect(btn.title).toBe("Capture map");
+    btn.click(); // snapshot() listens for `render`, then triggers a repaint
+    expect(map.triggerRepaint).toHaveBeenCalled();
+    adapter.destroy();
+  });
+
+  it("omits the snapshot button when snapshot: 'none'", async () => {
+    const { adapter } = build();
+    await adapter.ready();
+    const bar = adapter.addToolbar([{ id: "circle", title: "Circle", label: "○", onClick: vi.fn() }], { snapshot: "none" });
+    expect(snapBtn(bar)).toBeNull();
+    adapter.destroy();
   });
 });
 

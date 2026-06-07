@@ -74,12 +74,16 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
     button.setAttribute("aria-label", item.title);
     if (item.svg) button.innerHTML = item.svg;
     else button.textContent = item.label;
-    button.addEventListener("click", (e) => {
-      e.preventDefault();
-      item.onClick();
-      if (item.toggle) setActive(button);
-      else el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
-    });
+    if (item.disabled) {
+      button.disabled = true; // styled via `.draw-adapter-toolbar button:disabled`; title carries the why
+    } else {
+      button.addEventListener("click", (e) => {
+        e.preventDefault();
+        item.onClick();
+        if (item.toggle) setActive(button);
+        else el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
+      });
+    }
     el.appendChild(button);
   }
 }

@@ -99,6 +99,23 @@ export interface ToolbarOptions {
   tools?: string[];
   /** Include the "clear all" button (default true). */
   clear?: boolean;
+  /**
+   * Add a "capture map" (PNG) button, sized to the chosen preset (default
+   * `"native"`). `"none"` ⇒ no button. The preset picks an output pixel-ratio
+   * (see {@link SnapshotLevel}). On the Leaflet adapter the button is shown but
+   * DISABLED (snapshot is not supported there yet).
+   */
+  snapshot?: SnapshotLevel;
+}
+
+/** Snapshot quality preset → output pixel-ratio (see `snapshotScale`). */
+export type SnapshotLevel = "none" | "native" | "low" | "medium" | "high";
+
+export interface SnapshotOptions {
+  /** Pixel-ratio of the output (device px per CSS px). Default =
+   *  `window.devicePixelRatio` (render "as on screen"). >1 = supersampling
+   *  (re-render at higher DPI, best-effort). */
+  scale?: number;
 }
 
 export interface ToolbarItem {
@@ -107,6 +124,8 @@ export interface ToolbarItem {
   label: string;
   svg?: string;
   toggle?: boolean;
+  /** Render the button disabled (no click wiring); used for the Leaflet snapshot button. */
+  disabled?: boolean;
   onClick: () => void;
 }
 
@@ -136,6 +155,16 @@ export interface MapAdapter {
 
   /** Push a FeatureCollection (already styled via props) into overlay `id`. */
   setOverlay(id: string, data: FeatureCollection): void;
+
+  /**
+   * Capture the current map (basemap + overlays) as a PNG {@link Blob}. Captures
+   * inside the engine's render frame, so the host map needs no special flag (no
+   * `preserveDrawingBuffer`). Always resolves to an `image/png` Blob.
+   *
+   * Not supported on the Leaflet adapter yet (it rejects): tiles are `<img>` and
+   * overlays are SVG/DOM, with no single exportable canvas.
+   */
+  snapshot(opts?: SnapshotOptions): Promise<Blob>;
 
   /** Floating tooltip at `at` (lon/lat); hidden when `text` is null. Optional
    *  generic style supplied by the consumer (the lib has no domain style). */
@@ -197,5 +226,6 @@ export {
 } from "./symbols.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
+export { snapshotScale, downloadPng, SNAPSHOT_ICON_SVG } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";
