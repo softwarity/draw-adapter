@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.5
+
+---
+
 ## 0.2.4
 
 - `snapshot()` gains `hideOverlays?: string[]` — overlay ids to hide **only for the
