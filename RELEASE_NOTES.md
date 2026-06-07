@@ -2,6 +2,14 @@
 
 ## 0.2.4
 
+- `snapshot()` gains `hideOverlays?: string[]` — overlay ids to hide **only for the
+  capture** (e.g. editing handles/guides), restored after, so the snapshot shows the
+  clean drawing without the construction chrome. Also on the toolbar config
+  (`snapshot: { hideOverlays: [...] }`).
+- Removed the `basemap` snapshot option: hiding only the tiles can't be done cleanly in
+  a generic, domain-free way (the host map's basemap vs. domain layers like FIR are
+  indistinguishable, and the GL canvas isn't guaranteed transparent).
+
 ---
 
 ## 0.2.3
@@ -14,9 +22,6 @@ Adds a **curtain shutter effect** as capture feedback, plus clearer icons.
   clipboard delivery. Opt out with `snapshot: { shutter: false }` (default `true`).
 - Honours `prefers-reduced-motion` (degrades to a single quick dim); the overlay is
   `pointer-events:none` and self-removes. The flash plays **only on success**.
-- `snapshot()` gains `basemap` (default `true`): set `false` to capture only the drawing
-  overlays on a transparent background (the basemap layers are hidden during capture and
-  restored after). Also on the toolbar config (`snapshot: { basemap: false }`).
 - The snapshot button icon is a camera; the two deliveries differ only by the **lens** —
   filled for download (`SNAPSHOT_ICON_SVG`), an empty ring for clipboard
   (`SNAPSHOT_CLIPBOARD_ICON`) — and the hover preview swaps between them.

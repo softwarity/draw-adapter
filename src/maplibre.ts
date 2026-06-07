@@ -233,9 +233,9 @@ export class MapLibreAdapter implements MapAdapter {
   private capture(opts?: SnapshotOptions): Promise<Blob> {
     const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     const targetScale = opts?.scale ?? ratio;
-    // `basemap: false` ⇒ hide every layer that isn't ours so the GL canvas keeps only
-    // our overlays on a transparent background; restored once the blob is read.
-    const restore = opts?.basemap === false ? this.hideBasemap() : undefined;
+    // Hide the requested overlays (editing chrome) just for this frame; restored once
+    // the blob has been read off the GL canvas.
+    const restore = opts?.hideOverlays?.length ? this.hideOverlays(opts.hideOverlays) : undefined;
     return new Promise<Blob>((resolve, reject) => {
       this.map.once("render", () => {
         const src = this.map.getCanvas();
@@ -259,16 +259,16 @@ export class MapLibreAdapter implements MapAdapter {
     });
   }
 
-  /** Hide every style layer that isn't one of ours (basemap, background, …); returns a
-   *  function that restores their previous `visibility`. Used for basemap-less snapshots. */
-  private hideBasemap(): () => void {
-    const ours = new Set(this.builtLayers);
+  /** Hide every built layer belonging to the given overlay ids; returns a function that
+   *  restores their previous `visibility`. Used to drop editing chrome from a snapshot. */
+  private hideOverlays(overlayIds: string[]): () => void {
+    const wanted = new Set(overlayIds);
     const saved: Array<[string, string | undefined]> = [];
-    for (const layer of this.map.getStyle().layers ?? []) {
-      if (ours.has(layer.id)) continue;
-      const prev = this.map.getLayoutProperty(layer.id, "visibility") as string | undefined;
-      this.map.setLayoutProperty(layer.id, "visibility", "none");
-      saved.push([layer.id, prev]);
+    for (const [layerId, overlay] of this.renderedToOverlay) {
+      if (!wanted.has(overlay) || !this.map.getLayer(layerId)) continue;
+      const prev = this.map.getLayoutProperty(layerId, "visibility") as string | undefined;
+      this.map.setLayoutProperty(layerId, "visibility", "none");
+      saved.push([layerId, prev]);
     }
     return () => {
       for (const [id, prev] of saved) {

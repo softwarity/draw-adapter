@@ -194,16 +194,16 @@ const blob = await adapter.snapshot();                          // just the Blob
 await adapter.snapshot({ scale: 3 });                           // supersample (best-effort)
 await adapter.snapshot({ target: "download", filename: "x.png" }); // capture + download the file
 await adapter.snapshot({ target: "clipboard" });               // capture + copy to clipboard
-await adapter.snapshot({ basemap: false });                    // overlays only, transparent background
+await adapter.snapshot({ hideOverlays: ["handles", "edge"] }); // clean drawing, no editing chrome
 ```
 
 - Always resolves to an `image/png` Blob. `scale` is the output **pixel-ratio**
   (device px per CSS px); it defaults to `window.devicePixelRatio`.
 - `target` (`"blob"` default · `"download"` · `"clipboard"`) is what `snapshot()`
   does with the PNG — the Blob is returned in every case.
-- `basemap` (default `true`): set `false` to capture **only the drawing overlays** on
-  a transparent background — the basemap layers are hidden during capture and restored
-  after. (Toolbar: `snapshot: { basemap: false }`.)
+- `hideOverlays` lists overlay ids to hide **just for this capture** (e.g. editing
+  handles/guides) and restore after — so the snapshot shows the clean drawing without
+  the construction chrome. (Toolbar: `snapshot: { hideOverlays: [...] }`.)
 - Capture happens **inside the engine's render frame**, so the host map needs **no
   special flag** (in particular, no `preserveDrawingBuffer` on the MapLibre/WebGL map).
 - **Leaflet is not supported yet** — `snapshot()` rejects (tiles are `<img>` and

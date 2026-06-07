@@ -107,10 +107,10 @@ export interface ToolbarOptions {
    * The button always offers **both** deliveries: `onClick` (default `"download"`)
    * is wired to a plain click, the **other** one to a modifier-click (Ctrl on
    * PC/Linux, ⌘ on Mac). `shutter` (default `true`) plays the capture effect;
-   * `basemap: false` captures only the drawing overlays (transparent background).
+   * `hideOverlays` lists overlay ids to hide for the capture (editing handles/guides).
    * On the Leaflet adapter the button is shown but DISABLED.
    */
-  snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; basemap?: boolean };
+  snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; hideOverlays?: string[] };
 }
 
 /** Snapshot output size: a pixel-ratio preset (see `snapshotScale`). */
@@ -132,9 +132,9 @@ export interface SnapshotOptions {
   target?: SnapshotTarget;
   /** Filename for `target: "download"`. Default `"map.png"`. */
   filename?: string;
-  /** Include the host basemap (default `true`). `false` ⇒ capture only the drawing
-   *  overlays on a transparent background (the basemap layers are hidden during capture). */
-  basemap?: boolean;
+  /** Overlay ids to hide **only for this capture** (e.g. editing handles/guides), then
+   *  restore — so the snapshot shows the clean drawing without the construction chrome. */
+  hideOverlays?: string[];
 }
 
 export interface ToolbarItem {

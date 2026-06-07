@@ -98,14 +98,14 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     expect(flash2).not.toHaveBeenCalled();
   });
 
-  it("passes basemap:false through to snapshot() (and omits it by default)", () => {
+  it("passes hideOverlays through to snapshot() (and omits it when empty/absent)", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
-    snapshotToolbarItem({ quality: "native", basemap: false }, { supported: true, snapshot })!.onClick();
-    expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download", basemap: false });
+    snapshotToolbarItem({ quality: "native", hideOverlays: ["handles", "edge"] }, { supported: true, snapshot })!.onClick();
+    expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download", hideOverlays: ["handles", "edge"] });
 
     const snapshot2 = vi.fn().mockResolvedValue(new Blob());
-    snapshotToolbarItem({ quality: "native" }, { supported: true, snapshot: snapshot2 })!.onClick();
-    expect(snapshot2).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download" }); // no basemap key
+    snapshotToolbarItem({ quality: "native", hideOverlays: [] }, { supported: true, snapshot: snapshot2 })!.onClick();
+    expect(snapshot2).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "download" }); // empty ⇒ omitted
   });
 
   it("shutter:false suppresses the flash even on a successful capture", async () => {

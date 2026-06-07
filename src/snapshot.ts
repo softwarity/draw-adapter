@@ -165,7 +165,7 @@ function deliveryTitle(active: SnapshotDelivery, other: SnapshotDelivery): strin
  * Called by each adapter's `addToolbar` (it owns `snapshot`/`snapshotSupported`).
  */
 export function snapshotToolbarItem(
-  config: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; basemap?: boolean } | undefined,
+  config: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; hideOverlays?: string[] } | undefined,
   cap: { supported: boolean; reason?: string; snapshot: (opts?: SnapshotOptions) => Promise<Blob>; flash?: () => void },
 ): ToolbarItem | null {
   if (config === null || config === false || config === "none") return null; // undefined ⇒ defaults
@@ -174,7 +174,7 @@ export function snapshotToolbarItem(
   const primary: SnapshotDelivery = cfg.onClick ?? "download";
   const secondary: SnapshotDelivery = primary === "download" ? "clipboard" : "download";
   const shutter = cfg.shutter !== false; // default ON
-  const basemap = cfg.basemap; // undefined ⇒ adapter default (include)
+  const hideOverlays = cfg.hideOverlays;
   return {
     id: "snapshot",
     svg: DELIVERY_ICON[primary],
@@ -186,7 +186,7 @@ export function snapshotToolbarItem(
       ? (e?: MouseEvent) => {
           const target: SnapshotDelivery = e?.ctrlKey || e?.metaKey ? secondary : primary;
           const opts: SnapshotOptions = { scale, target };
-          if (basemap === false) opts.basemap = false;
+          if (hideOverlays?.length) opts.hideOverlays = hideOverlays;
           // Flash only on success → it doubles as the "captured / copied" confirmation.
           cap.snapshot(opts).then(() => { if (shutter) cap.flash?.(); }).catch(() => { /* failed */ });
         }

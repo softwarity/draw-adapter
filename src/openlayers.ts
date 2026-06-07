@@ -172,9 +172,9 @@ export class OpenLayersAdapter implements MapAdapter {
     const targetScale = opts?.scale ?? ratio;
     const size = this.map.getSize();
     if (!size) return Promise.reject(new Error("snapshot failed: map has no size"));
-    // `basemap: false` ⇒ hide non-adapter layers so only our overlays render (and thus
-    // get composited below); restored once the blob is read.
-    const restore = opts?.basemap === false ? this.hideBasemap() : undefined;
+    // Hide the requested overlays (editing chrome) so they aren't composited; restored
+    // after (the compositing into the target canvas is synchronous).
+    const restore = opts?.hideOverlays?.length ? this.hideOverlays(opts.hideOverlays) : undefined;
     return new Promise<Blob>((resolve, reject) => {
       const settle = (run: () => void): void => { try { run(); } finally { restore?.(); } };
       this.map.once("rendercomplete", () => settle(() => {
@@ -213,13 +213,13 @@ export class OpenLayersAdapter implements MapAdapter {
     });
   }
 
-  /** Hide every map layer that isn't one of our overlay layers (basemap, …); returns a
-   *  function that restores their visibility. Used for basemap-less snapshots. */
-  private hideBasemap(): () => void {
-    const ours: Set<unknown> = new Set(this.layers.values());
-    const hidden: BaseLayer[] = [];
-    for (const layer of this.map.getLayers().getArray()) {
-      if (!ours.has(layer) && layer.getVisible()) {
+  /** Hide the given overlay ids' layers; returns a function that restores their
+   *  visibility. Used to drop editing chrome from a snapshot. */
+  private hideOverlays(overlayIds: string[]): () => void {
+    const hidden: VectorLayer[] = [];
+    for (const id of overlayIds) {
+      const layer = this.layers.get(id);
+      if (layer && layer.getVisible()) {
         layer.setVisible(false);
         hidden.push(layer);
       }
