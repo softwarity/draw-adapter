@@ -144,13 +144,14 @@ function modifierLabel(): string {
   return /mac/i.test(plat) ? "⌘" : "Ctrl";
 }
 
-const DELIVERY_VERB: Record<SnapshotDelivery, string> = { download: "Download map", clipboard: "Copy map to clipboard" };
-const DELIVERY_SHORT: Record<SnapshotDelivery, string> = { download: "download", clipboard: "copy" };
 const DELIVERY_ICON: Record<SnapshotDelivery, string> = { download: SNAPSHOT_ICON_SVG, clipboard: SNAPSHOT_CLIPBOARD_ICON };
+const DELIVERY_NOUN: Record<SnapshotDelivery, string> = { download: "file", clipboard: "clipboard" };
 
-/** Tooltip for "`active` on a plain click, `other` on a modifier-click". */
-function deliveryTitle(active: SnapshotDelivery, other: SnapshotDelivery): string {
-  return `${DELIVERY_VERB[active]} — ${modifierLabel()}-click to ${DELIVERY_SHORT[other]}`;
+/** Fixed tooltip describing BOTH deliveries; it does NOT change while a modifier is
+ *  held — only the `onClick` mode flips which is primary:
+ *  "Snapshot: click to <primary> — <mod>+click to <secondary>". */
+function deliveryTitle(primary: SnapshotDelivery, secondary: SnapshotDelivery): string {
+  return `Snapshot: click to ${DELIVERY_NOUN[primary]} — ${modifierLabel()}+click to ${DELIVERY_NOUN[secondary]}`;
 }
 
 /**
@@ -191,23 +192,19 @@ export function snapshotToolbarItem(
           cap.snapshot(opts).then(() => { if (shutter) cap.flash?.(); }).catch(() => { /* failed */ });
         }
       : () => { /* disabled: no-op */ },
-    // While the button is hovered, mirror the held modifier in the icon + tooltip so
-    // the user sees which delivery a click will trigger. Key listeners live ONLY for
-    // the duration of the hover (added on enter, removed on leave) — no global churn.
-    ...(cap.supported ? { onRender: (btn: HTMLButtonElement) => bindModifierPreview(btn, primary, secondary) } : {}),
+    // While hovered, the ICON previews which delivery a click will trigger (it swaps to
+    // the alternate while a modifier is held). The TOOLTIP stays fixed — it already
+    // spells out both actions. Key listeners live only for the hover (self-cleaning).
+    ...(cap.supported ? { onRender: (btn: HTMLButtonElement) => bindIconPreview(btn, primary, secondary) } : {}),
   };
 }
 
-/** Swap a snapshot button's icon/tooltip to the alternate delivery while a modifier
- *  key is held over it. Listeners are scoped to the hover (self-cleaning). */
-function bindModifierPreview(btn: HTMLButtonElement, primary: SnapshotDelivery, secondary: SnapshotDelivery): void {
+/** Swap a snapshot button's icon to the alternate delivery while a modifier key is held
+ *  over it (the tooltip is fixed). Listeners are scoped to the hover (self-cleaning). */
+function bindIconPreview(btn: HTMLButtonElement, primary: SnapshotDelivery, secondary: SnapshotDelivery): void {
   if (typeof window === "undefined") return;
   let mod = false;
-  const paint = (m: boolean): void => {
-    const [active, other] = m ? [secondary, primary] : [primary, secondary];
-    btn.innerHTML = DELIVERY_ICON[active];
-    btn.title = deliveryTitle(active, other);
-  };
+  const paint = (m: boolean): void => { btn.innerHTML = DELIVERY_ICON[m ? secondary : primary]; };
   const onKey = (e: KeyboardEvent): void => {
     const m = e.ctrlKey || e.metaKey;
     if (m !== mod) { mod = m; paint(m); }

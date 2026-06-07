@@ -239,10 +239,11 @@ The `snapshot` option:
 | `medium` / `high` | `2` / `3` | supersample (best-effort) |
 
 `onClick` (`"download"` | `"clipboard"`) just picks which delivery is on the plain
-click; the other is always one modifier-click away. The button's tooltip spells both
-out (e.g. *"Download map — ⌘-click to copy"*), and **while you hover it, holding the
-modifier live-swaps the icon and tooltip** to the alternate delivery — so you see
-which action a click will trigger. (The key listeners exist only for the hover's
+click; the other is always one modifier-click away. The button's tooltip is **fixed
+per mode** and spells both out — e.g. *"Snapshot: click to file — ⌘+click to
+clipboard"* (or, in clipboard mode, *"…click to clipboard — ⌘+click to file"*). While
+you hover, holding the modifier **live-swaps the icon** (not the tooltip) to preview
+which delivery a click will trigger. (The key listeners exist only for the hover's
 duration, so there is no global event churn.)
 
 A successful capture plays a brief **curtain shutter** over the map — two translucent

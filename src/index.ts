@@ -149,7 +149,7 @@ export interface ToolbarItem {
    *  (e.g. the snapshot button uses Ctrl/⌘-click for its alternate delivery). */
   onClick: (e?: MouseEvent) => void;
   /** Called once with the created `<button>` for live DOM wiring (e.g. the snapshot
-   *  button swaps its icon/tooltip while a modifier key is held over it). */
+   *  button swaps its icon while a modifier key is held over it). */
   onRender?: (button: HTMLButtonElement) => void;
 }
 

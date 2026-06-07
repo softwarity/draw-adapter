@@ -181,7 +181,7 @@ describe("MapLibreAdapter — snapshot toolbar (supported ⇒ enabled)", () => {
     const btn = snapBtn(bar)!;
     expect(btn).not.toBeNull();
     expect(btn.disabled).toBe(false);
-    expect(btn.title).toContain("Download map"); // default onClick = download (+ modifier hint)
+    expect(btn.title).toMatch(/^Snapshot: click to file/); // default onClick = download; fixed tooltip
     btn.click(); // snapshot() listens for `render`, then triggers a repaint
     expect(map.triggerRepaint).toHaveBeenCalled();
     adapter.destroy();

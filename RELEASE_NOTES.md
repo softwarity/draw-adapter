@@ -2,6 +2,8 @@
 
 ## 0.2.5
 
+- Snapshot tooltip is now fixed per mode (e.g. *"Snapshot: click to file — ⌘+click to clipboard"*).
+
 ---
 
 ## 0.2.4
@@ -43,10 +45,10 @@ Tidies the snapshot **toolbar option** — single object form, clearer naming.
 - Renamed the size field `state` → **`quality`**, and the type `SnapshotLevel` →
   **`SnapshotQuality`** (`"native" | "low" | "medium" | "high"` — `"none"` moved out
   to the option's union, where it belongs).
-- The toolbar button now **live-previews the delivery while hovered**: holding the
-  modifier key swaps its icon and tooltip to the alternate action. Key listeners are
-  scoped to the hover only (no global churn). New `ToolbarItem.onRender` hook +
-  exported `SNAPSHOT_CLIPBOARD_ICON`.
+- The toolbar button **live-previews the delivery while hovered**: holding the modifier
+  key swaps its icon to the alternate action (the tooltip is fixed — see 0.2.5). Key
+  listeners are scoped to the hover only (no global churn). New `ToolbarItem.onRender`
+  hook + exported `SNAPSHOT_CLIPBOARD_ICON`.
 
 ---
 

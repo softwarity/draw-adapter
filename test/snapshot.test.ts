@@ -38,7 +38,7 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     const snapshot = vi.fn().mockResolvedValue(new Blob());
     const item = snapshotToolbarItem(undefined, cap(true, snapshot))!;
     expect(item).not.toBeNull();
-    expect(item.title).toContain("Download map");
+    expect(item.title).toMatch(/^Snapshot: click to file/);
     item.onClick();
     expect(snapshot).toHaveBeenCalledWith({ scale: snapshotScale("native"), target: "download" });
   });
@@ -49,8 +49,8 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     expect(item.id).toBe("snapshot");
     expect(item.svg).toBe(SNAPSHOT_ICON_SVG);
     expect(item.disabled).toBeUndefined();
-    expect(item.title).toContain("Download map");
-    expect(item.title).toContain("click to copy");
+    expect(item.title).toMatch(/^Snapshot: click to file/); // primary = download
+    expect(item.title).toContain("+click to clipboard");    // secondary spelled out, fixed
     item.onClick(); // no event ⇒ primary
     expect(snapshot).toHaveBeenCalledWith({ scale: 3, target: "download" });
   });
@@ -69,8 +69,8 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
   it("onClick: 'clipboard' swaps the roles (plain = copy, modifier = download)", () => {
     const snapshot = vi.fn().mockResolvedValue(new Blob());
     const item = snapshotToolbarItem({ quality: "native", onClick: "clipboard" }, cap(true, snapshot))!;
-    expect(item.title).toContain("Copy map to clipboard");
-    expect(item.title).toContain("click to download");
+    expect(item.title).toMatch(/^Snapshot: click to clipboard/); // primary = clipboard
+    expect(item.title).toContain("+click to file");              // secondary spelled out, fixed
     item.onClick();
     expect(snapshot).toHaveBeenLastCalledWith({ scale: snapshotScale("native"), target: "clipboard" });
     item.onClick({ metaKey: true } as MouseEvent);
@@ -115,26 +115,27 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     expect(flash).not.toHaveBeenCalled();
   });
 
-  it("hovering + holding a modifier swaps the icon/tooltip; leaving stops listening", () => {
+  it("hovering + holding a modifier swaps the ICON only; the tooltip stays fixed", () => {
     const item = snapshotToolbarItem({ quality: "native" }, cap(true))!; // primary download
     const btn = document.createElement("button");
+    btn.title = item.title; // populateToolbar would set this; it must never change after
     item.onRender!(btn);
     // Both icons are the camera; the lens fill is the difference (download = filled,
     // clipboard = empty ring). Read the <circle> fill straight off the DOM.
     const isDownload = () => btn.querySelector("circle")?.getAttribute("fill") === "currentColor";
     const isClipboard = () => !btn.querySelector("circle")?.getAttribute("fill");
+    const fixedTitle = item.title;
 
-    btn.dispatchEvent(new MouseEvent("mouseenter")); // plain hover ⇒ primary (download)
+    btn.dispatchEvent(new MouseEvent("mouseenter")); // plain hover ⇒ primary (download) icon
     expect(isDownload()).toBe(true);
-    expect(btn.title).toContain("Download map");
 
-    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true })); // ⇒ alternate (clipboard)
+    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true })); // icon ⇒ alternate
     expect(isClipboard()).toBe(true);
-    expect(btn.title).toContain("Copy map to clipboard");
+    expect(btn.title).toBe(fixedTitle); // tooltip unchanged
 
-    window.dispatchEvent(new KeyboardEvent("keyup")); // released ⇒ back to primary
+    window.dispatchEvent(new KeyboardEvent("keyup")); // released ⇒ primary icon again
     expect(isDownload()).toBe(true);
-    expect(btn.title).toContain("Download map");
+    expect(btn.title).toBe(fixedTitle);
 
     btn.dispatchEvent(new MouseEvent("mouseleave")); // unhook key listeners
     window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));

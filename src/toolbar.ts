@@ -89,6 +89,6 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
       });
     }
     el.appendChild(button);
-    item.onRender?.(button); // live DOM wiring (e.g. snapshot icon/tooltip on modifier key)
+    item.onRender?.(button); // live DOM wiring (e.g. snapshot icon swap on modifier key)
   }
 }
