@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.3
+
+---
+
 ## 0.2.2
 
 Tidies the snapshot **toolbar option** — single object form, clearer naming.
