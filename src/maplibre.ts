@@ -171,6 +171,35 @@ export class MapLibreAdapter implements MapAdapter {
     this.map.on("styleimagemissing", this.imgMissing);
   }
 
+  /** Register the 9-slice white box (black border) used to FRAME call-out labels on MapLibre.
+   *  OpenLayers/Leaflet draw the label background+border natively (`backgroundFill/Stroke`);
+   *  MapLibre has no text box, so we fit this stretchable image behind any label carrying a
+   *  `textBackground` via `icon-text-fit`. Idempotent (drawn once on a 2× canvas). */
+  private ensureCalloutBox(): void {
+    if (typeof document === "undefined" || this.map.hasImage("__callout-box")) return;
+    const px = 2, S = 16 * px, r = 3 * px, lw = 1.4 * px, b = lw / 2;
+    const cnv = document.createElement("canvas");
+    cnv.width = S;
+    cnv.height = S;
+    const ctx = cnv.getContext("2d");
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.moveTo(b + r, b);
+    ctx.arcTo(S - b, b, S - b, S - b, r);
+    ctx.arcTo(S - b, S - b, b, S - b, r);
+    ctx.arcTo(b, S - b, b, b, r);
+    ctx.arcTo(b, b, S - b, b, r);
+    ctx.closePath();
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = "#1f2328";
+    ctx.stroke();
+    const img = ctx.getImageData(0, 0, S, S);
+    const c = 5 * px, d = 11 * px; // 9-slice: keep the rounded corners, stretch the middle
+    this.map.addImage("__callout-box", img as unknown as ImageData, { content: [c, c, d, d], stretchX: [[c, d]], stretchY: [[c, d]], pixelRatio: px } as never);
+  }
+
   setOverlay(id: string, data: FeatureCollection): void {
     (this.map.getSource(id) as { setData?: (d: FeatureCollection) => void } | undefined)?.setData?.(data);
     // `line-dasharray` is NOT data-driven, so push the per-feature dash pattern
@@ -514,11 +543,19 @@ export class MapLibreAdapter implements MapAdapter {
           this.track(spec.id, spec.id);
           break;
         case "text":
+          this.ensureCalloutBox();
           this.map.addLayer({
             id: spec.id,
             type: "symbol",
             source: spec.id,
             layout: {
+              // Frame labels that carry a `textBackground` with the white/black box (stretched
+              // to fit the text) — the MapLibre equivalent of OL/Leaflet's native label box.
+              "icon-image": ["case", ["to-boolean", ["coalesce", ["get", "textBackground"], false]], "__callout-box", ""] as never,
+              "icon-text-fit": "both",
+              "icon-text-fit-padding": [3, 6, 3, 6],
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
               "text-field": ["coalesce", ["get", "text"], ""],
               "text-size": ["coalesce", ["get", "textSize"], 13],
               "text-anchor": "center",

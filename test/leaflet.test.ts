@@ -130,6 +130,35 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  it("emits a dblclick from two quick mousedowns on a hovered hit (manual detection — handle markers are recreated, so no native dblclick fires)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
+    await a.ready();
+    const dbls: Array<string | undefined> = [];
+    a.onPointer((e) => { if (e.type === "dblclick") dbls.push(e.hit?.props["role"] as string | undefined); });
+    a.setOverlay("handles", {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [11, 11] }, properties: { role: "v1", icon: "data:image/svg+xml,%3Csvg/%3E", radius: 0 } }],
+    });
+    const markerEl = el.querySelector(".leaflet-dap-handles-pane .leaflet-marker-icon") as HTMLElement;
+    markerEl.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); // → this.hovered = the handle
+    const at: MouseEventInit = { bubbles: true, cancelable: true, clientX: 100, clientY: 100 };
+    el.dispatchEvent(new MouseEvent("mousedown", at)); // 1st press
+    el.dispatchEvent(new MouseEvent("mousedown", at)); // 2nd press, same spot + immediate → double-click
+    expect(dbls).toEqual(["v1"]); // exactly one dblclick, carrying the hovered handle
+    a.destroy();
+  });
+
+  it("does NOT treat two FAR-APART mousedowns as a double-click", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
+    await a.ready();
+    let dbls = 0;
+    a.onPointer((e) => { if (e.type === "dblclick") dbls++; });
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
+    expect(dbls).toBe(0); // different positions → two single presses, not a dbl
+    a.destroy();
+  });
+
   it("shows the move/grab cursor over a handle (panes inherit the container cursor)", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
     await a.ready();
@@ -182,7 +211,7 @@ describe("LeafletAdapter", () => {
     expect(labelEl).not.toBeNull();
     expect(labelEl.innerHTML).toContain("max-width:180px");
     expect(labelEl.innerHTML).toContain("width:max-content");
-    expect(labelEl.innerHTML).toContain("white-space:normal");
+    expect(labelEl.innerHTML).toContain("white-space:pre-line"); // honour the content's \n line breaks
     expect(labelEl.textContent).toBe("EMBD TS FCST");
     a.destroy();
   });

@@ -104,6 +104,9 @@ export class LeafletAdapter implements MapAdapter {
   private cb: ((ev: PointerEvent) => void) | undefined;
   private domDown: ((e: Event) => void) | undefined;
   private domUp: (() => void) | undefined;
+  private lastDownT = 0;
+  private lastDownX = 0;
+  private lastDownY = 0;
   private viewHandler: (() => void) | undefined;
 
   constructor(opts: { map: L.Map } & AdapterOptions) {
@@ -264,9 +267,23 @@ export class LeafletAdapter implements MapAdapter {
     // starts a pan (mirrors the OpenLayers DragPan capture fix). Plain presses are
     // left alone so Leaflet still emits its click.
     const onDown = (e: MouseEvent): void => {
-      this.dragging = true;
       const ll = this.map.mouseEventToLatLng(e);
       const hit = this.hovered;
+      // MANUAL double-click detection. Leaflet renders handles as DOM markers that are recreated
+      // on every re-render, so the two clicks of a double-click land on DIFFERENT nodes and the
+      // browser never fires a native "dblclick" (unlike OL's canvas, where it does). The
+      // capture-phase mousedown DOES fire reliably, so detect the dbl from press timing + position.
+      const now = Date.now();
+      if (now - this.lastDownT < 400 && Math.abs(e.clientX - this.lastDownX) < 6 && Math.abs(e.clientY - this.lastDownY) < 6) {
+        this.lastDownT = 0; // consume (so a triple-click isn't two dbls)
+        if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
+        cb({ type: "dblclick", lngLat: { lat: ll.lat, lon: ll.lng }, ...(hit ? { hit } : {}) });
+        return;
+      }
+      this.lastDownT = now;
+      this.lastDownX = e.clientX;
+      this.lastDownY = e.clientY;
+      this.dragging = true;
       if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
       cb({ type: "down", lngLat: { lat: ll.lat, lon: ll.lng }, ...(hit ? { hit } : {}) });
     };
@@ -293,10 +310,8 @@ export class LeafletAdapter implements MapAdapter {
       const hit = this.hovered;
       cb({ type: "click", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...(hit ? { hit } : {}) });
     });
-    this.map.on("dblclick", (evt: L.LeafletMouseEvent) => {
-      const hit = this.hovered;
-      cb({ type: "dblclick", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...(hit ? { hit } : {}) });
-    });
+    // (dblclick is handled by the native capture listener above — Leaflet's own map dblclick
+    // is suppressed on draggable hits by our mousedown stopPropagation.)
   }
 
   destroy(): void {
@@ -409,7 +424,9 @@ export class LeafletAdapter implements MapAdapter {
     } else {
       const sprite = str(p["symbol"]);
       const svg = sprite ? this.sprites[sprite] : undefined;
-      if (svg) inner = colorizeSprite(svg, str(p["symbolColor"]) || this.opts.defaultSymbolColor);
+      // Force the sprite SVG to FILL (and thus centre in) the px-sized div — its intrinsic
+      // width/height would otherwise sit top-left and ignore `size`. CSS width wins over the attr.
+      if (svg) inner = colorizeSprite(svg, str(p["symbolColor"]) || this.opts.defaultSymbolColor).replace("<svg", '<svg preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block"');
     }
     if (!inner) return undefined;
     const html = `<div style="width:${px}px;height:${px}px;transform:rotate(${rotateDeg}deg);transform-origin:center">${inner}</div>`;
@@ -426,11 +443,11 @@ export class LeafletAdapter implements MapAdapter {
     const rot = num(p["rotation"], 0);
     // Let CSS do the wrapping (this is HTML — no canvas maths needed). The trick is
     // `width:max-content` + `max-width`: the box sizes to its longest line but is
-    // capped at `maxWidth`px, so `white-space:normal` wraps exactly at that width.
-    // (Without `max-content` the 0×0 marker would force a wrap at every word.)
+    // capped at `maxWidth`px. `pre-line` HONOURS the content's `\n` line breaks AND still
+    // wraps at that width. (Without `max-content` the 0×0 marker would force a wrap at every word.)
     const css = [
       "display:inline-block",
-      "white-space:normal",
+      "white-space:pre-line",
       "width:max-content",
       maxWidth > 0 ? `max-width:${maxWidth}px` : "",
       "text-align:center",
@@ -440,7 +457,7 @@ export class LeafletAdapter implements MapAdapter {
       `text-shadow:-1px -1px 0 ${halo},1px -1px 0 ${halo},-1px 1px 0 ${halo},1px 1px 0 ${halo}`,
       bg ? `background:${rgba(bg, 1)}` : "",
       border ? `border:1px solid ${border}` : "",
-      bg || border ? "padding:2px 4px;border-radius:3px" : "",
+      bg || border ? "padding:6px 8px;border-radius:3px" : "",
       // Centre the label on its anchor (like MapLibre's centred text-anchor).
       `transform:translate(-50%,-50%)${rot ? ` rotate(${rot}deg)` : ""}`,
       "transform-origin:center",

@@ -87,6 +87,7 @@ export class OpenLayersAdapter implements MapAdapter {
   private olKeys: EventsKey[] = [];
   private domPointerUp: ((e: globalThis.PointerEvent) => void) | undefined;
   private viewportPointerDown: ((e: globalThis.PointerEvent) => void) | undefined;
+  private viewportDblclick: ((e: globalThis.MouseEvent) => void) | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
   private dragging = false;
@@ -318,6 +319,18 @@ export class OpenLayersAdapter implements MapAdapter {
     };
     this.map.getViewport().addEventListener("pointerdown", this.viewportPointerDown, true);
     document.addEventListener("pointerup", this.domPointerUp);
+    // OL's synthesized "dblclick" map event is SUPPRESSED when our capture-phase pointerdown
+    // calls stopPropagation() on a draggable hit (a handle) to block DragPan — so on a handle
+    // it never fires (no vertex insert). The NATIVE dblclick still fires, so we listen to that
+    // and compute the hit ourselves (parity with MapLibre).
+    this.viewportDblclick = (e: globalThis.MouseEvent): void => {
+      const coord = this.map.getEventCoordinate(e);
+      if (!coord) return;
+      const [lon, lat] = toLonLat(coord);
+      const hit = this.hitAt(this.map.getEventPixel(e));
+      cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
+    };
+    this.map.getViewport().addEventListener("dblclick", this.viewportDblclick);
 
     this.olKeys.push(
       this.map.on("pointermove", (evt) => {
@@ -335,11 +348,8 @@ export class OpenLayersAdapter implements MapAdapter {
         const [lon, lat] = toLonLat(evt.coordinate);
         cb({ type: "click", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
       }),
-      this.map.on("dblclick", (evt) => {
-        const hit = this.hitAt(evt.pixel);
-        const [lon, lat] = toLonLat(evt.coordinate);
-        cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
-      }),
+      // NB: "dblclick" is handled via a native viewport listener (see above) — OL's own
+      // dblclick map event is suppressed on draggable hits by our pointerdown stopPropagation.
     );
   }
 
@@ -354,6 +364,10 @@ export class OpenLayersAdapter implements MapAdapter {
     if (this.viewportPointerDown) {
       this.map.getViewport().removeEventListener("pointerdown", this.viewportPointerDown, true);
       this.viewportPointerDown = undefined;
+    }
+    if (this.viewportDblclick) {
+      this.map.getViewport().removeEventListener("dblclick", this.viewportDblclick);
+      this.viewportDblclick = undefined;
     }
     if (this.domPointerUp) {
       document.removeEventListener("pointerup", this.domPointerUp);
@@ -460,7 +474,7 @@ export class OpenLayersAdapter implements MapAdapter {
               rotateWithView: false,
               fill: new Fill({ color: str(f.get("textColor"), "#111") }),
               stroke: new Stroke({ color: str(f.get("textHalo"), "#fff"), width: 3 }),
-              ...(bg ? { backgroundFill: new Fill({ color: bg }), padding: [3, 5, 3, 5] as [number, number, number, number] } : {}),
+              ...(bg ? { backgroundFill: new Fill({ color: bg }), padding: [6, 8, 6, 8] as [number, number, number, number] } : {}),
               ...(border ? { backgroundStroke: new Stroke({ color: border, width: 1 }) } : {}),
             }),
           });

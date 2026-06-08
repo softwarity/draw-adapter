@@ -2,6 +2,10 @@
 
 ## 0.2.6
 
+- **Fix:** double-click editing (insert a shape vertex / split a break point) now works on **OpenLayers and Leaflet** — previously only MapLibre did. The capture-phase press handler that stops the map pan on a draggable hit was also suppressing the engine's *synthesized* `dblclick`, so it never reached the controller. OpenLayers now listens to the **native** viewport `dblclick` (its handles are canvas, so it fires reliably); Leaflet **detects the double-click manually** from press timing + position (its handle markers are recreated on every re-render, so the two clicks land on different DOM nodes and no native `dblclick` is emitted at all).
+- **Add:** MapLibre **call-out boxes** — a 9-slice `icon-text-fit` background box drawn behind any label that carries `textBackground`, for parity with the native `backgroundFill` boxes on OpenLayers/Leaflet.
+- **Change:** call-out box padding increased on OpenLayers and Leaflet; sprite glyphs in Leaflet `divIcon`s now scale to (and centre within) the icon box instead of sitting at their intrinsic size; Leaflet multi-line labels honour `\n` (`white-space: pre-line`).
+
 ---
 
 ## 0.2.5
