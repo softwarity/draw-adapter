@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.10
+
+---
+
 ## 0.2.9
 
 - **Add:** `PointerEvent` carries `ctrlKey`/`metaKey`/`shiftKey`/`altKey` (the live modifier
