@@ -38,6 +38,7 @@ import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
 import { bindKeyListener } from "./keyboard.js";
+import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** Why Leaflet can't snapshot yet — shown both as the thrown error and the
@@ -110,7 +111,7 @@ export class LeafletAdapter implements MapAdapter {
   private toolbarEl: HTMLElement | undefined;
   private cb: ((ev: PointerEvent) => void) | undefined;
   private domDown: ((e: Event) => void) | undefined;
-  private domUp: (() => void) | undefined;
+  private domUp: ((e: MouseEvent) => void) | undefined;
   private keyCleanup: (() => void) | undefined;
   private lastDownT = 0;
   private lastDownX = 0;
@@ -305,7 +306,7 @@ export class LeafletAdapter implements MapAdapter {
       if (now - this.lastDownT < 400 && Math.abs(e.clientX - this.lastDownX) < 6 && Math.abs(e.clientY - this.lastDownY) < 6) {
         this.lastDownT = 0; // consume (so a triple-click isn't two dbls)
         if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
-        cb({ type: "dblclick", lngLat: { lat: ll.lat, lon: ll.lng }, ...(hit ? { hit } : {}) });
+        cb({ type: "dblclick", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e), ...(hit ? { hit } : {}) });
         return;
       }
       this.lastDownT = now;
@@ -313,11 +314,11 @@ export class LeafletAdapter implements MapAdapter {
       this.lastDownY = e.clientY;
       this.dragging = true;
       if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
-      cb({ type: "down", lngLat: { lat: ll.lat, lon: ll.lng }, ...(hit ? { hit } : {}) });
+      cb({ type: "down", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
-    const onUp = (): void => {
+    const onUp = (e: MouseEvent): void => {
       this.dragging = false;
-      cb({ type: "up", lngLat: { lat: 0, lon: 0 } });
+      cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
     };
     container.addEventListener("mousedown", onDown, true);
     document.addEventListener("mouseup", onUp);
@@ -326,17 +327,18 @@ export class LeafletAdapter implements MapAdapter {
 
     this.map.on("mousemove", (evt: L.LeafletMouseEvent) => {
       const ll = evt.latlng;
+      const mods = modifiers(evt.originalEvent);
       if (this.dragging) {
-        cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng } });
+        cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
         return;
       }
       const hit = this.hovered;
       this.setCursor(cursorForHit(hit));
-      cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...(hit ? { hit } : {}) });
+      cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods, ...(hit ? { hit } : {}) });
     });
     this.map.on("click", (evt: L.LeafletMouseEvent) => {
       const hit = this.hovered;
-      cb({ type: "click", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...(hit ? { hit } : {}) });
+      cb({ type: "click", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
     });
     // (dblclick is handled by the native capture listener above — Leaflet's own map dblclick
     // is suppressed on draggable hits by our mousedown stopPropagation.)

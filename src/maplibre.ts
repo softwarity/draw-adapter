@@ -42,9 +42,10 @@ import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
 import { bindKeyListener } from "./keyboard.js";
+import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
-type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void;
+type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number }; originalEvent?: MouseEvent }) => void;
 interface PointerHandlers {
   mousedown: MlHandler;
   mousemove: MlHandler;
@@ -425,7 +426,7 @@ export class MapLibreAdapter implements MapAdapter {
         const needHit = type !== "up" && !(type === "move" && this.dragging);
         const hit = needHit ? this.hitAt(e.point) : undefined;
         if (type === "move" && !this.dragging) this.setCursor(cursorForHit(hit));
-        cb({ type, lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...(hit ? { hit } : {}) });
+        cb({ type, lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent), ...(hit ? { hit } : {}) });
       };
     const handlers: PointerHandlers = {
       mousedown: emit("down"),
@@ -441,10 +442,10 @@ export class MapLibreAdapter implements MapAdapter {
     this.map.on("dblclick", handlers.dblclick);
     this.pointerHandlers = handlers;
     if (typeof window !== "undefined") {
-      const windowUp = (): void => {
+      const windowUp = (e: MouseEvent): void => {
         if (!this.dragging) return;
         this.dragging = false;
-        cb({ type: "up", lngLat: { lat: 0, lon: 0 } });
+        cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
       };
       window.addEventListener("mouseup", windowUp);
       this.windowUp = windowUp;

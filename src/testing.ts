@@ -6,6 +6,7 @@
 import type { FeatureCollection, Feature } from "geojson";
 
 import type { KeyEvent, LatLng, MapAdapter, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, TooltipStyle } from "./index.js";
+import { modifiers } from "./modifiers.js";
 
 export class FakeAdapter implements MapAdapter {
   snapshotSupported = true;
@@ -45,16 +46,19 @@ export class FakeAdapter implements MapAdapter {
   destroy(): void {}
 
   // ── test helpers ────────────────────────────────────────────────────────────
-  /** Replay a pointer event, optionally over an overlay hit. */
+  /** Replay a pointer event, optionally over an overlay hit and with held modifiers
+   *  (default all false) — e.g. `send("move", 1, 2, undefined, undefined, { ctrlKey: true })`
+   *  to test a modifier-gated drag. */
   send(
     type: PointerEvent["type"],
     lat: number,
     lon: number,
     overlay?: string,
     props?: Record<string, unknown>,
+    mods?: Partial<Pick<PointerEvent, "ctrlKey" | "metaKey" | "shiftKey" | "altKey">>,
   ): void {
     const hit = overlay ? { overlay, props: props ?? {} } : undefined;
-    this.cb?.({ type, lngLat: { lat, lon }, ...(hit ? { hit } : {}) });
+    this.cb?.({ type, lngLat: { lat, lon }, ...modifiers(mods), ...(hit ? { hit } : {}) });
   }
   /** Find a pushed feature in `overlay` by its `role` prop. */
   feature(overlay: string, role: string): Feature | undefined {

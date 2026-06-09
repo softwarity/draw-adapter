@@ -189,6 +189,19 @@ describe("MapLibreAdapter — hit-testing", () => {
   });
 });
 
+describe("MapLibreAdapter — modifier keys on pointer events", () => {
+  it("forwards the live modifier state (read off `originalEvent`), default false", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const events: PointerEvent[] = [];
+    adapter.onPointer((e) => events.push(e));
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 }, originalEvent: { ctrlKey: true, altKey: true } });
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 }, originalEvent: {} });
+    expect(events[0]).toMatchObject({ ctrlKey: true, altKey: true, metaKey: false, shiftKey: false });
+    expect(events[1]).toMatchObject({ ctrlKey: false, altKey: false, metaKey: false, shiftKey: false });
+  });
+});
+
 describe("MapLibreAdapter — snapshot toolbar (supported ⇒ enabled)", () => {
   const snapBtn = (bar: HTMLElement) => bar.querySelector<HTMLButtonElement>('button[data-tool="snapshot"]');
 

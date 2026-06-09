@@ -181,6 +181,19 @@ describe("OpenLayersAdapter — hit-testing (top-of-stack wins)", () => {
   });
 });
 
+describe("OpenLayersAdapter — modifier keys on pointer events", () => {
+  it("forwards the live modifier state (read off MapBrowserEvent.originalEvent), default false", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const events: PointerEvent[] = [];
+    adapter.onPointer((e) => events.push(e));
+    map.emit("pointermove", { coordinate: [0, 0], pixel: [5, 5], originalEvent: { metaKey: true, shiftKey: true } });
+    map.emit("pointermove", { coordinate: [0, 0], pixel: [5, 5], originalEvent: {} });
+    expect(events[0]).toMatchObject({ metaKey: true, shiftKey: true, ctrlKey: false, altKey: false });
+    expect(events[1]).toMatchObject({ metaKey: false, shiftKey: false, ctrlKey: false, altKey: false });
+  });
+});
+
 describe("OpenLayersAdapter — pan + teardown", () => {
   it("setPanEnabled toggles DragPan; destroy re-enables DragPan + DoubleClickZoom", async () => {
     const { map, adapter } = build();

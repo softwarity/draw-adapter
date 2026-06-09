@@ -2,6 +2,12 @@
 
 ## 0.2.9
 
+- **Add:** `PointerEvent` carries `ctrlKey`/`metaKey`/`shiftKey`/`altKey` (the live modifier
+  state, incl. on `move`) on all 3 engines + `FakeAdapter` — lets consumers gate drag
+  behaviour on a held modifier (e.g. Ctrl/⌘ to translate rigidly instead of deform). All
+  optional + default `false` (non-breaking); `FakeAdapter.send(...)` takes an optional
+  `mods` arg. Treat `ctrlKey || metaKey` as "the modifier" (Ctrl on PC/Linux, ⌘ on Mac).
+
 ---
 
 ## 0.2.8

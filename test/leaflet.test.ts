@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as L from "leaflet";
 
 import { LeafletAdapter } from "../src/leaflet.js";
-import type { LayerSpec } from "../src/index.js";
+import type { LayerSpec, PointerEvent } from "../src/index.js";
 
 const LAYERS: LayerSpec[] = [
   { id: "area", kind: "fill" },
@@ -278,6 +278,19 @@ describe("LeafletAdapter", () => {
     const plain = (el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement).innerHTML;
     expect(plain).not.toContain("padding:");
     expect(plain).not.toContain("background:");
+    a.destroy();
+  });
+
+  it("forwards the live modifier state on the pointer event (read off originalEvent), default false", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const events: PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    const pt = L.point(0, 0);
+    map.fire("mousemove", { latlng: L.latLng(11, 11), layerPoint: pt, containerPoint: pt, originalEvent: new MouseEvent("mousemove", { ctrlKey: true }) });
+    map.fire("mousemove", { latlng: L.latLng(11, 11), layerPoint: pt, containerPoint: pt, originalEvent: new MouseEvent("mousemove") });
+    expect(events[0]).toMatchObject({ ctrlKey: true, metaKey: false, shiftKey: false, altKey: false });
+    expect(events[1]).toMatchObject({ ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
     a.destroy();
   });
 

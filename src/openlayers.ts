@@ -48,6 +48,7 @@ import type {
 import { cursorForHit } from "./index.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { boxPadding } from "./textbox.js";
+import { modifiers } from "./modifiers.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
@@ -355,13 +356,13 @@ export class OpenLayersAdapter implements MapAdapter {
       const [lon, lat] = toLonLat(coord);
       const hit = this.hitAt(this.map.getEventPixel(e));
       if (hit && isDraggableHit(hit)) e.stopPropagation();
-      cb({ type: "down", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
+      cb({ type: "down", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
     // "up" must fire even when pointerup lands off the canvas (no coordinate), so a
     // drag (and its delete-on-release) always completes.
-    this.domPointerUp = (): void => {
+    this.domPointerUp = (e: globalThis.PointerEvent): void => {
       this.dragging = false;
-      cb({ type: "up", lngLat: { lat: 0, lon: 0 } });
+      cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
     };
     this.map.getViewport().addEventListener("pointerdown", this.viewportPointerDown, true);
     document.addEventListener("pointerup", this.domPointerUp);
@@ -374,25 +375,26 @@ export class OpenLayersAdapter implements MapAdapter {
       if (!coord) return;
       const [lon, lat] = toLonLat(coord);
       const hit = this.hitAt(this.map.getEventPixel(e));
-      cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
+      cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
     this.map.getViewport().addEventListener("dblclick", this.viewportDblclick);
 
     this.olKeys.push(
       this.map.on("pointermove", (evt) => {
         const [lon, lat] = toLonLat(evt.coordinate);
+        const mods = modifiers(evt.originalEvent as MouseEvent);
         if (this.dragging) {
-          cb({ type: "move", lngLat: { lat: lat!, lon: lon! } });
+          cb({ type: "move", lngLat: { lat: lat!, lon: lon! }, ...mods });
           return;
         }
         const hit = this.hitAt(evt.pixel);
         this.setCursor(cursorForHit(hit));
-        cb({ type: "move", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
+        cb({ type: "move", lngLat: { lat: lat!, lon: lon! }, ...mods, ...(hit ? { hit } : {}) });
       }),
       this.map.on("singleclick", (evt) => {
         const hit = this.hitAt(evt.pixel);
         const [lon, lat] = toLonLat(evt.coordinate);
-        cb({ type: "click", lngLat: { lat: lat!, lon: lon! }, ...(hit ? { hit } : {}) });
+        cb({ type: "click", lngLat: { lat: lat!, lon: lon! }, ...modifiers(evt.originalEvent as MouseEvent), ...(hit ? { hit } : {}) });
       }),
       // NB: "dblclick" is handled via a native viewport listener (see above) — OL's own
       // dblclick map event is suppressed on draggable hits by our pointerdown stopPropagation.

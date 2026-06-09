@@ -56,4 +56,17 @@ describe("FakeAdapter", () => {
     expect(a.panEnabled).toBe(false);
     expect(a.cursor).toBe("crosshair");
   });
+
+  it("forwards held modifiers on the pointer event (default all false)", () => {
+    const a = new FakeAdapter();
+    const events: import("../src/index.js").PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    // injected modifier on a drag move (the modifier-gated-drag use case)
+    a.send("move", 1, 2, undefined, undefined, { ctrlKey: true });
+    a.send("move", 1, 2, undefined, undefined, { metaKey: true, shiftKey: true });
+    a.send("up", 0, 0); // none ⇒ all false
+    expect(events[0]).toMatchObject({ ctrlKey: true, metaKey: false, shiftKey: false, altKey: false });
+    expect(events[1]).toMatchObject({ ctrlKey: false, metaKey: true, shiftKey: true, altKey: false });
+    expect(events[2]).toMatchObject({ ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
+  });
 });

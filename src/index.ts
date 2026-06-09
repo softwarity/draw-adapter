@@ -59,6 +59,16 @@ export type SymbolSprites = Record<string, string>;
 export interface PointerEvent {
   type: "down" | "move" | "up" | "click" | "dblclick";
   lngLat: LatLng;
+  /**
+   * Modifier-key state at the event. On a `move` these reflect the **current** state
+   * (handy for a modifier-gated drag, e.g. Ctrl held to translate rigidly). Treat
+   * `ctrlKey || metaKey` as "the modifier" (Ctrl on PC/Linux, ⌘ on Mac), like the snapshot
+   * button. All four are optional and default to `false`.
+   */
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
   /** The overlay hit + that feature's prop bag (`role`, `featureId`, …). */
   hit?: { overlay: string; props: Record<string, unknown> };
 }
