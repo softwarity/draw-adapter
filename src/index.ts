@@ -21,7 +21,7 @@
  * | `fill`   | `fillColor`, `fillOpacity`, `stroke?`, `strokeWidth?`, `strokeOpacity?` |
  * | `line`   | `stroke`, `strokeWidth`, `dash?` (number[]), `strokeOpacity?` |
  * | `symbol` | `symbol` (sprite id), `size?` (×spritePx), `rotation?` (deg, cw), `symbolColor?` |
- * | `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `maxWidth?`, `rotation?` |
+ * | `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
  * | `circle` | `role?`, `control?`, `collinear?`, `fill?`, `stroke?`, `radius?`, `strokeWidth?`, `icon?` (data-URI), `symbol?` (sprite id), `iconRotate?` (deg, cw), `symbolColor?` |
  *
  * Cross-cutting conventions:
@@ -300,3 +300,4 @@ export { bindKeyListener } from "./keyboard.js";
 export { snapshotScale, downloadPng, copyPng, shutterFlash, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";
+export type { TextBoxSize, TextBoxRadius } from "./textbox.js";

@@ -47,6 +47,7 @@ import type {
 } from "./index.js";
 import { cursorForHit } from "./index.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
+import { boxPadding } from "./textbox.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
@@ -521,15 +522,20 @@ export class OpenLayersAdapter implements MapAdapter {
           const size = num(f.get("textSize"), 13);
           const bg = str(f.get("textBackground"));
           const border = str(f.get("textBorder"));
+          const box = bg || border; // box drawn only when a fill and/or border is set
+          const [pv, ph] = boxPadding(f.get("textBoxSize"));
+          // NB: OpenLayers' native text background is a plain rectangle — `textBoxRadius`
+          // has no effect here (rounded boxes work on MapLibre/Leaflet only).
           return new Style({
             text: new Text({
               text: wrapLabel(str(f.get("text")), num(f.get("maxWidth"), 0), size),
               font: `${size}px sans-serif`,
-              rotation: deg2rad(num(f.get("rotation"), 0)),
+              rotation: deg2rad(num(f.get("rotation"), 0)), // the box rotates with the text
               rotateWithView: false,
               fill: new Fill({ color: str(f.get("textColor"), "#111") }),
               stroke: new Stroke({ color: str(f.get("textHalo"), "#fff"), width: 3 }),
-              ...(bg ? { backgroundFill: new Fill({ color: bg }), padding: [6, 8, 6, 8] as [number, number, number, number] } : {}),
+              ...(box ? { padding: [pv, ph, pv, ph] as [number, number, number, number] } : {}),
+              ...(bg ? { backgroundFill: new Fill({ color: bg }) } : {}),
               ...(border ? { backgroundStroke: new Stroke({ color: border, width: 1 }) } : {}),
             }),
           });

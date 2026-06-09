@@ -32,6 +32,7 @@ import type {
 } from "./index.js";
 import { cursorForHit } from "./index.js";
 import { num, str, rgba } from "./coerce.js";
+import { boxPadding, boxRadius } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
@@ -476,6 +477,8 @@ export class LeafletAdapter implements MapAdapter {
     const halo = str(p["textHalo"], "#fff");
     const bg = str(p["textBackground"]);
     const border = str(p["textBorder"]);
+    const [pv, ph] = boxPadding(p["textBoxSize"]);
+    const radius = boxRadius(p["textBoxRadius"]);
     const maxWidth = num(p["maxWidth"], 0);
     const rot = num(p["rotation"], 0);
     // Let CSS do the wrapping (this is HTML — no canvas maths needed). The trick is
@@ -494,7 +497,7 @@ export class LeafletAdapter implements MapAdapter {
       `text-shadow:-1px -1px 0 ${halo},1px -1px 0 ${halo},-1px 1px 0 ${halo},1px 1px 0 ${halo}`,
       bg ? `background:${rgba(bg, 1)}` : "",
       border ? `border:1px solid ${border}` : "",
-      bg || border ? "padding:6px 8px;border-radius:3px" : "",
+      bg || border ? `padding:${pv}px ${ph}px;border-radius:${radius}px` : "",
       // Centre the label on its anchor (like MapLibre's centred text-anchor).
       `transform:translate(-50%,-50%)${rot ? ` rotate(${rot}deg)` : ""}`,
       "transform-origin:center",

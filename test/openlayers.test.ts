@@ -120,6 +120,22 @@ describe("OpenLayersAdapter — styleFor maps props → ol/style", () => {
     expect(s.getText()!.getStroke()!.getColor()).toBe("#000");
   });
 
+  it("label box: padding from textBoxSize; drawn only when bg and/or border is set", async () => {
+    // bg + large ⇒ backgroundFill + [10,13,10,13] padding
+    const bgT = ((await styleOf("label", { text: "x", textBackground: "#fff", textBoxSize: "large" })) as Style).getText()!;
+    expect(bgT.getBackgroundFill()).not.toBeNull();
+    expect(bgT.getPadding()).toEqual([10, 13, 10, 13]);
+    // border-only + small ⇒ backgroundStroke (no fill) + [3,5,3,5] padding
+    const bdT = ((await styleOf("label", { text: "x", textBorder: "#000", textBoxSize: "small" })) as Style).getText()!;
+    expect(bdT.getBackgroundFill()).toBeNull();
+    expect(bdT.getBackgroundStroke()).not.toBeNull();
+    expect(bdT.getPadding()).toEqual([3, 5, 3, 5]);
+    // neither ⇒ no box at all
+    const noT = ((await styleOf("label", { text: "x" })) as Style).getText()!;
+    expect(noT.getBackgroundFill()).toBeNull();
+    expect(noT.getBackgroundStroke()).toBeNull();
+  });
+
   it("symbol ⇒ an Icon once the sprite is registered", async () => {
     const s = (await styleOf("symbols", { symbol: "MOD", symbolColor: "#9a6700", size: 1 })) as Style;
     expect(s.getImage()).toBeInstanceOf(Icon);

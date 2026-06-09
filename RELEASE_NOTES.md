@@ -2,6 +2,18 @@
 
 ## 0.2.8
 
+- **Add:** per-feature **label box** controls on `text` features — `textBoxSize`
+  (`small`/`medium`/`large`, default `medium`) for padding and `textBoxRadius`
+  (`none`(default)/`small`/`medium`/`round`) for corners, on top of `textBackground` /
+  `textBorder`. The box is drawn **only** when a fill and/or border is set, and **rotates
+  with the text**. New exported types `TextBoxSize` / `TextBoxRadius`.
+- **Fix/Add (MapLibre):** the label box is now a **per-feature** 9-slice image built on
+  demand (`styleimagemissing`) from the feature's `textBackground`/`textBorder`/
+  `textBoxSize`/`textBoxRadius` — so MapLibre finally honours per-feature box **colours**,
+  padding and **corner radius** (it previously drew one fixed white/black box).
+- **Limitation:** OpenLayers honours `textBoxSize` and the colours but **not**
+  `textBoxRadius` — its native text background is a rectangle (no corner radius).
+
 ---
 
 ## 0.2.7

@@ -37,6 +37,7 @@ import type {
 } from "./index.js";
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
+import { boxPadding, boxRadius } from "./textbox.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
@@ -77,6 +78,18 @@ export function createMapLibreMap(opts: {
   const map = new MaplibreMap({ container: opts.container, style: OSM_STYLE, center: opts.center, zoom: opts.zoom });
   if (opts.projection === "globe") map.on("load", () => map.setProjection({ type: "globe" }));
   return map;
+}
+
+/** Trace a rounded-rectangle path (arcTo, clamped radius) on a 2D context. */
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
 }
 
 export class MapLibreAdapter implements MapAdapter {
@@ -161,6 +174,7 @@ export class MapLibreAdapter implements MapAdapter {
     this.imgMissing = (e: { id: string }): void => {
       const id = e.id;
       if (!id || this.map.hasImage(id) || this.pendingImages.has(id)) return;
+      if (id.startsWith("__box|")) { this.materializeCalloutBox(id); return; } // label box (sync canvas)
       let src: string | undefined;
       if (id.startsWith("data:")) {
         src = id;
@@ -180,33 +194,58 @@ export class MapLibreAdapter implements MapAdapter {
     this.map.on("styleimagemissing", this.imgMissing);
   }
 
-  /** Register the 9-slice white box (black border) used to FRAME call-out labels on MapLibre.
-   *  OpenLayers/Leaflet draw the label background+border natively (`backgroundFill/Stroke`);
-   *  MapLibre has no text box, so we fit this stretchable image behind any label carrying a
-   *  `textBackground` via `icon-text-fit`. Idempotent (drawn once on a 2× canvas). */
-  private ensureCalloutBox(): void {
-    if (typeof document === "undefined" || this.map.hasImage("__callout-box")) return;
-    const px = 2, S = 16 * px, r = 3 * px, lw = 1.4 * px, b = lw / 2;
+  /**
+   * `icon-image` expression for a `text` layer: a per-feature label-box id
+   * `__box|<bg>|<border>|<size>|<radius>` when the feature carries a `textBackground`
+   * and/or `textBorder`, else `""` (no box). Materialized lazily by
+   * {@link materializeCalloutBox} via `styleimagemissing`.
+   */
+  private calloutImageExpr(): unknown {
+    return [
+      "case",
+      ["any",
+        ["to-boolean", ["coalesce", ["get", "textBackground"], false]],
+        ["to-boolean", ["coalesce", ["get", "textBorder"], false]]],
+      ["concat", "__box|",
+        ["coalesce", ["get", "textBackground"], ""], "|",
+        ["coalesce", ["get", "textBorder"], ""], "|",
+        ["coalesce", ["get", "textBoxSize"], "medium"], "|",
+        ["coalesce", ["get", "textBoxRadius"], "none"]],
+      "",
+    ];
+  }
+
+  /**
+   * Draw a label box (rounded rect: `textBackground` fill, `textBorder` stroke,
+   * `textBoxRadius` corners) onto a 2× canvas and register it as a **9-slice** image —
+   * the padding (`textBoxSize`) + border + corners are baked into the fixed frame, so
+   * `icon-text-fit` stretches only the centre to the text. This is what lets MapLibre vary
+   * the box per feature (`icon-text-fit-padding` itself is layer-wide). Synchronous.
+   */
+  private materializeCalloutBox(id: string): void {
+    if (typeof document === "undefined") return;
+    const [, bg, border, size, radius] = id.split("|");
+    const [pv, ph] = boxPadding(size);
+    const R = boxRadius(radius);
+    const bw = border ? 1.4 : 0; // border width (css px)
+    const insetX = Math.max(ph + bw, R, 2);
+    const insetY = Math.max(pv + bw, R, 2);
+    const Scss = 2 * Math.max(insetX, insetY) + 8; // square; +middle so there's a stretch band
+    const px = 2;
     const cnv = document.createElement("canvas");
-    cnv.width = S;
-    cnv.height = S;
+    cnv.width = cnv.height = Math.round(Scss * px);
     const ctx = cnv.getContext("2d");
     if (!ctx) return;
-    ctx.beginPath();
-    ctx.moveTo(b + r, b);
-    ctx.arcTo(S - b, b, S - b, S - b, r);
-    ctx.arcTo(S - b, S - b, b, S - b, r);
-    ctx.arcTo(b, S - b, b, b, r);
-    ctx.arcTo(b, b, S - b, b, r);
-    ctx.closePath();
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.lineWidth = lw;
-    ctx.strokeStyle = "#1f2328";
-    ctx.stroke();
-    const img = ctx.getImageData(0, 0, S, S);
-    const c = 5 * px, d = 11 * px; // 9-slice: keep the rounded corners, stretch the middle
-    this.map.addImage("__callout-box", img as unknown as ImageData, { content: [c, c, d, d], stretchX: [[c, d]], stretchY: [[c, d]], pixelRatio: px } as never);
+    ctx.scale(px, px);
+    roundRectPath(ctx, bw / 2, bw / 2, Scss - bw, Scss - bw, R);
+    if (bg) { ctx.fillStyle = bg; ctx.fill(); }
+    if (bw) { ctx.lineWidth = bw; ctx.strokeStyle = border!; ctx.stroke(); }
+    const img = ctx.getImageData(0, 0, cnv.width, cnv.height);
+    const cx = Math.round(insetX * px), cy = Math.round(insetY * px);
+    const dx = cnv.width - cx, dy = cnv.height - cy;
+    if (this.map.hasImage(id)) return;
+    this.map.addImage(id, img as unknown as ImageData, { content: [cx, cy, dx, dy], stretchX: [[cx, dx]], stretchY: [[cy, dy]], pixelRatio: px } as never);
+    this.addedImages.add(id);
   }
 
   setOverlay(id: string, data: FeatureCollection): void {
@@ -582,17 +621,18 @@ export class MapLibreAdapter implements MapAdapter {
           this.track(spec.id, spec.id);
           break;
         case "text":
-          this.ensureCalloutBox();
+          this.bindImageMissing(); // label boxes are materialized lazily per (bg|border|size|radius)
           this.map.addLayer({
             id: spec.id,
             type: "symbol",
             source: spec.id,
             layout: {
-              // Frame labels that carry a `textBackground` with the white/black box (stretched
-              // to fit the text) — the MapLibre equivalent of OL/Leaflet's native label box.
-              "icon-image": ["case", ["to-boolean", ["coalesce", ["get", "textBackground"], false]], "__callout-box", ""] as never,
+              // Frame labels carrying a `textBackground`/`textBorder` with a per-feature box
+              // image (padding/border/radius baked in), stretched to fit the text. The box
+              // rotates with the text (`icon-rotate` = `rotation`).
+              "icon-image": this.calloutImageExpr() as never,
               "icon-text-fit": "both",
-              "icon-text-fit-padding": [3, 6, 3, 6],
+              "icon-rotate": ["coalesce", ["get", "rotation"], 0],
               "icon-allow-overlap": true,
               "icon-ignore-placement": true,
               "text-field": ["coalesce", ["get", "text"], ""],

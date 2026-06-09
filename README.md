@@ -35,7 +35,7 @@ feature. Each product's controller resolves its domain style into those props
 | fill / line / circle / symbol / text | ✅ | ✅ | ✅ |
 | data-driven props (identical render) | ✅ | ✅ | ✅ |
 | rotatable handle glyphs (`icon` / `symbol` + `iconRotate`) | ✅¹ | ✅ | ✅ |
-| native text box (`textBackground`/`textBorder`) | halo only | ✅ | ✅ |
+| label box (`textBackground`/`textBorder` + `textBoxSize`/`textBoxRadius`) | ✅⁴ | ✅ (no radius) | ✅ |
 | `project`/`unproject`/`onViewChange`/`getViewSpan` | ✅ | ✅ | ✅ |
 | drag-vs-pan guard | n/a² | ✅ (capture-phase) | ✅ (capture-phase) |
 | keyboard `onKey` (focused-map keydown) | ✅ | ✅ | ✅ |
@@ -46,6 +46,7 @@ feature. Each product's controller resolves its domain style into those props
 ¹ data-URI icons are materialized lazily via `styleimagemissing`; sprites are tinted per `symbolColor`.
 ² MapLibre's `dragPan` is toggled directly by the controller, no capture-phase hack needed.
 ³ Leaflet has no single exportable canvas (tiles are `<img>`, overlays SVG/DOM); `snapshot()` rejects and the toolbar button is shown **disabled**. A DOM-snapshot approach is planned.
+⁴ MapLibre fakes the box with a per-feature 9-slice image (built on demand via `styleimagemissing`), so it honours `textBackground`/`textBorder`/`textBoxSize`/`textBoxRadius` per feature. OpenLayers uses its native text background — same, **except** `textBoxRadius` (its box is a rectangle).
 *before* `setOverlay`, so styling is entirely **data-driven** and the three engines
 render identically.
 
@@ -106,7 +107,7 @@ the features** in your controller (resolving your domain style) — there is no
 | `fill`   | `fillColor`, `fillOpacity`, `stroke?`, `strokeWidth?`, `strokeOpacity?` |
 | `line`   | `stroke`, `strokeWidth`, `dash?` (`number[]`), `strokeOpacity?` |
 | `symbol` | `symbol` (sprite id), `size?` (×spritePx), `rotation?` (deg, cw), `symbolColor?` |
-| `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `maxWidth?`, `rotation?` |
+| `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
 | `circle` | `role?`, `control?`, `collinear?`, `fill?`, `stroke?`, `radius?`, `strokeWidth?`, `icon?` (data-URI), `symbol?` (sprite id), `iconRotate?` (deg, cw), `symbolColor?` |
 
 Cross-cutting conventions:
@@ -128,8 +129,12 @@ Cross-cutting conventions:
 - Rotatable handle glyphs (`icon` data-URI **or** `symbol` sprite) render over the
   dot on a `circle` overlay. On MapLibre, data-URIs are materialized lazily via
   `styleimagemissing`; sprites are tinted per `symbolColor`.
-- Text boxes (`textBackground`/`textBorder`) are native on OpenLayers/Leaflet;
-  MapLibre renders haloed text only (no native box).
+- A **label box** is drawn behind a `text` feature **only** when it carries
+  `textBackground` (fill) and/or `textBorder` (outline). `textBoxSize`
+  (`small`/`medium`/`large`, default `medium`) tunes its padding and `textBoxRadius`
+  (`none`(default)/`small`/`medium`/`round`) its corners; the box rotates with the text.
+  Leaflet (CSS) and MapLibre (a per-feature 9-slice image) honour all four; OpenLayers
+  honours them too **except** `textBoxRadius` (its native text background is a rectangle).
 
 ## Sprites
 

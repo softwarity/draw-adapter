@@ -114,6 +114,24 @@ describe("MapLibreAdapter — overlay manifest → layers", () => {
     expect(mw).toEqual(["/", ["coalesce", ["get", "maxWidth"], 130], ["coalesce", ["get", "textSize"], 13]]);
   });
 
+  it("text ⇒ a per-feature label-box image (`__box|bg|border|size|radius`) that rotates with the text", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const l = layer(map, "label");
+    const img = l.layout!["icon-image"] as unknown[];
+    expect(img[0]).toBe("case"); // box id only when bg/border, else ""
+    expect(JSON.stringify(img)).toContain("__box|"); // builds the per-combo id
+    expect(l.layout!["icon-text-fit"]).toBe("both");
+    expect(l.layout!["icon-text-fit-padding"]).toBeUndefined(); // padding baked in the image, not layer-wide
+    expect(l.layout!["icon-rotate"]).toEqual(["coalesce", ["get", "rotation"], 0]); // box follows the text
+  });
+
+  it("materializes a label-box image on `styleimagemissing` without throwing (no canvas in jsdom ⇒ no-op)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    expect(() => map.emit("styleimagemissing", { id: "__box|#ffffff|#000000|large|round" })).not.toThrow();
+  });
+
   it("circle paint reads radius/fill/stroke/strokeWidth from feature props", async () => {
     const { map, adapter } = build();
     await adapter.ready();

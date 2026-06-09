@@ -260,6 +260,27 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  it("label box: padding (textBoxSize) + border-radius (textBoxRadius), only when bg/border", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    a.setOverlay("label", {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [10, 10] }, properties: { text: "X", textBackground: "#fff", textBoxSize: "large", textBoxRadius: "round" } }],
+    });
+    const boxed = (el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement).innerHTML;
+    expect(boxed).toContain("padding:10px 13px");
+    expect(boxed).toContain("border-radius:14px");
+    // no bg/border ⇒ no box (no padding/background)
+    a.setOverlay("label", {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [10, 10] }, properties: { text: "X", textBoxSize: "large" } }],
+    });
+    const plain = (el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement).innerHTML;
+    expect(plain).not.toContain("padding:");
+    expect(plain).not.toContain("background:");
+    a.destroy();
+  });
+
   it("project/unproject round-trip a point", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();
