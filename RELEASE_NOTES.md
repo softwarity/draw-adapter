@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.9
+
+---
+
 ## 0.2.8
 
 - **Add:** per-feature **label box** controls on `text` features — `textBoxSize`
