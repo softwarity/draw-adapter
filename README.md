@@ -38,6 +38,8 @@ feature. Each product's controller resolves its domain style into those props
 | native text box (`textBackground`/`textBorder`) | halo only | ✅ | ✅ |
 | `project`/`unproject`/`onViewChange`/`getViewSpan` | ✅ | ✅ | ✅ |
 | drag-vs-pan guard | n/a² | ✅ (capture-phase) | ✅ (capture-phase) |
+| keyboard `onKey` (focused-map keydown) | ✅ | ✅ | ✅ |
+| lock map (`setInteractive` / toolbar lock button) | ✅ | ✅ | ✅ |
 | PNG `snapshot()` (basemap + overlays) | ✅ | ✅ | ❌³ |
 | peer dependency | `maplibre-gl >=5` | `ol >=9` | `leaflet >=1.9` |
 
@@ -144,36 +146,29 @@ lib exports the plumbing: `colorizeSprite`, `svgToDataUrl`, `loadSpriteImage`,
 
 ## Local development against the sibling libs
 
-To test changes in `sigmet-draw` / `sigwx-draw` **without publishing to npm**,
-copy the build straight into their `node_modules`:
+`sigmet-draw` / `sigwx-draw` resolve this package via **TypeScript `paths`** (config
+only — no link/copy scripts). Each repo's `tsconfig` points the bare specifier at the
+sibling `dist`, with the published npm package as a fallback:
 
-```bash
-npm run build:link          # build + copy into ../sigmet-draw and ../sigwx-draw
-# or, after a manual build:
-npm run link:siblings
-# custom targets:
-node scripts/link-into-siblings.mjs ../sigmet-draw ../some-other-lib
+```jsonc
+// sigmet-draw/tsconfig.json
+"paths": {
+  "@softwarity/draw-adapter":            ["../draw-adapter/dist/index", "./node_modules/@softwarity/draw-adapter/dist/index"],
+  "@softwarity/draw-adapter/maplibre":   ["../draw-adapter/dist/maplibre", "./node_modules/@softwarity/draw-adapter/dist/maplibre"]
+  // …same for /openlayers /leaflet
+}
 ```
 
-It copies only `package.json` + `dist/` (the published `files` allow-list),
-preserving the sub-path exports — exactly what `npm install` would ship. Re-run
-after each build. When ready, publish normally (`npm publish`) and let the
-consumers pin the version.
+So a build compiles against the **local** `dist` if the sibling is present, else the
+published version. Just build the lib at least once (`npm run build`); `npm run
+build:watch` (`tsc -w`) gives instant rebuilds, which the consumer's dev server picks up.
 
-> **Heads-up — don't `npm install` in the siblings before the lib is published.**
-> While `@softwarity/draw-adapter` is unpublished, a sibling that lists it in
-> `dependencies` will `404` on `npm install` (and an `overrides`/`file:` shim is
-> refused as it conflicts with a direct dependency). So: install everything else
-> first, then keep the lib in place via `build:link` — don't run a full
-> `npm install` until the package is on npm.
-
-> **Single engine copy matters.** When an app bundles a consumer from a path
-> *outside its own `node_modules`*, the engine peer (especially **Leaflet** and
-> **OpenLayers**) can get duplicated — and two copies break cross-instance checks
-> (Leaflet's renderer won't draw the other copy's paths → handles vanish;
-> OpenLayers' `instanceof DragPan` fails → handle-drag pans the map). Resolve the
-> consumer **and** this lib from the app's own `node_modules` so the engine
-> collapses to one copy. (`sigmet-draw/demo` does this via its `setup:local` script.)
+> **Single engine copy matters.** A demo that bundles a consumer from a path *outside its
+> own `node_modules`* can duplicate the engine peer (especially **Leaflet** / **OpenLayers**),
+> and two copies break cross-instance checks (Leaflet won't draw the other copy's paths →
+> handles vanish; OpenLayers' `instanceof DragPan` fails → handle-drag pans the map). The
+> demos force `leaflet`/`ol`/`maplibre-gl` to resolve from their own `node_modules` via
+> `tsconfig` `paths`, so each engine collapses to a single copy.
 
 ### Packaging / Node ESM
 
@@ -183,6 +178,62 @@ both handled here: `ol/*` value imports end in `.js` (ol ships no `exports` map)
 and `maplibre-gl` (CJS-only) is imported as a namespace with a runtime ctor
 resolve rather than `import { Map }`. The peer-free entry (`.`) never imports an
 engine, so optional peer deps stay optional.
+
+## Toolbar
+
+`addToolbar(items, options?)` renders a toolbar inside the engine's native control box
+and returns the element. You supply the **items**; the adapter owns the **rendering,
+placement and click wiring** (it knows no action — each item's `onClick` is yours).
+
+```ts
+adapter.addToolbar(
+  [{ id: "circle", title: "Circle", svg: "<svg…>", toggle: true, onClick: () => draw.circle() }],
+  { position: "top-left" }, // 12 anchors (flow derived from the edge) + padding / gap / className / tools / clear / lock / snapshot
+);
+```
+
+A `ToolbarItem` is `{ id, title, svg?, toggle?, standalone?, disabled?, onClick?, children?, onRender? }`
+(a missing `svg` falls back to a neutral icon; `toggle` keeps the button `active`;
+`standalone` marks a utility button whose click doesn't change the tool selection).
+
+### Built-in buttons
+
+The adapter appends its own **chrome** buttons at the end of the bar (they're
+`standalone`, so clicking them never deselects your active tool):
+
+- **Lock map** — a padlock toggle that freezes pan/zoom/rotate so the map can't move
+  while drawing (default on; `lock: false` hides it). It's `setInteractive(false)`
+  under the hood, and the lock **wins** over the controller's transient `setPanEnabled`
+  until you unlock.
+- **Snapshot** — the PNG capture button (see [Snapshots](#snapshots-png)).
+
+### Submenus (flyouts)
+
+Give an item `children: ToolbarItem[]` and its button becomes a **flyout**. It opens on
+**hover** (desktop) and on click (touch / when closed), **into the map** — derived from the
+toolbar edge (`top ⇒ below`, `bottom ⇒ above`, `left ⇒ right`, `right ⇒ left`) so it's never
+clipped. An outside press closes it. There are two modes:
+
+**Click** (default) — the parent is a fixed category; picking a child runs its `onClick`,
+and a click on the (open) parent runs the parent's own optional `onClick`:
+
+```ts
+{ id: "shapes", title: "Shapes", svg: SHAPES_ICON, children: [
+  { id: "rect",   title: "Rectangle", svg: RECT_ICON,   onClick: () => draw.rect() },
+  { id: "circle", title: "Circle",    svg: CIRCLE_ICON, onClick: () => draw.circle() },
+]}
+```
+
+**Toggle** (`toggle: true`, a split button) — the parent mirrors the **selected** child
+(the first one initially) and becomes the active tool; picking a child runs it and makes the
+parent adopt its icon; clicking the (open) parent re-runs the selected child:
+
+```ts
+{ id: "text", title: "Text", toggle: true, children: [
+  { id: "label", title: "Label", svg: LABEL_ICON, onClick: () => draw.label() },
+  { id: "box",   title: "Box",   svg: BOX_ICON,   onClick: () => draw.box() },
+]}
+```
 
 ## Snapshots (PNG)
 
@@ -260,11 +311,49 @@ On the **Leaflet** adapter the button is rendered **disabled**, with the
 unavailability message as its tooltip. Exported helpers: `snapshotScale(quality)`
 (preset→ratio), `downloadPng(blob, name?)`, `copyPng(blob)`, `shutterFlash(el)`.
 
+## Keyboard (`onKey`)
+
+`onKey(cb)` forwards a normalized `KeyEvent` on **keydown while the map is focused**.
+It is a **raw transport** — the adapter has **no** domain semantics; the *consumer*
+maps keys to actions. The canonical example: `Delete`/`Backspace` ⇒ remove the
+selected shape.
+
+```ts
+adapter.onKey((e) => {
+  if (e.key === "Backspace" || e.key === "Delete") {
+    e.preventDefault();
+    controller.deleteSelected(); // domain action lives in the consumer
+  }
+});
+```
+
+The `KeyEvent` carries `key`, `code`, `ctrl`, `meta`, `shift`, `alt`, and
+`preventDefault()` — the last forwards to the native event (e.g. to stop `Backspace`
+from navigating back).
+
+- **Scoping / focus.** The listener is attached to the **map container** (not
+  `window`), so only the *focused* map reacts — this is multi-instance safe. The
+  container is made click-focusable (`tabindex="-1"` if it has none); a keydown then
+  bubbles up from the engine's focused canvas. The map gets focus naturally when the
+  user clicks/draws on it.
+- **Editable-target filtering.** Keydowns whose target is an `input` / `textarea` /
+  `select` / `contenteditable` are skipped, so typing into the host app's form fields
+  never triggers a map shortcut — the key benefit of centralizing this here.
+- **Lifecycle.** The listener is removed in `destroy()`.
+
+All three engines implement it — listening on the MapLibre `getContainer()`,
+OpenLayers `getViewport()`, Leaflet `getContainer()`. The exported helper
+`bindKeyListener(container, cb)` does the same for manual use and returns a teardown
+function. `FakeAdapter` (`./testing`) supports it too, with a `.key("Backspace",
+{ meta: true })` replay helper for unit tests.
+
 ## API surface
 
 `MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `snapshot`, `setTooltip`,
 `addToolbar`, `getCenter`, `getViewSpan`, `project`, `unproject`, `onViewChange`,
-`setPanEnabled`, `setDoubleClickZoom`, `setCursor`, `onPointer`, `destroy`.
+`setPanEnabled`, `setDoubleClickZoom`, `setInteractive`, `setCursor`, `onPointer`,
+`onKey`, `destroy`.
+`onKey` is documented above; `bindKeyListener(container, cb)` is exported for manual use.
 
 A product simply never calls the methods it doesn't need (sigmet ignores
 `project`/`unproject`/`onViewChange`/`registerSymbols`).

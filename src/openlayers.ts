@@ -34,6 +34,7 @@ import View from "ol/View.js";
 import type {
   AdapterOptions,
   Hit,
+  KeyEvent,
   LatLng,
   LayerKind,
   MapAdapter,
@@ -49,12 +50,33 @@ import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
+import { lockToolbarItem } from "./lock.js";
+import { bindKeyListener } from "./keyboard.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** True when a hit is something the user grabs to drag (any handle/guide carrying
  *  a `role`). Construction guides (no role) and plain fills are not draggable. */
 function isDraggableHit(hit: Hit): boolean {
   return hit.props["role"] != null;
+}
+
+const OL_TOOLBAR_STYLE_ID = "draw-adapter-ol-toolbar-style";
+
+/** OpenLayers styles `.ol-control` buttons blue/translucent by default, so our toolbar
+ *  looks like loose buttons with no bar. Give it a solid white bar + plain buttons (like
+ *  MapLibre's ctrl-group / the Leaflet bar). Injected once. */
+function ensureOLToolbarStyle(): void {
+  if (typeof document === "undefined" || document.getElementById(OL_TOOLBAR_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = OL_TOOLBAR_STYLE_ID;
+  style.textContent =
+    ".ol-control.draw-adapter-toolbar{background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,.3);padding:0;overflow:hidden}" +
+    ".ol-control.draw-adapter-toolbar button{width:30px;height:30px;margin:0;padding:0;border:0;border-radius:0;" +
+    "background:#fff;color:#24292f;font-size:inherit;cursor:pointer}" +
+    ".ol-control.draw-adapter-toolbar button:hover{background:#f4f4f4}" +
+    ".ol-control.draw-adapter-toolbar button.active{background:#dbeafe}" +
+    ".ol-control.draw-adapter-toolbar button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}";
+  document.head.appendChild(style);
 }
 
 /** Batteries-included host map (headless hosts pass their own `map` instead). */
@@ -87,10 +109,14 @@ export class OpenLayersAdapter implements MapAdapter {
   private olKeys: EventsKey[] = [];
   private domPointerUp: ((e: globalThis.PointerEvent) => void) | undefined;
   private viewportPointerDown: ((e: globalThis.PointerEvent) => void) | undefined;
+  private keyCleanup: (() => void) | undefined;
   private viewportDblclick: ((e: globalThis.MouseEvent) => void) | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
   private dragging = false;
+  private locked = false;
+  private panOn = true;
+  private dblOn = true;
 
   constructor(opts: { map: OlMap } & AdapterOptions) {
     this.map = opts.map;
@@ -142,6 +168,7 @@ export class OpenLayersAdapter implements MapAdapter {
 
   addToolbar(items: ToolbarItem[], options?: ToolbarOptions): HTMLElement {
     if (this.toolbarEl) return this.toolbarEl;
+    ensureOLToolbarStyle();
     const el = document.createElement("div");
     el.className = "ol-control draw-adapter-toolbar";
     const snap = snapshotToolbarItem(options?.snapshot, {
@@ -149,7 +176,9 @@ export class OpenLayersAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getViewport()),
     });
-    populateToolbar(el, snap ? [...items, snap] : items, options);
+    const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
+    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    populateToolbar(el, [...items, ...chrome], options);
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;
     return el;
@@ -261,11 +290,27 @@ export class OpenLayersAdapter implements MapAdapter {
   }
 
   setPanEnabled(enabled: boolean): void {
-    this.dragPan?.setActive(enabled);
+    this.panOn = enabled;
+    if (!this.locked) this.dragPan?.setActive(enabled);
   }
 
   setDoubleClickZoom(enabled: boolean): void {
-    this.dblClickZoom?.setActive(enabled);
+    this.dblOn = enabled;
+    if (!this.locked) this.dblClickZoom?.setActive(enabled);
+  }
+
+  setInteractive(enabled: boolean): void {
+    this.locked = !enabled;
+    // Our drawing input is NOT an OL interaction (it's map.on/viewport listeners), so
+    // toggling every interaction freezes navigation without touching the drawing.
+    const interactions = this.map.getInteractions().getArray();
+    if (this.locked) {
+      for (const i of interactions) i.setActive(false);
+    } else {
+      for (const i of interactions) i.setActive(true);
+      this.dragPan?.setActive(this.panOn);        // restore the controller's request
+      this.dblClickZoom?.setActive(this.dblOn);
+    }
   }
 
   setCursor(cursor: string): void {
@@ -353,6 +398,11 @@ export class OpenLayersAdapter implements MapAdapter {
     );
   }
 
+  onKey(cb: (ev: KeyEvent) => void): void {
+    if (this.keyCleanup) return;
+    this.keyCleanup = bindKeyListener(this.map.getViewport(), cb);
+  }
+
   destroy(): void {
     this.layerOverlay.forEach((_, layer) => this.map.removeLayer(layer as BaseLayer));
     this.layerOverlay.clear();
@@ -373,11 +423,16 @@ export class OpenLayersAdapter implements MapAdapter {
       document.removeEventListener("pointerup", this.domPointerUp);
       this.domPointerUp = undefined;
     }
+    this.keyCleanup?.();
+    this.keyCleanup = undefined;
     this.toolbarEl?.remove();
     this.toolbarEl = undefined;
     this.tooltipEl?.remove();
     this.tooltipEl = undefined;
     this.readyPromise = undefined;
+    if (this.locked) for (const i of this.map.getInteractions().getArray()) i.setActive(true);
+    this.locked = false;
+    this.panOn = this.dblOn = true;
     this.dragPan?.setActive(true);
     this.dblClickZoom?.setActive(true); // re-enable in case we were torn down mid-draw
     this.setCursor("");

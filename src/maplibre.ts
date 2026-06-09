@@ -25,6 +25,7 @@ const MaplibreMap: MapLibreMapCtor = ((ns: { Map?: MapLibreMapCtor; default?: { 
 import type {
   AdapterOptions,
   Hit,
+  KeyEvent,
   LatLng,
   MapAdapter,
   PointerEvent,
@@ -38,6 +39,8 @@ import { cursorForHit, EMPTY_FC } from "./index.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
+import { lockToolbarItem } from "./lock.js";
+import { bindKeyListener } from "./keyboard.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 type MlHandler = (e: { lngLat: { lng: number; lat: number }; point: { x: number; y: number } }) => void;
@@ -87,12 +90,18 @@ export class MapLibreAdapter implements MapAdapter {
   private readonly renderedToOverlay = new Map<string, string>();
   private readonly builtLayers: string[] = [];
   private pointerHandlers: PointerHandlers | undefined;
+  private keyCleanup: (() => void) | undefined;
   private windowUp: ((e: MouseEvent) => void) | undefined;
   private viewHandler: (() => void) | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
   private tooltipStyle: TooltipStyle | undefined;
   private dragging = false;
+  /** Map-lock state: `locked` freezes all nav and wins over the controller's transient
+   *  pan/dbl toggles (remembered in `panOn`/`dblOn`, re-applied on unlock). */
+  private locked = false;
+  private panOn = true;
+  private dblOn = true;
   /** Raw sprite SVGs (`currentColor`), re-tinted per feature into `symbol|colour` images. */
   private spriteSvgs: Record<string, string> = {};
   /** EVERY image id we added to the host map (bare ids, `id|colour` tints, `data:`
@@ -241,7 +250,9 @@ export class MapLibreAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getContainer()),
     });
-    populateToolbar(el, snap ? [...items, snap] : items, options);
+    const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
+    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    populateToolbar(el, [...items, ...chrome], options);
     this.map.getContainer().appendChild(el);
     this.toolbarEl = el;
     return el;
@@ -334,13 +345,31 @@ export class MapLibreAdapter implements MapAdapter {
   }
 
   setPanEnabled(enabled: boolean): void {
+    this.panOn = enabled;
+    if (this.locked) return; // lock wins; remembered for unlock
     if (enabled) this.map.dragPan.enable();
     else this.map.dragPan.disable();
   }
 
   setDoubleClickZoom(enabled: boolean): void {
+    this.dblOn = enabled;
+    if (this.locked) return;
     if (enabled) this.map.doubleClickZoom.enable();
     else this.map.doubleClickZoom.disable();
+  }
+
+  setInteractive(enabled: boolean): void {
+    this.locked = !enabled;
+    const m = this.map;
+    if (this.locked) {
+      m.dragPan.disable(); m.scrollZoom.disable(); m.doubleClickZoom.disable();
+      m.boxZoom.disable(); m.keyboard.disable(); m.dragRotate.disable(); m.touchZoomRotate.disable();
+    } else {
+      m.scrollZoom.enable(); m.boxZoom.enable(); m.keyboard.enable();
+      m.dragRotate.enable(); m.touchZoomRotate.enable();
+      this.panOn ? m.dragPan.enable() : m.dragPan.disable();      // restore the controller's request
+      this.dblOn ? m.doubleClickZoom.enable() : m.doubleClickZoom.disable();
+    }
   }
 
   setCursor(cursor: string): void {
@@ -383,6 +412,11 @@ export class MapLibreAdapter implements MapAdapter {
     }
   }
 
+  onKey(cb: (ev: KeyEvent) => void): void {
+    if (this.keyCleanup) return;
+    this.keyCleanup = bindKeyListener(this.map.getContainer(), cb);
+  }
+
   destroy(): void {
     const h = this.pointerHandlers;
     if (h) {
@@ -397,6 +431,8 @@ export class MapLibreAdapter implements MapAdapter {
       window.removeEventListener("mouseup", this.windowUp);
       this.windowUp = undefined;
     }
+    this.keyCleanup?.();
+    this.keyCleanup = undefined;
     if (this.viewHandler) {
       this.map.off("moveend", this.viewHandler);
       this.viewHandler = undefined;
@@ -419,6 +455,9 @@ export class MapLibreAdapter implements MapAdapter {
     this.tooltipEl = undefined;
     this.readyPromise = undefined;
     this.setCursor("");
+    if (this.locked) this.setInteractive(true); // unlock the host map on teardown
+    this.locked = false;
+    this.panOn = this.dblOn = true;
     this.map.dragPan.enable();
     this.map.doubleClickZoom.enable(); // re-enable in case we were torn down mid-draw
   }

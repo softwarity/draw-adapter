@@ -5,7 +5,7 @@
  */
 import type { FeatureCollection, Feature } from "geojson";
 
-import type { LatLng, MapAdapter, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, TooltipStyle } from "./index.js";
+import type { KeyEvent, LatLng, MapAdapter, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, TooltipStyle } from "./index.js";
 
 export class FakeAdapter implements MapAdapter {
   snapshotSupported = true;
@@ -14,7 +14,9 @@ export class FakeAdapter implements MapAdapter {
   cursor = "";
   panEnabled = true;
   doubleClickZoom = true;
+  interactive = true;
   cb?: (e: PointerEvent) => void;
+  keyCb?: (e: KeyEvent) => void;
   viewCb?: () => void;
 
   constructor(private centre: LatLng = { lat: 0, lon: 0 }) {}
@@ -36,8 +38,10 @@ export class FakeAdapter implements MapAdapter {
   onViewChange(cb: () => void): void { this.viewCb = cb; }
   setPanEnabled(enabled: boolean): void { this.panEnabled = enabled; }
   setDoubleClickZoom(enabled: boolean): void { this.doubleClickZoom = enabled; }
+  setInteractive(enabled: boolean): void { this.interactive = enabled; }
   setCursor(cursor: string): void { this.cursor = cursor; }
   onPointer(cb: (e: PointerEvent) => void): void { this.cb = cb; }
+  onKey(cb: (e: KeyEvent) => void): void { this.keyCb = cb; }
   destroy(): void {}
 
   // ── test helpers ────────────────────────────────────────────────────────────
@@ -55,5 +59,9 @@ export class FakeAdapter implements MapAdapter {
   /** Find a pushed feature in `overlay` by its `role` prop. */
   feature(overlay: string, role: string): Feature | undefined {
     return (this.overlays[overlay]?.features ?? []).find((f) => f.properties?.["role"] === role);
+  }
+  /** Replay a key event (e.g. `key("Backspace", { meta: true })`). */
+  key(key: string, mods?: Partial<Pick<KeyEvent, "ctrl" | "meta" | "shift" | "alt">>): void {
+    this.keyCb?.({ key, code: key, ctrl: false, meta: false, shift: false, alt: false, preventDefault() {}, ...mods });
   }
 }

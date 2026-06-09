@@ -81,9 +81,10 @@ describe("LeafletAdapter", () => {
     const bar = a.addToolbar([
       { id: "circle", title: "Circle", onClick: vi.fn() },
       { id: "polygon", title: "Polygon", onClick: vi.fn() },
-    ], { snapshot: "none" });
+    ], { snapshot: "none", lock: false });
     expect(Number(bar.style.zIndex)).toBeGreaterThanOrEqual(1000);
-    expect(bar.querySelectorAll("button")).toHaveLength(2);
+    expect(bar.querySelector('button[data-tool="circle"]')).not.toBeNull();
+    expect(bar.querySelector('button[data-tool="polygon"]')).not.toBeNull();
     expect(bar.classList.contains("draw-adapter-leaflet-toolbar")).toBe(true);
     expect(el.contains(bar)).toBe(true);
     a.destroy();
@@ -146,6 +147,49 @@ describe("LeafletAdapter", () => {
     el.dispatchEvent(new MouseEvent("mousedown", at)); // 2nd press, same spot + immediate → double-click
     expect(dbls).toEqual(["v1"]); // exactly one dblclick, carrying the hovered handle
     a.destroy();
+  });
+
+  it("lock button (default) freezes navigation; lock wins over the controller's pan toggle", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const bar = a.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }]); // lock added by default
+    const lockBtn = bar.querySelector<HTMLButtonElement>('button[data-tool="lock"]')!;
+    expect(lockBtn).not.toBeNull();
+    expect(map.dragging.enabled()).toBe(true);
+
+    lockBtn.click(); // lock
+    expect(map.dragging.enabled()).toBe(false);
+    expect(map.scrollWheelZoom.enabled()).toBe(false);
+    expect(lockBtn.classList.contains("active")).toBe(true);
+
+    a.setPanEnabled(true); // controller asks for pan mid-lock → ignored (lock wins)
+    expect(map.dragging.enabled()).toBe(false);
+
+    lockBtn.click(); // unlock → restores pan (the remembered request) + zoom
+    expect(map.dragging.enabled()).toBe(true);
+    expect(map.scrollWheelZoom.enabled()).toBe(true);
+    expect(lockBtn.classList.contains("active")).toBe(false);
+    a.destroy();
+  });
+
+  it("omits the lock button when lock:false", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const bar = a.addToolbar([{ id: "circle", title: "Circle", onClick: vi.fn() }], { lock: false });
+    expect(bar.querySelector('button[data-tool="lock"]')).toBeNull();
+    a.destroy();
+  });
+
+  it("onKey forwards keydown from the focused map container; destroy detaches it", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const keys: Array<{ key: string; meta: boolean }> = [];
+    a.onKey((e) => keys.push({ key: e.key, meta: e.meta }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", metaKey: true, bubbles: true }));
+    expect(keys).toEqual([{ key: "Backspace", meta: true }]);
+    a.destroy();
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+    expect(keys).toHaveLength(1); // nothing after destroy
   });
 
   it("does NOT treat two FAR-APART mousedowns as a double-click", async () => {

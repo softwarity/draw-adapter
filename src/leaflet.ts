@@ -20,6 +20,7 @@ import * as L from "leaflet";
 import type {
   AdapterOptions,
   Hit,
+  KeyEvent,
   LatLng,
   LayerKind,
   MapAdapter,
@@ -34,6 +35,8 @@ import { num, str, rgba } from "./coerce.js";
 import { colorizeSprite } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
+import { lockToolbarItem } from "./lock.js";
+import { bindKeyListener } from "./keyboard.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** Why Leaflet can't snapshot yet — shown both as the thrown error and the
@@ -98,12 +101,16 @@ export class LeafletAdapter implements MapAdapter {
   private readyPromise: Promise<void> | undefined;
   private hovered: Hit | undefined;
   private dragging = false;
+  private locked = false;
+  private panOn = true;
+  private dblOn = true;
   private tooltipStyle: TooltipStyle | undefined;
   private tooltipEl: HTMLElement | undefined;
   private toolbarEl: HTMLElement | undefined;
   private cb: ((ev: PointerEvent) => void) | undefined;
   private domDown: ((e: Event) => void) | undefined;
   private domUp: (() => void) | undefined;
+  private keyCleanup: (() => void) | undefined;
   private lastDownT = 0;
   private lastDownX = 0;
   private lastDownY = 0;
@@ -204,7 +211,9 @@ export class LeafletAdapter implements MapAdapter {
       reason: LEAFLET_SNAPSHOT_UNSUPPORTED,
       snapshot: () => this.snapshot(),
     });
-    populateToolbar(el, snap ? [...items, snap] : items, options);
+    const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
+    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    populateToolbar(el, [...items, ...chrome], options);
     // Leaflet panes climb to z-index ~700 and its controls to ~1000, so the
     // generic toolbar's z-index:3 (set by applyToolbarLayout) would hide the bar
     // UNDER the tiles. Lift it above everything Leaflet stacks.
@@ -243,13 +252,31 @@ export class LeafletAdapter implements MapAdapter {
   }
 
   setPanEnabled(enabled: boolean): void {
+    this.panOn = enabled;
+    if (this.locked) return;
     if (enabled) this.map.dragging.enable();
     else this.map.dragging.disable();
   }
 
   setDoubleClickZoom(enabled: boolean): void {
+    this.dblOn = enabled;
+    if (this.locked) return;
     if (enabled) this.map.doubleClickZoom.enable();
     else this.map.doubleClickZoom.disable();
+  }
+
+  setInteractive(enabled: boolean): void {
+    this.locked = !enabled;
+    const m = this.map;
+    const extras = [m.scrollWheelZoom, m.boxZoom, m.keyboard, m.touchZoom];
+    if (this.locked) {
+      m.dragging.disable(); m.doubleClickZoom.disable();
+      for (const h of extras) h?.disable();
+    } else {
+      for (const h of extras) h?.enable();
+      this.panOn ? m.dragging.enable() : m.dragging.disable();      // restore the controller's request
+      this.dblOn ? m.doubleClickZoom.enable() : m.doubleClickZoom.disable();
+    }
   }
 
   setCursor(cursor: string): void {
@@ -314,6 +341,11 @@ export class LeafletAdapter implements MapAdapter {
     // is suppressed on draggable hits by our mousedown stopPropagation.)
   }
 
+  onKey(cb: (ev: KeyEvent) => void): void {
+    if (this.keyCleanup) return;
+    this.keyCleanup = bindKeyListener(this.map.getContainer(), cb);
+  }
+
   destroy(): void {
     for (const g of this.groups.values()) {
       g.clearLayers();
@@ -325,6 +357,8 @@ export class LeafletAdapter implements MapAdapter {
     if (this.domDown) this.map.getContainer().removeEventListener("mousedown", this.domDown as EventListener, true);
     if (this.domUp) document.removeEventListener("mouseup", this.domUp);
     this.domDown = this.domUp = undefined;
+    this.keyCleanup?.();
+    this.keyCleanup = undefined;
     if (this.viewHandler) this.map.off("moveend zoomend", this.viewHandler);
     this.map.off("mousemove");
     this.map.off("click");
@@ -338,6 +372,9 @@ export class LeafletAdapter implements MapAdapter {
     this.tooltipEl = undefined;
     this.readyPromise = undefined;
     this.setCursor("");
+    if (this.locked) this.setInteractive(true); // unlock the host map on teardown
+    this.locked = false;
+    this.panOn = this.dblOn = true;
     this.map.dragging.enable();
     this.map.doubleClickZoom.enable(); // re-enable in case we were torn down mid-draw
   }

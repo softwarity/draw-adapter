@@ -63,6 +63,25 @@ export interface PointerEvent {
   hit?: { overlay: string; props: Record<string, unknown> };
 }
 
+/**
+ * A normalized keydown forwarded by {@link MapAdapter.onKey}. The adapter is a dumb
+ * transport: it reports the raw key/modifiers (skipping editable targets) and lets the
+ * consumer decide the action — e.g. `Delete`/`Backspace` ⇒ remove the selection. No
+ * domain semantics live in the adapter.
+ */
+export interface KeyEvent {
+  /** `KeyboardEvent.key` — e.g. `"Backspace"`, `"Delete"`, `"Escape"`, `"a"`. */
+  key: string;
+  /** `KeyboardEvent.code` — physical key, e.g. `"Backspace"`, `"KeyA"`. */
+  code: string;
+  ctrl: boolean;
+  meta: boolean;
+  shift: boolean;
+  alt: boolean;
+  /** Prevent the browser default (e.g. `Backspace` navigating back). */
+  preventDefault: () => void;
+}
+
 /** A hit returned by an adapter's internal hit-test. */
 export interface Hit {
   overlay: string;
@@ -90,8 +109,9 @@ export type ToolbarPadding =
   | { top?: string; right?: string; bottom?: string; left?: string };
 
 export interface ToolbarOptions {
+  /** Where the bar sits (anchor). Its flow (row vs column) is **derived** from this: a
+   *  top/bottom edge ⇒ horizontal row, a left/right edge ⇒ vertical column. */
   position?: ToolbarPosition;
-  orientation?: "horizontal" | "vertical";
   padding?: ToolbarPadding;
   gap?: string;
   className?: string;
@@ -111,6 +131,9 @@ export interface ToolbarOptions {
    * On the Leaflet adapter the button is shown but DISABLED.
    */
   snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; hideOverlays?: string[] };
+  /** Add a "lock map" toggle at the **end** of the bar — freezes pan/zoom/rotate so the
+   *  map can't move while drawing. Default `true`; set `false` to hide it. */
+  lock?: boolean;
 }
 
 /** Snapshot output size: a pixel-ratio preset (see `snapshotScale`). */
@@ -143,11 +166,21 @@ export interface ToolbarItem {
   /** Inline SVG for the button. A neutral placeholder icon is used when omitted. */
   svg?: string;
   toggle?: boolean;
+  /** When true, clicking this button does NOT change the toolbar's active selection —
+   *  for utility buttons (snapshot / lock) that aren't drawing tools. */
+  standalone?: boolean;
   /** Render the button disabled (no click wiring); used for the Leaflet snapshot button. */
   disabled?: boolean;
   /** The click handler. Receives the `MouseEvent` so it can read modifier keys
-   *  (e.g. the snapshot button uses Ctrl/⌘-click for its alternate delivery). */
-  onClick: (e?: MouseEvent) => void;
+   *  (e.g. the snapshot button uses Ctrl/⌘-click for its alternate delivery). Optional
+   *  for a submenu parent, whose click just toggles its flyout. */
+  onClick?: (e?: MouseEvent) => void;
+  /**
+   * Child items shown in a **flyout** that opens on click. The flyout opens *into the
+   * map* based on the toolbar's edge (top ⇒ below, bottom ⇒ above, left ⇒ right,
+   * right ⇒ left); picking a child fires its `onClick` and closes the flyout.
+   */
+  children?: ToolbarItem[];
   /** Called once with the created `<button>` for live DOM wiring (e.g. the snapshot
    *  button swaps its icon while a modifier key is held over it). */
   onRender?: (button: HTMLButtonElement) => void;
@@ -211,10 +244,23 @@ export interface MapAdapter {
   setPanEnabled(enabled: boolean): void;
   /** Toggle the host map's double-click-zoom (disabled while drawing a path). */
   setDoubleClickZoom(enabled: boolean): void;
+  /**
+   * Lock / unlock **all** map navigation (pan + zoom + rotate + scroll + keyboard +
+   * touch) — e.g. the toolbar "lock map" button. `false` freezes the map; while locked
+   * it **wins** over the transient `setPanEnabled`/`setDoubleClickZoom` the controller
+   * toggles during a draw (those are remembered and re-applied on unlock).
+   */
+  setInteractive(enabled: boolean): void;
   /** Set the map cursor (`"crosshair"` while drawing; `""` resets it). */
   setCursor(cursor: string): void;
 
   onPointer(cb: (ev: PointerEvent) => void): void;
+
+  /** Notify on keydown while the map (its container) is focused; editable targets
+   *  (`input`/`textarea`/`select`/contenteditable) are skipped. The consumer maps keys
+   *  to actions (e.g. `Delete`/`Backspace` ⇒ remove selection). Raw transport, no
+   *  domain semantics. */
+  onKey(cb: (ev: KeyEvent) => void): void;
 
   /** Detach everything this adapter added; MUST NOT destroy the host map. Idempotent. */
   destroy(): void;
@@ -250,6 +296,7 @@ export {
 } from "./symbols.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
+export { bindKeyListener } from "./keyboard.js";
 export { snapshotScale, downloadPng, copyPng, shutterFlash, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";

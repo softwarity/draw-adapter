@@ -2,6 +2,12 @@
 
 ## 0.2.7
 
+- **Add:** `MapAdapter.onKey(cb)` — forwards a normalized `KeyEvent` on keydown while the map is focused (scoped to the container, multi-instance safe; editable targets skipped). Raw transport — the consumer maps keys to actions (e.g. Delete/Backspace ⇒ remove selection). Implemented on all 3 engines + `FakeAdapter` (`.key()` helper); `bindKeyListener` exported.
+- **Add:** toolbar **submenus** — a `ToolbarItem` with `children: ToolbarItem[]` becomes a flyout that opens on **hover** (desktop) and click (touch), *into the map* based on the toolbar edge (top ⇒ below · bottom ⇒ above · left ⇒ right · right ⇒ left). Two modes: **click** (parent = fixed category; a child runs its `onClick`) and **toggle** (`toggle: true`, a split button — the parent mirrors the selected child, becomes the active tool, and a parent click re-runs it). An outside press closes the flyout. `ToolbarItem.onClick` is now optional.
+- **Add:** built-in **"lock map"** toggle at the end of the bar (default on; `ToolbarOptions.lock: false` hides it) — freezes pan/zoom/rotate on all 3 engines so the map can't move while drawing. New `MapAdapter.setInteractive(enabled)`: while locked it **wins** over the controller's transient `setPanEnabled`/`setDoubleClickZoom` (remembered and re-applied on unlock). New `ToolbarItem.standalone` (a utility button whose click doesn't change the active tool selection — also set on the snapshot button now).
+- **Breaking:** removed `ToolbarOptions.orientation` — the bar's flow is now **derived from `position`** (top/bottom edge ⇒ horizontal row, left/right edge ⇒ vertical column), and the submenu flyout follows it (column vs row). Consumers must drop any `orientation` they passed.
+- **Fix:** OpenLayers toolbar now renders as a solid white bar with plain buttons (OL's default `.ol-control` buttons were blue/translucent, so the bar looked like loose buttons).
+
 ---
 
 ## 0.2.6

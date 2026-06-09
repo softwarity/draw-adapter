@@ -175,6 +175,7 @@ export function snapshotToolbarItem(
   const hideOverlays = cfg.hideOverlays;
   return {
     id: "snapshot",
+    standalone: true, // capturing must not deselect the active drawing tool
     svg: DELIVERY_ICON[primary],
     title: cap.supported
       ? deliveryTitle(primary, secondary)
