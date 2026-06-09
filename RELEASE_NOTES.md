@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.8
+
+---
+
 ## 0.2.7
 
 - **Add:** `MapAdapter.onKey(cb)` — forwards a normalized `KeyEvent` on keydown while the map is focused (scoped to the container, multi-instance safe; editable targets skipped). Raw transport — the consumer maps keys to actions (e.g. Delete/Backspace ⇒ remove selection). Implemented on all 3 engines + `FakeAdapter` (`.key()` helper); `bindKeyListener` exported.
