@@ -1,0 +1,375 @@
+// @vitest-environment jsdom
+import { describe, expect, it } from "vitest";
+
+import { WidgetLayer } from "../src/widget.js";
+import type { WidgetHost, WidgetMount } from "../src/widget.js";
+import type { LatLng, MarkerWidget, PointerEvent } from "../src/index.js";
+
+/** Records mounts (as plain divs) + emitted pointer events; `unprojectClient` is the
+ *  identity `(x,y) ⇒ { lon:x, lat:y }` so coordinates are easy to assert. */
+class FakeHost implements WidgetHost {
+  mounts: { el: HTMLElement; anchor: LatLng; removed: boolean }[] = [];
+  emits: PointerEvent[] = [];
+  createMount(anchor: LatLng): WidgetMount {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const m = { el, anchor, removed: false };
+    this.mounts.push(m);
+    return {
+      el,
+      setAnchor: (a) => { m.anchor = a; },
+      remove: () => { m.removed = true; el.remove(); },
+    };
+  }
+  unprojectClient(cx: number, cy: number): LatLng { return { lat: cy, lon: cx }; }
+  emit(ev: PointerEvent): void { this.emits.push(ev); }
+}
+
+/** Dispatch a (mouse-backed) pointer event — jsdom has no `PointerEvent` ctor, but a
+ *  `MouseEvent` with a pointer type triggers `pointerX` listeners and carries clientX/Y. */
+function pointer(el: Element, type: string, x = 0, y = 0, init: MouseEventInit = {}): void {
+  el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, ...init }));
+}
+
+const cardEl = (host: FakeHost, i = 0): HTMLElement =>
+  host.mounts[i]!.el.querySelector(".draw-adapter-widget-card") as HTMLElement;
+
+const VOLCANO: MarkerWidget = {
+  id: "v1",
+  anchor: { lon: 3, lat: 46 },
+  origin: "bottom",
+  border: "#1f2328",
+  radius: "small",
+  padding: "small",
+  font: { color: "#1f2328", size: 13 },
+  child: { dir: "v", align: "center", gap: 1, items: [
+    { kind: "glyph", svg: "<svg id='g'></svg>", size: 24 },
+    { kind: "text", value: "ETNA", editable: true, control: "input", autofocus: true },
+    { kind: "coord" },
+  ] },
+};
+
+describe("WidgetLayer — builds the card tree", () => {
+  it("renders glyph + editable input + coord, framed, with the origin transform", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([VOLCANO]);
+
+    const mount = host.mounts[0]!;
+    expect(mount.el.classList.contains("draw-adapter-widget")).toBe(true);
+    expect(mount.el.style.pointerEvents).toBe("none"); // only the card body is interactive
+
+    const card = cardEl(host);
+    // frame
+    expect(card.style.border).toContain("1px solid");
+    expect(card.style.padding).toBe("3px 5px"); // padding "small"
+    expect(card.style.transform).toContain("-50"); // origin "bottom" ⇒ translate(-50%, -100%)
+    expect(card.style.transform).toContain("-100");
+    // tree
+    expect(card.querySelector("span > svg")?.id).toBe("g");
+    const input = card.querySelector("input") as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("ETNA");
+    expect(card.querySelector('[data-wtag="coord"]')?.textContent).toBe("46.00°N 3.00°E");
+  });
+
+  it("a widget with no bg/border renders just the glyph — no frame, no padding", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "g1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "v", items: [{ kind: "glyph", svg: "<svg></svg>", size: 20 }] },
+    }]);
+    const card = cardEl(host);
+    expect(card.style.background).toBe("transparent");
+    expect(card.style.border).toBe(""); // no frame border
+    expect(card.style.padding).toBe("0px"); // unframed ⇒ no inner padding
+  });
+
+  it("static (non-editable) text renders a <span>, not an <input>", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "s1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", value: "NN" }] },
+    }]);
+    const card = cardEl(host);
+    expect(card.querySelector("input")).toBeNull();
+    expect(card.querySelector('[data-wtag="text:label"]')?.textContent).toBe("NN");
+  });
+
+  it("auto-sizes the editable input — an empty input gets an explicit (≈1 char) centered width, not the browser default", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "e1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "v", align: "center", items: [{ kind: "text", value: "", editable: true }] },
+    }]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    expect(input.style.width).toMatch(/px$/); // a width is set (not left at the ~20ch default)
+    expect(input.style.textAlign).toBe("center");
+  });
+});
+
+describe("WidgetLayer — diff by id (in place)", () => {
+  it("re-`setWidgets` reuses the SAME input element (keeps focus/caret)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([VOLCANO]);
+    const input1 = cardEl(host).querySelector("input");
+    layer.setWidgets([{ ...VOLCANO, anchor: { lon: 4, lat: 47 } }]); // moved + re-pushed
+    const input2 = cardEl(host).querySelector("input");
+    expect(input2).toBe(input1); // not recreated
+    expect(host.mounts).toHaveLength(1); // same card, not a new mount
+  });
+
+  it("an external value change is reflected; an equal round-trip keeps the typed value", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([VOLCANO]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    input.value = "ETN"; // user typed
+    layer.setWidgets([VOLCANO]); // consumer re-pushes the OLD value "ETNA"…
+    expect(input.value).toBe("ETNA"); // external value wins on a real change
+    input.value = "ETNA-X";
+    layer.setWidgets([{ ...VOLCANO, child: { ...VOLCANO.child, items: [
+      VOLCANO.child.items[0]!, { kind: "text", value: "ETNA-X", editable: true }, VOLCANO.child.items[2]!,
+    ] } }]);
+    expect(input.value).toBe("ETNA-X"); // equal ⇒ untouched (no caret jump)
+  });
+
+  it("removes a card whose id is dropped from the set", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([VOLCANO, { ...VOLCANO, id: "v2", anchor: { lon: 1, lat: 1 } }]);
+    expect(host.mounts).toHaveLength(2);
+    layer.setWidgets([VOLCANO]);
+    expect(host.mounts[1]!.removed).toBe(true);
+  });
+
+  it("toggling editable replaces the node (label ⇄ input)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const make = (editable: boolean): MarkerWidget => ({
+      id: "t", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", value: "X", editable }] },
+    });
+    layer.setWidgets([make(false)]);
+    expect(cardEl(host).querySelector("input")).toBeNull();
+    layer.setWidgets([make(true)]);
+    expect(cardEl(host).querySelector("input")).not.toBeNull();
+    layer.setWidgets([make(false)]);
+    expect(cardEl(host).querySelector("input")).toBeNull();
+  });
+});
+
+describe("WidgetLayer — coord formatting", () => {
+  it("uses the default decimal format, then honours setCoordFormat live", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([VOLCANO]);
+    const coord = cardEl(host).querySelector('[data-wtag="coord"]') as HTMLElement;
+    expect(coord.textContent).toBe("46.00°N 3.00°E");
+    layer.setCoordFormat((ll) => `${ll.lon},${ll.lat}`);
+    expect(coord.textContent).toBe("3,46"); // re-rendered in place
+  });
+
+  it("re-formats coord when the anchor moves", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setCoordFormat((ll) => `${ll.lon},${ll.lat}`);
+    layer.setWidgets([VOLCANO]);
+    expect((cardEl(host).querySelector('[data-wtag="coord"]') as HTMLElement).textContent).toBe("3,46");
+    layer.setWidgets([{ ...VOLCANO, anchor: { lon: 9, lat: 8 } }]);
+    expect((cardEl(host).querySelector('[data-wtag="coord"]') as HTMLElement).textContent).toBe("9,8");
+  });
+});
+
+describe("WidgetLayer — pointer routing", () => {
+  it("a tap on the card emits down → up → click with the widget hit + unprojected coord", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([VOLCANO]);
+    const card = cardEl(host);
+    pointer(card, "pointerdown", 10, 20);
+    pointer(card, "pointerup", 10, 20);
+    expect(host.emits.map((e) => e.type)).toEqual(["down", "up", "click"]);
+    expect(host.emits[0]).toMatchObject({ lngLat: { lat: 20, lon: 10 }, hit: { overlay: "widget", props: { id: "v1" } } });
+  });
+
+  it("a drag emits down → move → up (no click) and carries live coords", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([VOLCANO]);
+    const card = cardEl(host);
+    pointer(card, "pointerdown", 10, 20);
+    pointer(card, "pointermove", 50, 60);
+    pointer(card, "pointerup", 50, 60);
+    expect(host.emits.map((e) => e.type)).toEqual(["down", "move", "up"]);
+    expect(host.emits[1]).toMatchObject({ type: "move", lngLat: { lat: 60, lon: 50 } });
+  });
+
+  it("a press on the editable input edits — it does NOT emit a pointer/drag", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([VOLCANO]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    pointer(input, "pointerdown", 5, 5);
+    expect(host.emits).toHaveLength(0);
+  });
+
+  it("forwards modifier keys on the emitted events", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([VOLCANO]);
+    pointer(cardEl(host), "pointerdown", 1, 1, { metaKey: true, shiftKey: true });
+    expect(host.emits[0]).toMatchObject({ ctrlKey: false, metaKey: true, shiftKey: true, altKey: false });
+  });
+});
+
+describe("WidgetLayer — editing", () => {
+  it("fires onWidgetEdit on every keystroke (native input event)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: { id: string; value: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([VOLCANO]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    input.value = "ETN";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.value = "ETNA";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(edits).toEqual([{ id: "v1", value: "ETN" }, { id: "v1", value: "ETNA" }]);
+  });
+
+  it("uppercase: an editable input enters + emits its value in upper case", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: { id: string; value: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "u1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", value: "", editable: true, uppercase: true }] } }]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    expect(input.style.textTransform).toBe("uppercase");
+    input.value = "etna";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(input.value).toBe("ETNA");
+    expect(edits).toEqual([{ id: "u1", value: "ETNA" }]);
+  });
+
+  it("uppercase on a static label displays upper case (text-transform)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "u2", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", value: "etna", uppercase: true }] } }]);
+    const label = cardEl(host).querySelector('[data-wtag="text:label"]') as HTMLElement;
+    expect(label.style.textTransform).toBe("uppercase");
+  });
+});
+
+describe("WidgetLayer — delete button", () => {
+  const deletableInput = (extra: Partial<MarkerWidget> = {}): MarkerWidget => ({
+    id: "d1", anchor: { lon: 0, lat: 0 }, deletable: true, border: "#111", ...extra,
+    child: { dir: "h", items: [{ kind: "text", value: "", editable: true }] },
+  });
+
+  it("renders a bare × (no frills) only when deletable; a click fires onWidgetDelete({ id })", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const deleted: { id: string }[] = [];
+    layer.onWidgetDelete((e) => deleted.push(e));
+    layer.setWidgets([deletableInput()]);
+    const btn = cardEl(host).querySelector(".draw-adapter-widget-del") as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toBe("×");
+    expect(btn.style.background).toBe("transparent"); // no fill
+    expect(btn.style.borderStyle).toBe("none"); // no border
+    expect(btn.style.color).toMatch(/^(#000|rgb\(0, 0, 0\)|black)$/); // forced black
+    expect(btn.style.position).toBe("absolute");
+    expect(btn.style.top).toBe("2px"); // framed ⇒ inside the corner with a small inset
+    expect(btn.style.transform).toBe("");
+    expect(btn.style.display).toBe("flex"); // square centred box ⇒ × equidistant from top/right
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(deleted).toEqual([{ id: "d1" }]);
+  });
+
+  it("when unframed (no bg/border) the × is nudged up-and-right, clear of the content", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "d2", anchor: { lon: 0, lat: 0 }, deletable: true,
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] } }]);
+    const btn = cardEl(host).querySelector(".draw-adapter-widget-del") as HTMLButtonElement;
+    expect(btn.style.transform).toContain("translate"); // no frame padding to sit in ⇒ pushed out
+  });
+
+  it("is a separate element from the input — an input-only card is still deletable, with no drag", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const deleted: { id: string }[] = [];
+    layer.onWidgetDelete((e) => deleted.push(e));
+    layer.setWidgets([deletableInput()]);
+    const btn = cardEl(host).querySelector(".draw-adapter-widget-del") as HTMLButtonElement;
+    expect(btn.closest("input")).toBeNull(); // not swallowed by the input
+    btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
+    expect(host.emits).toHaveLength(0); // pressing × never starts a card drag/select
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(deleted).toEqual([{ id: "d1" }]);
+  });
+
+  it("doesn't disturb the reconcile, and the button is removed when deletable turns off", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([deletableInput()]);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-del")).not.toBeNull();
+    expect(cardEl(host).querySelector("input")).not.toBeNull(); // content coexists with the button
+    layer.setWidgets([deletableInput({ deletable: false })]);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-del")).toBeNull();
+    expect(cardEl(host).querySelector("input")).not.toBeNull(); // content intact
+  });
+});
+
+describe("WidgetLayer — action buttons", () => {
+  it("renders a button per place; a click fires onWidgetAction({ id, event })", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([{ id: "w1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
+      buttons: [{ event: "draw-again", place: ["right", "bottom"], bordered: true, svg: "<svg id='plus'></svg>" }] }]);
+    const btns = cardEl(host).querySelectorAll(".draw-adapter-widget-btn");
+    expect(btns.length).toBe(2); // right + bottom
+    (btns[0] as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(actions).toEqual([{ id: "w1", event: "draw-again" }]);
+  });
+
+  it("unions place groups (deduped): left-corners + top-corners ⇒ 3 corners", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "w2", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
+      buttons: [{ event: "x", place: ["left-corners", "top-corners"] }] }]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(3);
+  });
+
+  it("a press on an action button never starts a card drag", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "w3", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
+      buttons: [{ event: "x", place: "right" }] }]);
+    const btn = cardEl(host).querySelector(".draw-adapter-widget-btn") as HTMLElement;
+    btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
+    expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — action buttons are gated by what you pass (deselect)", () => {
+  it("removes the action buttons when the `buttons` prop is dropped", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const w = (withButtons: boolean): MarkerWidget => ({
+      id: "w", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
+      ...(withButtons ? { buttons: [{ event: "x", place: "right" }] } : {}),
+    });
+    layer.setWidgets([w(true)]);  // "selected" → buttons shown
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(1);
+    layer.setWidgets([w(false)]); // "deselected" → no buttons passed
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(0);
+    // same for the delete button
+    layer.setWidgets([{ ...w(false), deletable: true }]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-del").length).toBe(1);
+    layer.setWidgets([w(false)]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-del").length).toBe(0);
+  });
+});

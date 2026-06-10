@@ -23,14 +23,18 @@ import type {
   KeyEvent,
   LatLng,
   LayerKind,
+  LngLatBounds,
   MapAdapter,
+  MarkerWidget,
   PointerEvent,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
   TooltipStyle,
+  WidgetEdit,
 } from "./index.js";
 import { cursorForHit } from "./index.js";
+import { WidgetLayer } from "./widget.js";
 import { num, str, rgba } from "./coerce.js";
 import { boxPadding, boxRadius } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
@@ -112,11 +116,16 @@ export class LeafletAdapter implements MapAdapter {
   private cb: ((ev: PointerEvent) => void) | undefined;
   private domDown: ((e: Event) => void) | undefined;
   private domUp: ((e: MouseEvent) => void) | undefined;
+  private windowBlur: (() => void) | undefined;
+  private blurListener: (() => void) | undefined;
+  /** Hit captured at `down`, reused for that press's `click` (atomic press — see onPointer). */
+  private pressHit: Hit | undefined;
   private keyCleanup: (() => void) | undefined;
   private lastDownT = 0;
   private lastDownX = 0;
   private lastDownY = 0;
   private viewHandler: (() => void) | undefined;
+  private widgets: WidgetLayer | undefined;
 
   constructor(opts: { map: L.Map } & AdapterOptions) {
     this.map = opts.map;
@@ -174,6 +183,11 @@ export class LeafletAdapter implements MapAdapter {
     if (!group) return;
     group.clearLayers();
     if (data.features.length) group.addData(data);
+  }
+
+  setOverlayVisible(id: string, visible: boolean): void {
+    const pane = this.map.getPane(`dap-${id}`);
+    if (pane) pane.style.display = visible ? "" : "none";
   }
 
   /** Not supported yet — see {@link LEAFLET_SNAPSHOT_UNSUPPORTED}. (async ⇒ rejects.) */
@@ -238,6 +252,24 @@ export class LeafletAdapter implements MapAdapter {
     return Math.max(Math.abs(b.getEast() - b.getWest()), Math.abs(b.getNorth() - b.getSouth())) || 10;
   }
 
+  getBounds(): LngLatBounds {
+    const b = this.map.getBounds();
+    return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  }
+
+  getZoom(): number {
+    return this.map.getZoom();
+  }
+
+  getContainer(): HTMLElement {
+    return this.map.getContainer();
+  }
+
+  fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void {
+    const p = opts?.padding ?? 0;
+    this.map.fitBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]], { padding: [p, p] });
+  }
+
   project(p: LatLng): [number, number] | null {
     const pt = this.map.latLngToContainerPoint([p.lat, p.lon]);
     return [pt.x, pt.y];
@@ -296,6 +328,7 @@ export class LeafletAdapter implements MapAdapter {
     // starts a pan (mirrors the OpenLayers DragPan capture fix). Plain presses are
     // left alone so Leaflet still emits its click.
     const onDown = (e: MouseEvent): void => {
+      if ((e.target as HTMLElement | null)?.closest?.(".draw-adapter-widget")) return; // card owns it
       const ll = this.map.mouseEventToLatLng(e);
       const hit = this.hovered;
       // MANUAL double-click detection. Leaflet renders handles as DOM markers that are recreated
@@ -313,21 +346,37 @@ export class LeafletAdapter implements MapAdapter {
       this.lastDownX = e.clientX;
       this.lastDownY = e.clientY;
       this.dragging = true;
+      this.pressHit = hit; // remembered for this press's click
       if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
       cb({ type: "down", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
     const onUp = (e: MouseEvent): void => {
+      if ((e.target as HTMLElement | null)?.closest?.(".draw-adapter-widget")) return; // card's own up
       this.dragging = false;
-      cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
+      const ll = this.map.mouseEventToLatLng(e); // real lon/lat from the release point (#2)
+      cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e) });
     };
     container.addEventListener("mousedown", onDown, true);
     document.addEventListener("mouseup", onUp);
     this.domDown = onDown as (e: Event) => void;
     this.domUp = onUp;
+    if (typeof window !== "undefined") {
+      // Leaving the window mid-press loses the `up`; purge press state so the first click back
+      // (the focusing click) starts clean instead of inheriting a stale drag/hit/dbl-click timer.
+      this.windowBlur = () => { this.dragging = false; this.pressHit = undefined; this.lastDownT = 0; };
+      window.addEventListener("blur", this.windowBlur);
+    }
 
     this.map.on("mousemove", (evt: L.LeafletMouseEvent) => {
       const ll = evt.latlng;
       const mods = modifiers(evt.originalEvent);
+      // Recover a swallowed `up`: a move with NO button held means the press already ended
+      // (e.g. the mouseup was eaten by a window-focusing gesture). Finalise so nothing sticks.
+      if (this.dragging && evt.originalEvent.buttons === 0) {
+        this.dragging = false;
+        this.pressHit = undefined;
+        cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
+      }
       if (this.dragging) {
         cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
         return;
@@ -337,8 +386,15 @@ export class LeafletAdapter implements MapAdapter {
       cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods, ...(hit ? { hit } : {}) });
     });
     this.map.on("click", (evt: L.LeafletMouseEvent) => {
-      const hit = this.hovered;
+      // Atomic press: reuse the `down` hit. A select-driven re-render recreates the feature's DOM
+      // node, dropping `this.hovered` (mouseout, no fresh mouseover) — so re-reading it here misses.
+      const hit = this.pressHit;
       cb({ type: "click", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
+    });
+    this.map.on("contextmenu", (evt: L.LeafletMouseEvent) => {
+      L.DomEvent.preventDefault(evt.originalEvent); // suppress the browser menu
+      const hit = this.hovered;
+      cb({ type: "contextmenu", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
     });
     // (dblclick is handled by the native capture listener above — Leaflet's own map dblclick
     // is suppressed on draggable hits by our mousedown stopPropagation.)
@@ -348,6 +404,59 @@ export class LeafletAdapter implements MapAdapter {
     if (this.keyCleanup) return;
     this.keyCleanup = bindKeyListener(this.map.getContainer(), cb);
   }
+
+  onBlur(cb: () => void): void {
+    if (this.blurListener || typeof window === "undefined") return;
+    this.blurListener = cb;
+    window.addEventListener("blur", cb);
+  }
+
+  private widgetLayer(): WidgetLayer {
+    if (!this.widgets) {
+      const map = this.map;
+      this.widgets = new WidgetLayer({
+        createMount: (anchor) => {
+          // Empty divIcon = a positioning SHELL. We inject the card DOM into its element
+          // ONCE and only ever `setLatLng` to move it — never `setIcon` (that would rebuild
+          // the DOM and drop the input's focus/caret). `className` overrides the default
+          // `leaflet-div-icon` so there's no stock white box; `iconSize: null` ⇒ size to content.
+          const icon = L.divIcon({
+            className: "draw-adapter-widget",
+            html: "",
+            iconSize: null as unknown as L.PointTuple,
+            iconAnchor: [0, 0], // top-left at the latlng; the `origin` shift is a CSS transform
+          });
+          const marker = L.marker([anchor.lat, anchor.lon], { icon, interactive: false, keyboard: false }).addTo(map);
+          const el = marker.getElement() as HTMLElement;
+          // The card lives INSIDE the Leaflet container, so its DOM click/mousedown bubble up
+          // and Leaflet synthesizes a (no-hit) map `click` — which makes the consumer deselect
+          // right after selecting. Stop those at the card; it emits its own widget click via
+          // Pointer Events. (MapLibre is canvas-isolated and OL Overlays use stopEvent, so only
+          // Leaflet needs this.)
+          L.DomEvent.disableClickPropagation(el);
+          L.DomEvent.disableScrollPropagation(el);
+          return {
+            el,
+            setAnchor: (a) => { marker.setLatLng([a.lat, a.lon]); },
+            remove: () => { marker.remove(); },
+          };
+        },
+        unprojectClient: (cx, cy) => {
+          const r = map.getContainer().getBoundingClientRect();
+          const ll = map.containerPointToLatLng(L.point(cx - r.left, cy - r.top));
+          return { lat: ll.lat, lon: ll.lng };
+        },
+        emit: (ev) => this.cb?.(ev),
+      });
+    }
+    return this.widgets;
+  }
+
+  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
+  onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
+  onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
 
   destroy(): void {
     for (const g of this.groups.values()) {
@@ -359,12 +468,16 @@ export class LeafletAdapter implements MapAdapter {
     this.paneNames.length = 0;
     if (this.domDown) this.map.getContainer().removeEventListener("mousedown", this.domDown as EventListener, true);
     if (this.domUp) document.removeEventListener("mouseup", this.domUp);
-    this.domDown = this.domUp = undefined;
+    if (this.windowBlur && typeof window !== "undefined") window.removeEventListener("blur", this.windowBlur);
+    if (this.blurListener && typeof window !== "undefined") window.removeEventListener("blur", this.blurListener);
+    this.domDown = this.domUp = this.windowBlur = this.blurListener = undefined;
+    this.pressHit = undefined;
     this.keyCleanup?.();
     this.keyCleanup = undefined;
     if (this.viewHandler) this.map.off("moveend zoomend", this.viewHandler);
     this.map.off("mousemove");
     this.map.off("click");
+    this.map.off("contextmenu");
     this.map.off("dblclick");
     this.cb = undefined;
     this.viewHandler = undefined;
@@ -373,6 +486,8 @@ export class LeafletAdapter implements MapAdapter {
     this.toolbarEl = undefined;
     this.tooltipEl?.remove();
     this.tooltipEl = undefined;
+    this.widgets?.destroy();
+    this.widgets = undefined;
     this.readyPromise = undefined;
     this.setCursor("");
     if (this.locked) this.setInteractive(true); // unlock the host map on teardown

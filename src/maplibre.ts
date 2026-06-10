@@ -15,27 +15,35 @@ import type { FeatureCollection } from "geojson";
 // ("Named export 'Map' not found"). Import the namespace and resolve the ctor at
 // runtime (handles both the CJS-interop default and a future ESM named export).
 // `import type` is erased, so the type alias stays a clean named type import.
-import type { Map as MapLibreMap, MapOptions } from "maplibre-gl";
+import type { Map as MapLibreMap, MapOptions, Marker as MlMarker, MarkerOptions } from "maplibre-gl";
 import * as maplibregl from "maplibre-gl";
 
 type MapLibreMapCtor = new (options: MapOptions) => MapLibreMap;
 const MaplibreMap: MapLibreMapCtor = ((ns: { Map?: MapLibreMapCtor; default?: { Map: MapLibreMapCtor } }) =>
   ns.Map ?? ns.default!.Map)(maplibregl as never);
 
+type MlMarkerCtor = new (options?: MarkerOptions) => MlMarker;
+const MaplibreMarker: MlMarkerCtor = ((ns: { Marker?: MlMarkerCtor; default?: { Marker: MlMarkerCtor } }) =>
+  ns.Marker ?? ns.default!.Marker)(maplibregl as never);
+
 import type {
   AdapterOptions,
   Hit,
   KeyEvent,
   LatLng,
+  LngLatBounds,
   MapAdapter,
+  MarkerWidget,
   PointerEvent,
   SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
   TooltipStyle,
+  WidgetEdit,
 } from "./index.js";
 import { cursorForHit, EMPTY_FC } from "./index.js";
+import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
 import { boxPadding, boxRadius } from "./textbox.js";
 import { populateToolbar } from "./toolbar.js";
@@ -52,6 +60,7 @@ interface PointerHandlers {
   mouseup: MlHandler;
   click: MlHandler;
   dblclick: MlHandler;
+  contextmenu: MlHandler;
 }
 
 export type Projection = "mercator" | "globe";
@@ -106,6 +115,15 @@ export class MapLibreAdapter implements MapAdapter {
   private pointerHandlers: PointerHandlers | undefined;
   private keyCleanup: (() => void) | undefined;
   private windowUp: ((e: MouseEvent) => void) | undefined;
+  private windowBlur: (() => void) | undefined;
+  private blurListener: (() => void) | undefined;
+  /** Press state captured at `down`, used to emit a `click` ourselves on release — MapLibre's
+   *  native `click` can be swallowed by the OS on the first click after re-focusing the window. */
+  private pressHit: Hit | undefined;
+  private pressX = 0;
+  private pressY = 0;
+  private pressDown = false;
+  private justSynthClick = false;
   private viewHandler: (() => void) | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
@@ -124,6 +142,8 @@ export class MapLibreAdapter implements MapAdapter {
   /** Image ids currently being rasterized (deduplicates `styleimagemissing`). */
   private readonly pendingImages = new Set<string>();
   private imgMissing: ((e: { id: string }) => void) | undefined;
+  private widgets: WidgetLayer | undefined;
+  private pointerCb: ((ev: PointerEvent) => void) | undefined;
 
   constructor(opts: { map: MapLibreMap } & AdapterOptions) {
     this.map = opts.map;
@@ -260,6 +280,16 @@ export class MapLibreAdapter implements MapAdapter {
     }
   }
 
+  setOverlayVisible(id: string, visible: boolean): void {
+    const v = visible ? "visible" : "none";
+    for (const lid of this.builtLayers) {
+      if (!this.map.getLayer(lid)) continue;
+      if (this.renderedToOverlay.get(lid) === id || lid === id || lid.startsWith(`${id}__`)) {
+        this.map.setLayoutProperty(lid, "visibility", v);
+      }
+    }
+  }
+
   setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void {
     if (style) this.tooltipStyle = style;
     if (text == null) {
@@ -321,21 +351,25 @@ export class MapLibreAdapter implements MapAdapter {
     return new Promise<Blob>((resolve, reject) => {
       this.map.once("render", () => {
         const src = this.map.getCanvas();
+        const cards = this.widgets?.snapshotCards() ?? [];
         const fail = (): void => { restore?.(); reject(new Error("snapshot failed")); };
         const done = (b: Blob | null): void => { restore?.(); b ? resolve(b) : reject(new Error("snapshot failed")); };
-        // Native: the canvas is already at `ratio` px/CSS-px — export it directly.
-        if (Math.abs(targetScale - ratio) < 1e-3) {
+        const finish = (b: Blob): void => { restore?.(); resolve(b); };
+        // Fast path: native scale and no widget cards ⇒ export the GL canvas directly.
+        if (Math.abs(targetScale - ratio) < 1e-3 && !cards.length) {
           src.toBlob(done, "image/png");
           return;
         }
-        // Re-scale to the requested pixel-ratio. `src.width` is device px (= css×ratio).
+        // Copy the GL canvas onto a 2D canvas at the target resolution (a WebGL canvas has no
+        // 2D context, so we need this to rescale and/or composite the widget cards). `src.width`
+        // is device px (= css×ratio).
         const out = document.createElement("canvas");
         out.width = Math.max(1, Math.round((src.width / ratio) * targetScale));
         out.height = Math.max(1, Math.round((src.height / ratio) * targetScale));
         const ctx = out.getContext("2d");
         if (!ctx) return fail();
         ctx.drawImage(src, 0, 0, out.width, out.height);
-        out.toBlob(done, "image/png");
+        snapshotWithWidgets(out, cards, (ll) => this.project(ll), targetScale).then(finish, fail);
       });
       this.map.triggerRepaint();
     });
@@ -367,6 +401,23 @@ export class MapLibreAdapter implements MapAdapter {
   getViewSpan(): number {
     const b = this.map.getBounds();
     return Math.max(Math.abs(b.getEast() - b.getWest()), Math.abs(b.getNorth() - b.getSouth())) || 10;
+  }
+
+  getBounds(): LngLatBounds {
+    const b = this.map.getBounds();
+    return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  }
+
+  getZoom(): number {
+    return this.map.getZoom();
+  }
+
+  getContainer(): HTMLElement {
+    return this.map.getContainer();
+  }
+
+  fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void {
+    this.map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: opts?.padding ?? 0 });
   }
 
   project(p: LatLng): [number, number] | null {
@@ -417,38 +468,89 @@ export class MapLibreAdapter implements MapAdapter {
   }
 
   onPointer(cb: (ev: PointerEvent) => void): void {
+    this.pointerCb = cb; // also feeds the widget layer's synthetic card events
     if (this.pointerHandlers) return;
     const emit =
       (type: PointerEvent["type"]): MlHandler =>
       (e) => {
         if (type === "down") this.dragging = true;
-        else if (type === "up") this.dragging = false;
-        const needHit = type !== "up" && !(type === "move" && this.dragging);
+        // Recover a swallowed `up`: a move with NO button held means the press already ended
+        // (e.g. the mouseup was eaten by a window-focusing gesture). Finalise so nothing sticks.
+        if (type === "move" && this.dragging && e.originalEvent?.buttons === 0) {
+          this.dragging = false;
+          this.pressHit = undefined;
+          this.pressDown = false;
+          cb({ type: "up", lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent) });
+        }
+        const needHit = !(type === "move" && this.dragging);
         const hit = needHit ? this.hitAt(e.point) : undefined;
+        if (type === "down") {
+          this.pressHit = hit;
+          this.pressX = e.point.x;
+          this.pressY = e.point.y;
+          this.pressDown = true;
+          this.justSynthClick = false;
+        }
         if (type === "move" && !this.dragging) this.setCursor(cursorForHit(hit));
         cb({ type, lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent), ...(hit ? { hit } : {}) });
       };
+    // Emit `click` ourselves from the release (a `down`+`up` at one spot), reusing the `down` hit,
+    // rather than MapLibre's native `click` — which the OS can swallow on the first click after
+    // re-focusing the window, leaving the consumer's selection de-confirmed (select→deselect).
+    const onUp: MlHandler = (e) => {
+      this.dragging = false;
+      const moved = !this.pressDown
+        || Math.abs(e.point.x - this.pressX) > 3
+        || Math.abs(e.point.y - this.pressY) > 3;
+      cb({ type: "up", lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent) });
+      if (this.pressDown && !moved) {
+        cb({ type: "click", lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent), ...(this.pressHit ? { hit: this.pressHit } : {}) });
+        this.justSynthClick = true;
+      }
+      this.pressDown = false;
+    };
+    // Touch fallback: a tap fires MapLibre's native `click` but NO `mouseup`, so the release-
+    // synthesized click above never fires. Emit from the native click, deduped against the mouse
+    // path (where `mouseup` already synthesized one) via the `justSynthClick` flag.
+    const onNativeClick: MlHandler = (e) => {
+      if (this.justSynthClick) { this.justSynthClick = false; return; }
+      const hit = this.hitAt(e.point);
+      cb({ type: "click", lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent), ...(hit ? { hit } : {}) });
+    };
+    const onContext: MlHandler = (e) => {
+      (e as { preventDefault?: () => void }).preventDefault?.(); // suppress the browser menu
+      const hit = this.hitAt(e.point);
+      cb({ type: "contextmenu", lngLat: { lat: e.lngLat.lat, lon: e.lngLat.lng }, ...modifiers(e.originalEvent), ...(hit ? { hit } : {}) });
+    };
     const handlers: PointerHandlers = {
       mousedown: emit("down"),
       mousemove: emit("move"),
-      mouseup: emit("up"),
-      click: emit("click"),
+      mouseup: onUp,
+      click: onNativeClick,
       dblclick: emit("dblclick"),
+      contextmenu: onContext,
     };
     this.map.on("mousedown", handlers.mousedown);
     this.map.on("mousemove", handlers.mousemove);
     this.map.on("mouseup", handlers.mouseup);
     this.map.on("click", handlers.click);
     this.map.on("dblclick", handlers.dblclick);
+    this.map.on("contextmenu", handlers.contextmenu);
     this.pointerHandlers = handlers;
     if (typeof window !== "undefined") {
       const windowUp = (e: MouseEvent): void => {
         if (!this.dragging) return;
         this.dragging = false;
+        this.pressDown = false;
         cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
       };
       window.addEventListener("mouseup", windowUp);
       this.windowUp = windowUp;
+      // Leaving the window mid-press loses the `up`; purge press state so the first click back
+      // (the focusing click) starts clean instead of inheriting a stale drag/hit.
+      const windowBlur = (): void => { this.dragging = false; this.pressHit = undefined; this.pressDown = false; };
+      window.addEventListener("blur", windowBlur);
+      this.windowBlur = windowBlur;
     }
   }
 
@@ -456,6 +558,44 @@ export class MapLibreAdapter implements MapAdapter {
     if (this.keyCleanup) return;
     this.keyCleanup = bindKeyListener(this.map.getContainer(), cb);
   }
+
+  onBlur(cb: () => void): void {
+    if (this.blurListener || typeof window === "undefined") return;
+    this.blurListener = cb;
+    window.addEventListener("blur", cb);
+  }
+
+  private widgetLayer(): WidgetLayer {
+    if (!this.widgets) {
+      const map = this.map;
+      this.widgets = new WidgetLayer({
+        createMount: (anchor) => {
+          const el = document.createElement("div");
+          const marker = new MaplibreMarker({ element: el, anchor: "top-left" })
+            .setLngLat([anchor.lon, anchor.lat])
+            .addTo(map);
+          return {
+            el,
+            setAnchor: (a) => { marker.setLngLat([a.lon, a.lat]); },
+            remove: () => { marker.remove(); },
+          };
+        },
+        unprojectClient: (cx, cy) => {
+          const r = map.getContainer().getBoundingClientRect();
+          const c = map.unproject([cx - r.left, cy - r.top]);
+          return { lat: c.lat, lon: c.lng };
+        },
+        emit: (ev) => this.pointerCb?.(ev),
+      });
+    }
+    return this.widgets;
+  }
+
+  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
+  onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
+  onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
 
   destroy(): void {
     const h = this.pointerHandlers;
@@ -465,12 +605,22 @@ export class MapLibreAdapter implements MapAdapter {
       this.map.off("mouseup", h.mouseup);
       this.map.off("click", h.click);
       this.map.off("dblclick", h.dblclick);
+      this.map.off("contextmenu", h.contextmenu);
       this.pointerHandlers = undefined;
     }
     if (this.windowUp && typeof window !== "undefined") {
       window.removeEventListener("mouseup", this.windowUp);
       this.windowUp = undefined;
     }
+    if (this.windowBlur && typeof window !== "undefined") {
+      window.removeEventListener("blur", this.windowBlur);
+      this.windowBlur = undefined;
+    }
+    if (this.blurListener && typeof window !== "undefined") {
+      window.removeEventListener("blur", this.blurListener);
+      this.blurListener = undefined;
+    }
+    this.pressHit = undefined;
     this.keyCleanup?.();
     this.keyCleanup = undefined;
     if (this.viewHandler) {
@@ -493,6 +643,9 @@ export class MapLibreAdapter implements MapAdapter {
     this.toolbarEl = undefined;
     this.tooltipEl?.remove();
     this.tooltipEl = undefined;
+    this.widgets?.destroy();
+    this.widgets = undefined;
+    this.pointerCb = undefined;
     this.readyPromise = undefined;
     this.setCursor("");
     if (this.locked) this.setInteractive(true); // unlock the host map on teardown

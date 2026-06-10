@@ -22,6 +22,7 @@ import DoubleClickZoom from "ol/interaction/DoubleClickZoom.js";
 import type BaseLayer from "ol/layer/Base";
 import VectorLayer from "ol/layer/Vector.js";
 import OlMap from "ol/Map.js";
+import Overlay from "ol/Overlay.js";
 import { unByKey } from "ol/Observable.js";
 import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
 import OSM from "ol/source/OSM.js";
@@ -37,15 +38,19 @@ import type {
   KeyEvent,
   LatLng,
   LayerKind,
+  LngLatBounds,
   MapAdapter,
+  MarkerWidget,
   PointerEvent,
   SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
   TooltipStyle,
+  WidgetEdit,
 } from "./index.js";
 import { cursorForHit } from "./index.js";
+import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { boxPadding } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
@@ -110,15 +115,28 @@ export class OpenLayersAdapter implements MapAdapter {
   private tooltipStyle: TooltipStyle | undefined;
   private olKeys: EventsKey[] = [];
   private domPointerUp: ((e: globalThis.PointerEvent) => void) | undefined;
+  private windowBlur: (() => void) | undefined;
+  private blurListener: (() => void) | undefined;
+  /** Press state captured at `down`, used to emit a `click` immediately on release — OL's own
+   *  `singleclick` is ~250 ms delayed and a quick second click becomes a `dblclick`, so deselect
+   *  felt like it needed several clicks. */
+  private pressHit: Hit | undefined;
+  private pressLngLat: LatLng | undefined;
+  private pressX = 0;
+  private pressY = 0;
+  private pressDown = false;
   private viewportPointerDown: ((e: globalThis.PointerEvent) => void) | undefined;
   private keyCleanup: (() => void) | undefined;
   private viewportDblclick: ((e: globalThis.MouseEvent) => void) | undefined;
+  private viewportContext: ((e: globalThis.MouseEvent) => void) | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
   private dragging = false;
   private locked = false;
   private panOn = true;
   private dblOn = true;
+  private widgets: WidgetLayer | undefined;
+  private pointerCb: ((ev: PointerEvent) => void) | undefined;
 
   constructor(opts: { map: OlMap } & AdapterOptions) {
     this.map = opts.map;
@@ -166,6 +184,10 @@ export class OpenLayersAdapter implements MapAdapter {
     if (data.features.length) {
       source.addFeatures(this.format.readFeatures(data, { dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }));
     }
+  }
+
+  setOverlayVisible(id: string, visible: boolean): void {
+    this.layers.get(id)?.setVisible(visible);
   }
 
   addToolbar(items: ToolbarItem[], options?: ToolbarOptions): HTMLElement {
@@ -238,7 +260,8 @@ export class OpenLayersAdapter implements MapAdapter {
           });
           ctx.globalAlpha = 1;
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          out.toBlob((b) => (b ? resolve(b) : reject(new Error("snapshot failed"))), "image/png");
+          const cards = this.widgets?.snapshotCards() ?? [];
+          snapshotWithWidgets(out, cards, (ll) => this.project(ll), targetScale).then(resolve, reject);
         } catch (e) {
           reject(e instanceof Error ? e : new Error("snapshot failed"));
         }
@@ -273,6 +296,26 @@ export class OpenLayersAdapter implements MapAdapter {
     if (!size) return 10;
     const extent = transformExtent(this.map.getView().calculateExtent(size), "EPSG:3857", "EPSG:4326");
     return Math.max(getWidth(extent), getHeight(extent)) || 10;
+  }
+
+  getBounds(): LngLatBounds {
+    const ext = transformExtent(this.map.getView().calculateExtent(this.map.getSize()), "EPSG:3857", "EPSG:4326");
+    return [ext[0]!, ext[1]!, ext[2]!, ext[3]!];
+  }
+
+  getZoom(): number {
+    return this.map.getView().getZoom() ?? 0;
+  }
+
+  getContainer(): HTMLElement {
+    return this.map.getTargetElement() as HTMLElement;
+  }
+
+  fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void {
+    const ext = transformExtent([bbox[0], bbox[1], bbox[2], bbox[3]], "EPSG:4326", "EPSG:3857");
+    const p = opts?.padding ?? 0;
+    const size = this.map.getSize();
+    this.map.getView().fit(ext, { padding: [p, p, p, p], ...(size ? { size } : {}) });
   }
 
   project(p: LatLng): [number, number] | null {
@@ -343,6 +386,7 @@ export class OpenLayersAdapter implements MapAdapter {
   }
 
   onPointer(cb: (ev: PointerEvent) => void): void {
+    this.pointerCb = cb; // also feeds the widget layer's synthetic card events
     if (this.domPointerUp) return;
     // `pointerdown` in the CAPTURE phase: run before OpenLayers' own DragPan (the
     // viewport listener registered before us). When the press lands on a draggable
@@ -350,22 +394,44 @@ export class OpenLayersAdapter implements MapAdapter {
     // the callback is too late. NB: only stop draggable `down`s; letting plain
     // clicks through preserves OL's `singleclick` (e.g. "change symbol" on click).
     this.viewportPointerDown = (e: globalThis.PointerEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.(".draw-adapter-widget")) return; // card owns it
       const coord = this.map.getEventCoordinate(e);
       if (!coord) return;
       this.dragging = true;
       const [lon, lat] = toLonLat(coord);
       const hit = this.hitAt(this.map.getEventPixel(e));
+      this.pressHit = hit;
+      this.pressLngLat = { lat: lat!, lon: lon! };
+      this.pressX = e.clientX;
+      this.pressY = e.clientY;
+      this.pressDown = true;
       if (hit && isDraggableHit(hit)) e.stopPropagation();
       cb({ type: "down", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
     // "up" must fire even when pointerup lands off the canvas (no coordinate), so a
     // drag (and its delete-on-release) always completes.
     this.domPointerUp = (e: globalThis.PointerEvent): void => {
+      if ((e.target as HTMLElement | null)?.closest?.(".draw-adapter-widget")) { this.pressDown = false; return; } // card's own up
+      const moved = !this.pressDown || Math.abs(e.clientX - this.pressX) > 3 || Math.abs(e.clientY - this.pressY) > 3;
       this.dragging = false;
-      cb({ type: "up", lngLat: { lat: 0, lon: 0 }, ...modifiers(e) });
+      const upCoord = this.map.getEventCoordinate(e); // real lon/lat when the event has one (#2)
+      const upLL = upCoord ? toLonLat(upCoord) : null;
+      cb({ type: "up", lngLat: upLL ? { lat: upLL[1]!, lon: upLL[0]! } : { lat: 0, lon: 0 }, ...modifiers(e) });
+      // Emit the click NOW (a `down`+`up` at one spot) instead of waiting for OL's debounced
+      // `singleclick` — so a single click selects/deselects instantly, like MapLibre/Leaflet.
+      if (this.pressDown && !moved && this.pressLngLat) {
+        cb({ type: "click", lngLat: this.pressLngLat, ...modifiers(e), ...(this.pressHit ? { hit: this.pressHit } : {}) });
+      }
+      this.pressDown = false;
     };
     this.map.getViewport().addEventListener("pointerdown", this.viewportPointerDown, true);
     document.addEventListener("pointerup", this.domPointerUp);
+    if (typeof window !== "undefined") {
+      // Leaving the window mid-press loses the `up`; purge press state so the first click back
+      // (the focusing click) starts clean instead of inheriting a stale drag/hit.
+      this.windowBlur = () => { this.dragging = false; this.pressHit = undefined; this.pressDown = false; };
+      window.addEventListener("blur", this.windowBlur);
+    }
     // OL's synthesized "dblclick" map event is SUPPRESSED when our capture-phase pointerdown
     // calls stopPropagation() on a draggable hit (a handle) to block DragPan — so on a handle
     // it never fires (no vertex insert). The NATIVE dblclick still fires, so we listen to that
@@ -378,11 +444,29 @@ export class OpenLayersAdapter implements MapAdapter {
       cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
     this.map.getViewport().addEventListener("dblclick", this.viewportDblclick);
+    // Right-click → `contextmenu` (browser menu suppressed). The consumer decides the action.
+    this.viewportContext = (e: globalThis.MouseEvent): void => {
+      e.preventDefault();
+      const coord = this.map.getEventCoordinate(e);
+      if (!coord) return;
+      const [lon, lat] = toLonLat(coord);
+      const hit = this.hitAt(this.map.getEventPixel(e));
+      cb({ type: "contextmenu", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
+    };
+    this.map.getViewport().addEventListener("contextmenu", this.viewportContext);
 
     this.olKeys.push(
       this.map.on("pointermove", (evt) => {
         const [lon, lat] = toLonLat(evt.coordinate);
         const mods = modifiers(evt.originalEvent as MouseEvent);
+        // Recover a swallowed `up`: a move with NO button held means the press already ended
+        // (e.g. the pointerup was eaten by a window-focusing gesture). Finalise so nothing sticks.
+        if (this.dragging && (evt.originalEvent as MouseEvent).buttons === 0) {
+          this.dragging = false;
+          this.pressHit = undefined;
+          this.pressDown = false;
+          cb({ type: "up", lngLat: { lat: lat!, lon: lon! }, ...mods });
+        }
         if (this.dragging) {
           cb({ type: "move", lngLat: { lat: lat!, lon: lon! }, ...mods });
           return;
@@ -391,13 +475,9 @@ export class OpenLayersAdapter implements MapAdapter {
         this.setCursor(cursorForHit(hit));
         cb({ type: "move", lngLat: { lat: lat!, lon: lon! }, ...mods, ...(hit ? { hit } : {}) });
       }),
-      this.map.on("singleclick", (evt) => {
-        const hit = this.hitAt(evt.pixel);
-        const [lon, lat] = toLonLat(evt.coordinate);
-        cb({ type: "click", lngLat: { lat: lat!, lon: lon! }, ...modifiers(evt.originalEvent as MouseEvent), ...(hit ? { hit } : {}) });
-      }),
-      // NB: "dblclick" is handled via a native viewport listener (see above) — OL's own
-      // dblclick map event is suppressed on draggable hits by our pointerdown stopPropagation.
+      // NB: "click" is emitted immediately from the pointerup above (not OL's debounced
+      // `singleclick`). "dblclick" stays a native viewport listener — OL's own dblclick map
+      // event is suppressed on draggable hits by our pointerdown stopPropagation.
     );
   }
 
@@ -405,6 +485,53 @@ export class OpenLayersAdapter implements MapAdapter {
     if (this.keyCleanup) return;
     this.keyCleanup = bindKeyListener(this.map.getViewport(), cb);
   }
+
+  onBlur(cb: () => void): void {
+    if (this.blurListener || typeof window === "undefined") return;
+    this.blurListener = cb;
+    window.addEventListener("blur", cb);
+  }
+
+  private widgetLayer(): WidgetLayer {
+    if (!this.widgets) {
+      const map = this.map;
+      this.widgets = new WidgetLayer({
+        createMount: (anchor) => {
+          const el = document.createElement("div");
+          const overlay = new Overlay({
+            element: el,
+            position: fromLonLat([anchor.lon, anchor.lat]),
+            positioning: "top-left",
+            stopEvent: true,
+            className: "draw-adapter-widget-ov",
+          });
+          map.addOverlay(overlay);
+          return {
+            el,
+            setAnchor: (a) => overlay.setPosition(fromLonLat([a.lon, a.lat])),
+            remove: () => map.removeOverlay(overlay),
+          };
+        },
+        unprojectClient: (cx, cy) => {
+          const target = map.getTargetElement();
+          if (!target) return null;
+          const r = target.getBoundingClientRect();
+          const coord = map.getCoordinateFromPixel([cx - r.left, cy - r.top]);
+          if (!coord) return null;
+          const [lon, lat] = toLonLat(coord);
+          return { lat: lat!, lon: lon! };
+        },
+        emit: (ev) => this.pointerCb?.(ev),
+      });
+    }
+    return this.widgets;
+  }
+
+  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
+  onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
+  onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
 
   destroy(): void {
     this.layerOverlay.forEach((_, layer) => this.map.removeLayer(layer as BaseLayer));
@@ -418,6 +545,10 @@ export class OpenLayersAdapter implements MapAdapter {
       this.map.getViewport().removeEventListener("pointerdown", this.viewportPointerDown, true);
       this.viewportPointerDown = undefined;
     }
+    if (this.viewportContext) {
+      this.map.getViewport().removeEventListener("contextmenu", this.viewportContext);
+      this.viewportContext = undefined;
+    }
     if (this.viewportDblclick) {
       this.map.getViewport().removeEventListener("dblclick", this.viewportDblclick);
       this.viewportDblclick = undefined;
@@ -426,12 +557,24 @@ export class OpenLayersAdapter implements MapAdapter {
       document.removeEventListener("pointerup", this.domPointerUp);
       this.domPointerUp = undefined;
     }
+    if (this.windowBlur && typeof window !== "undefined") {
+      window.removeEventListener("blur", this.windowBlur);
+      this.windowBlur = undefined;
+    }
+    if (this.blurListener && typeof window !== "undefined") {
+      window.removeEventListener("blur", this.blurListener);
+      this.blurListener = undefined;
+    }
+    this.pressHit = undefined;
     this.keyCleanup?.();
     this.keyCleanup = undefined;
     this.toolbarEl?.remove();
     this.toolbarEl = undefined;
     this.tooltipEl?.remove();
     this.tooltipEl = undefined;
+    this.widgets?.destroy();
+    this.widgets = undefined;
+    this.pointerCb = undefined;
     this.readyPromise = undefined;
     if (this.locked) for (const i of this.map.getInteractions().getArray()) i.setActive(true);
     this.locked = false;

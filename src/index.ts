@@ -33,6 +33,7 @@
  *  - rotation (`rotation`/`iconRotate`) is **degrees, clockwise**, identical on all engines.
  */
 import type { FeatureCollection } from "geojson";
+import type { TextBoxSize, TextBoxRadius } from "./textbox.js";
 
 export type { FeatureCollection } from "geojson";
 
@@ -43,6 +44,9 @@ export interface LatLng {
   /** Longitude in decimal degrees, west negative. Range [-180, 180]. */
   lon: number;
 }
+
+/** A geographic bounding box, `[west, south, east, north]` in decimal degrees. */
+export type LngLatBounds = [number, number, number, number];
 
 /** How a layer is rendered. The overlay's source shares the layer `id`. */
 export type LayerKind = "fill" | "line" | "symbol" | "text" | "circle";
@@ -57,7 +61,9 @@ export interface LayerSpec {
 export type SymbolSprites = Record<string, string>;
 
 export interface PointerEvent {
-  type: "down" | "move" | "up" | "click" | "dblclick";
+  /** `"contextmenu"` is a right-click (the browser menu is suppressed) — e.g. finish a polygon
+   *  or delete a vertex. The consumer decides the action. */
+  type: "down" | "move" | "up" | "click" | "dblclick" | "contextmenu";
   lngLat: LatLng;
   /**
    * Modifier-key state at the event. On a `move` these reflect the **current** state
@@ -70,7 +76,7 @@ export interface PointerEvent {
   shiftKey?: boolean;
   altKey?: boolean;
   /** The overlay hit + that feature's prop bag (`role`, `featureId`, …). */
-  hit?: { overlay: string; props: Record<string, unknown> };
+  hit?: Hit;
 }
 
 /**
@@ -96,6 +102,141 @@ export interface KeyEvent {
 export interface Hit {
   overlay: string;
   props: Record<string, unknown>;
+}
+
+// ── Marker widgets (anchored, inline-editable DOM cards) ──────────────────────
+//
+// A generic, domain-free **anchored card** primitive: a small DOM card pinned at a
+// `lon/lat`, built from a tiny box-layout tree (vbox/hbox + glyph / text(+`input`) /
+// coord). Unlike the rendered render-prop features, a widget is a real DOM element on
+// the map container — so it can host a real `<input>` for free-text entry (caret,
+// selection, IME, paste, mobile keyboard). The consumer composes the tree and reads
+// the values back; the adapter owns placement + the editing control.
+
+/** Which point of a card pins to its `anchor`. Named anchors or a 0..1 fractional point. */
+export type WidgetOrigin =
+  | "center" | "top" | "bottom" | "left" | "right"
+  | "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  | { x: number; y: number };
+
+/** A glyph leaf — inline SVG (uses `currentColor`, so `color` tints it). */
+export interface WidgetGlyph {
+  kind: "glyph";
+  /** Inline SVG markup. */
+  svg: string;
+  /** Box size in px (width = height). */
+  size?: number;
+  /** Glyph colour (resolves `currentColor`); else inherits the cascade. */
+  color?: string;
+}
+
+/** A text leaf — a static label, or (when `editable`) an inline editing control. */
+export interface WidgetText {
+  kind: "text";
+  value: string;
+  /** Omit/`false` ⇒ a static `<span>` label; `true` ⇒ an editable control. */
+  editable?: boolean;
+  /**
+   * The editing control when `editable`. Only `"input"` is implemented now; the field
+   * is the **extension point** for future `"gauge"` / `"dial"` / `"carousel"` (not in
+   * this lib yet). Defaults to `"input"` when `editable` and omitted.
+   */
+  control?: "input";
+  placeholder?: string;
+  /** Focus the control when it **first appears** (not on every re-render). */
+  autofocus?: boolean;
+  /** Force UPPERCASE: an editable input **enters and emits** its value in upper case
+   *  (caret preserved); a static label is displayed upper case. */
+  uppercase?: boolean;
+  /** Text colour; else inherits the nearest ancestor box / `font`. */
+  color?: string;
+  /** Font size px; else inherits. */
+  size?: number;
+}
+
+/** A coordinate leaf — the container's `anchor`, formatted (see {@link MapAdapter.setCoordFormat});
+ *  read-only and **live** (re-rendered whenever the anchor changes). */
+export interface WidgetCoord {
+  kind: "coord";
+  color?: string;
+  size?: number;
+}
+
+/** A layout box (vbox/hbox). Carries no frame; **may** set `color`/`size` that cascade
+ *  to descendant text/coord (plain CSS inheritance). */
+export interface WidgetBox {
+  /** `"v"` ⇒ column, `"h"` ⇒ row. */
+  dir: "v" | "h";
+  /** Cross-axis alignment. Default `"center"`. */
+  align?: "start" | "center" | "end";
+  /** px between children. Default `0`. */
+  gap?: number;
+  /** Text colour for this subtree — inherited by descendant text/coord. */
+  color?: string;
+  /** Font size px for this subtree — inherited likewise. */
+  size?: number;
+  items: WidgetNode[];
+}
+
+export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord;
+
+/** Where a widget action button sits — a single edge/corner point, or a **group** that expands to
+ *  a set of points. Pass an **array** to combine groups; the points are unioned (deduped). E.g.
+ *  `["left-corners","top-corners"]` ⇒ 3 corners (top-left, top-right, bottom-left). */
+export type WidgetButtonPlace =
+  | "top" | "bottom" | "left" | "right"
+  | "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  | "edges" | "h-edges" | "v-edges"
+  | "corners" | "top-corners" | "bottom-corners" | "left-corners" | "right-corners";
+
+/** A small action button rendered straddling the card's edge/corner(s). **Domain-free**: it just
+ *  carries the `event` string echoed back via {@link MapAdapter.onWidgetAction} — the consumer
+ *  decides what it does (e.g. "draw another area attached to this panel"). */
+export interface WidgetButton {
+  /** The action id, echoed back on click as `{ id, event }`. */
+  event: string;
+  /** Where to place it (one point/group, or an array unioned across groups). Default `"right"`. */
+  place?: WidgetButtonPlace | WidgetButtonPlace[];
+  /** Inline SVG glyph (e.g. a `+` or a pen); a small neutral dot if omitted. */
+  svg?: string;
+  /** Draw it as a small **bordered** circle (default `false` ⇒ just the glyph). */
+  bordered?: boolean;
+}
+
+/** An anchored marker widget (a DOM card). Positions + frames only; layout lives in the
+ *  single root {@link WidgetBox}. `padding`/`radius` reuse the label-box presets so widgets
+ *  and label boxes look consistent. */
+export interface MarkerWidget {
+  /** The consumer's feature id; echoed back on every widget/pointer event. */
+  id: string;
+  anchor: LatLng;
+  /** Which point of the card pins to `anchor`. Default `"center"`. */
+  origin?: WidgetOrigin;
+  /** Card fill; omit ⇒ transparent. */
+  bg?: string;
+  /** Border colour; omit ⇒ no border (width fixed, 1px, like the label box). */
+  border?: string;
+  /** Corner radius preset (reuses {@link TextBoxRadius}). Default `"none"`. */
+  radius?: TextBoxRadius;
+  /** Inner padding preset (reuses {@link TextBoxSize}), applied when framed. Default `"medium"`. */
+  padding?: TextBoxSize;
+  /** Root text style; cascades to ALL descendants (a box or item may override its subtree). */
+  font?: { color?: string; size?: number; family?: string };
+  /** Show a small **delete** button in the card's top-right corner. Clicking it fires
+   *  {@link MapAdapter.onWidgetDelete} with this `id` — the lib does NOT remove the card,
+   *  the consumer drops the `id` from its next `setWidgets`. */
+  deletable?: boolean;
+  /** Action buttons on the card's edges/corners (a `+`, a pen, …). Each fires
+   *  {@link MapAdapter.onWidgetAction} with its `event`. The lib stays domain-free. */
+  buttons?: WidgetButton[];
+  /** Exactly one root box. */
+  child: WidgetBox;
+}
+
+/** Payload of {@link MapAdapter.onWidgetEdit} — fired per keystroke in an editable input. */
+export interface WidgetEdit {
+  id: string;
+  value: string;
 }
 
 /** Generic floating-tooltip style (supplied by the consumer; not a domain type). */
@@ -223,6 +364,10 @@ export interface MapAdapter {
   /** Push a FeatureCollection (already styled via props) into overlay `id`. */
   setOverlay(id: string, data: FeatureCollection): void;
 
+  /** Show/hide an overlay layer **without dropping its data** (toggle reference layers, masks,
+   *  guides). Cheaper and lossless vs. pushing an empty FeatureCollection. */
+  setOverlayVisible(id: string, visible: boolean): void;
+
   /**
    * Capture the current map (basemap + overlays) as a PNG {@link Blob}. Captures
    * inside the engine's render frame, so the host map needs no special flag (no
@@ -243,6 +388,17 @@ export interface MapAdapter {
   getCenter(): LatLng;
   /** Rough lon/lat span of the current view, for sizing dropped default geometry. */
   getViewSpan(): number;
+  /** Current visible bounds `[west, south, east, north]` (lon/lat). */
+  getBounds(): LngLatBounds;
+  /** Current zoom level (engine-native scale). */
+  getZoom(): number;
+  /** The host map's DOM container element — to attach a panel, measure, position UI, etc. */
+  getContainer(): HTMLElement;
+  /**
+   * Frame the host camera to `bbox` (optional `padding` in px). **Drives the host map** — the
+   * host normally owns the camera, so use sparingly (it's the one legit case: cadrer son dessin).
+   */
+  fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void;
 
   /** lon/lat → screen pixels (for the call-out placement pass). null if off-view. */
   project(p: LatLng): [number, number] | null;
@@ -271,6 +427,35 @@ export interface MapAdapter {
    *  to actions (e.g. `Delete`/`Backspace` ⇒ remove selection). Raw transport, no
    *  domain semantics. */
   onKey(cb: (ev: KeyEvent) => void): void;
+
+  /** Notify when the map's **window loses focus** (e.g. the user switches to another window or
+   *  app). The adapter is domain-free and never changes selection itself — this is the signal so
+   *  the consumer can drop a transient UI state, typically **deselect** the active element (so a
+   *  marker stops looking editable once you've left the window). */
+  onBlur(cb: () => void): void;
+
+  /**
+   * Declarative anchored marker widgets (DOM cards). Mirrors {@link setOverlay}'s
+   * contract: pass the **full current set** each render; the adapter **diffs by `id`**
+   * (create / update / remove). A card is updated **in place** — a focused input keeps
+   * its focus and caret across re-`setWidgets`, so it's safe to re-push every render.
+   */
+  setWidgets(widgets: MarkerWidget[]): void;
+
+  /** Notify on every keystroke in an editable widget input (`{ id, value }`). */
+  onWidgetEdit(cb: (e: WidgetEdit) => void): void;
+
+  /** Notify when the user clicks a widget's delete button (`MarkerWidget.deletable: true`).
+   *  The adapter does NOT remove the card — the consumer drops the `id` from its next
+   *  `setWidgets` (it owns the data). */
+  onWidgetDelete(cb: (e: { id: string }) => void): void;
+
+  /** Notify when a widget **action button** is clicked: `{ id, event }`, where `event` is the
+   *  button's declared id (e.g. `"draw-again"`). Domain-free — the consumer maps it to an action. */
+  onWidgetAction(cb: (e: { id: string; event: string }) => void): void;
+
+  /** Override the formatter used by `coord` items. Default: a decimal `lat/long`. */
+  setCoordFormat(fn: (ll: LatLng) => string): void;
 
   /** Detach everything this adapter added; MUST NOT destroy the host map. Idempotent. */
   destroy(): void;
@@ -309,5 +494,6 @@ export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
 export { bindKeyListener } from "./keyboard.js";
 export { snapshotScale, downloadPng, copyPng, shutterFlash, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
+export { defaultCoordFormat } from "./widget.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";
 export type { TextBoxSize, TextBoxRadius } from "./textbox.js";

@@ -40,13 +40,15 @@ feature. Each product's controller resolves its domain style into those props
 | drag-vs-pan guard | n/a² | ✅ (capture-phase) | ✅ (capture-phase) |
 | keyboard `onKey` (focused-map keydown) | ✅ | ✅ | ✅ |
 | lock map (`setInteractive` / toolbar lock button) | ✅ | ✅ | ✅ |
-| PNG `snapshot()` (basemap + overlays) | ✅ | ✅ | ❌³ |
+| PNG `snapshot()` (basemap + overlays + widget cards⁵) | ✅ | ✅ | ❌³ |
+| anchored **marker widgets** (`setWidgets` — editable cards) | ✅ | ✅ | ✅ |
 | peer dependency | `maplibre-gl >=5` | `ol >=9` | `leaflet >=1.9` |
 
 ¹ data-URI icons are materialized lazily via `styleimagemissing`; sprites are tinted per `symbolColor`.
 ² MapLibre's `dragPan` is toggled directly by the controller, no capture-phase hack needed.
 ³ Leaflet has no single exportable canvas (tiles are `<img>`, overlays SVG/DOM); `snapshot()` rejects and the toolbar button is shown **disabled**. A DOM-snapshot approach is planned.
 ⁴ MapLibre fakes the box with a per-feature 9-slice image (built on demand via `styleimagemissing`), so it honours `textBackground`/`textBorder`/`textBoxSize`/`textBoxRadius` per feature. OpenLayers uses its native text background — same, **except** `textBoxRadius` (its box is a rectangle).
+⁵ The PNG composites the [marker widgets](#marker-widgets) in their static form (inputs → their value) on MapLibre/OpenLayers, with a **safe fallback** to a card-less snapshot if the `foreignObject` rasterization taints the canvas (e.g. Safari). Leaflet snapshot is unsupported, so its widgets aren't captured yet.
 *before* `setOverlay`, so styling is entirely **data-driven** and the three engines
 render identically.
 
@@ -265,6 +267,10 @@ await adapter.snapshot({ hideOverlays: ["handles", "edge"] }); // clean drawing,
 - **Leaflet is not supported yet** — `snapshot()` rejects (tiles are `<img>` and
   overlays are SVG/DOM, so there is no single exportable canvas). A DOM-snapshot
   approach is planned.
+- **Marker widgets** are composited into the PNG in their static (non-editable) form
+  on MapLibre/OpenLayers — see [Marker widgets](#marker-widgets). The card-less blob is
+  produced first, so if the DOM→bitmap step taints the canvas (e.g. Safari) the snapshot
+  **degrades** to the card-less image rather than failing.
 - `scale > 1` (`medium`/`high`) is **supersampling, best-effort**: it re-scales the
   captured composition, which enlarges but does not add real map detail.
 - **Clipboard** uses the async Clipboard API — it needs a **secure context**
@@ -352,13 +358,73 @@ OpenLayers `getViewport()`, Leaflet `getContainer()`. The exported helper
 function. `FakeAdapter` (`./testing`) supports it too, with a `.key("Backspace",
 { meta: true })` replay helper for unit tests.
 
+## Marker widgets
+
+Anchored, inline-editable **DOM cards** pinned at a `lon/lat` — a generic, domain-free
+primitive for things like a named tropical-cyclone / volcano / spot marker whose name the
+forecaster types **in place** while the lon/lat auto-fills from the marker's position.
+(This needs a real `<input>` — caret, selection, IME, paste, mobile keyboard — which the
+rendered `text` features can't provide; only the adapter can place DOM on the map.)
+
+```ts
+adapter.setWidgets([{
+  id: "v1", anchor: { lon: 3, lat: 46 }, origin: "bottom",
+  border: "#1f2328", radius: "small", padding: "small", font: { color: "#1f2328", size: 13 },
+  child: { dir: "v", align: "center", gap: 1, items: [
+    { kind: "glyph", svg: "<svg>…</svg>", size: 24 },
+    { kind: "text", value: "ETNA", editable: true, control: "input", autofocus: true },
+    { kind: "coord" },
+  ] },
+}]);
+adapter.onWidgetEdit(e => updateName(e.id, e.value));            // { id, value } per keystroke
+adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the `coord` line
+```
+
+- **`setWidgets(widgets)`** is declarative and **diffed by `id`** (like `setOverlay`): pass the
+  full current set each render. Cards are created / updated **in place** / removed — a focused
+  input **keeps its focus and caret** across re-`setWidgets`, so it's safe to re-push every render.
+- **Container** (`MarkerWidget`) only *positions* (`anchor` + `origin` — which point of the card
+  pins to the anchor, named or a `{x,y}` fraction) and *frames* (`bg`, `border`, `radius`,
+  `padding`, `font`). It holds exactly one root **box**; `radius`/`padding` reuse the label-box
+  `TextBoxRadius`/`TextBoxSize` presets, so widgets and label boxes look consistent.
+- **Boxes** (`{ dir: "v"|"h", align?, gap?, color?, size?, items }`) do layout (vbox/hbox) and may
+  set `color`/`size` that **cascade** to descendant text/coord (plain CSS inheritance).
+- **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label, or an inline
+  `<input>` when `editable` — it **auto-grows** to its content; `uppercase` enters/emits in upper
+  case) · `coord` (the anchor, formatted by `setCoordFormat`, **live** as the marker moves).
+- **Selection / move reuse the pointer model:** a click or drag on the card surfaces through
+  `onPointer` as a hit `{ overlay: "widget", props: { id } }` (with the real lon/lat), so your
+  existing select / drag-to-move logic works unchanged. The card **never** drives map pan/zoom;
+  while an input is focused, presses inside it edit (no select/drag/pan).
+- **One implementation, all three engines:** the card rides each engine's native anchored-overlay
+  primitive (MapLibre `Marker` / OpenLayers `Overlay` / Leaflet `divIcon`), so it tracks per-frame
+  through pan/zoom and stays screen-upright. It's wired with Pointer Events, so touch works.
+- **Delete:** `deletable: true` shows a bare `×` in the card's **top-right corner**; clicking it
+  fires `onWidgetDelete({ id })` — the lib doesn't remove the card, the consumer drops the `id`
+  from its next `setWidgets`. It's a **separate element** from the input (so an input-only card
+  stays deletable) and isn't drawn into snapshots.
+- **Action buttons:** `buttons: [{ event, place?, svg?, bordered? }]` renders small buttons (a `+`,
+  a pen, …) straddling the card's edges/corners; clicking one fires `onWidgetAction({ id, event })`.
+  `place` is an enum (`top`/`bottom`/`left`/`right` · the four corners · `edges`/`h-edges`/`v-edges`
+  · `corners`/`top-corners`/`bottom-corners`/`left-corners`/`right-corners`) **or an array** unioned
+  & deduped (`["left-corners","top-corners"]` ⇒ 3 corners). Domain-free: you name the `event` and
+  decide what it does (e.g. "draw another area attached to this panel"). `FakeAdapter.actionWidget`.
+- **Deselect on window blur:** wire `adapter.onBlur(() => deselect())` if you want a marker to stop
+  looking editable once the user switches to another window/app. The lib is domain-free — it emits
+  the focus-lost **signal**, the consumer owns the selection and decides whether to drop it.
+- `control` is the **extension point** for future `gauge` / `dial` / `carousel` — only `input`
+  is implemented now. `FakeAdapter` (`./testing`) records the set and adds
+  `.editWidget(id, value)` / `.deleteWidget(id)` / `.clickWidget(id)`.
+
 ## API surface
 
-`MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `snapshot`, `setTooltip`,
-`addToolbar`, `getCenter`, `getViewSpan`, `project`, `unproject`, `onViewChange`,
-`setPanEnabled`, `setDoubleClickZoom`, `setInteractive`, `setCursor`, `onPointer`,
-`onKey`, `destroy`.
-`onKey` is documented above; `bindKeyListener(container, cb)` is exported for manual use.
+`MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `setOverlayVisible`, `snapshot`,
+`setTooltip`, `addToolbar`, `getCenter`, `getViewSpan`, `getBounds`, `getZoom`, `getContainer`,
+`fitBounds`, `project`, `unproject`, `onViewChange`, `setPanEnabled`, `setDoubleClickZoom`,
+`setInteractive`, `setCursor`, `onPointer`, `onKey`, `onBlur`, `setWidgets`, `onWidgetEdit`,
+`onWidgetDelete`, `onWidgetAction`, `setCoordFormat`, `destroy`.
+`onKey` and marker widgets are documented above; `bindKeyListener(container, cb)` and
+`defaultCoordFormat(ll)` are exported for manual use.
 
 A product simply never calls the methods it doesn't need (sigmet ignores
 `project`/`unproject`/`onViewChange`/`registerSymbols`).

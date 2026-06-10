@@ -230,6 +230,21 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  it("atomic press: a click reuses the down hit even after a re-render dropped the hover", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
+    await a.ready();
+    a.setOverlay("handles", handlesFC);
+    let clickHit: PointerEvent["hit"];
+    a.onPointer((e) => { if (e.type === "click") clickHit = e.hit; });
+    const markerEl = el.querySelector(".leaflet-dap-handles-pane .leaflet-marker-icon") as HTMLElement;
+    markerEl.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); // hovered = the handle
+    markerEl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5 })); // pressHit captured
+    markerEl.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); // re-render drops the hover
+    map.fire("click", { latlng: L.latLng(10, 10), originalEvent: new MouseEvent("click") });
+    expect(clickHit?.overlay).toBe("handles"); // from the down, not the (now empty) hover ⇒ no deselect
+    a.destroy();
+  });
+
   it("destroy() removes panes and re-enables dragging + double-click zoom", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();
@@ -304,6 +319,115 @@ describe("LeafletAdapter", () => {
     // enough to prove project/unproject are inverses and wired to the map.
     expect(back!.lat).toBeCloseTo(10, 1);
     expect(back!.lon).toBeCloseTo(10, 1);
+    a.destroy();
+  });
+});
+
+describe("LeafletAdapter — marker widgets", () => {
+  let map: L.Map;
+  let el: HTMLElement;
+
+  beforeEach(() => {
+    el = sizedContainer();
+    map = L.map(el, { center: [10, 10], zoom: 4, fadeAnimation: false, zoomAnimation: false, markerZoomAnimation: false });
+  });
+  afterEach(() => {
+    try { map.remove(); } catch { /* ignore */ }
+    document.body.innerHTML = "";
+  });
+
+  it("mounts an anchored card (divIcon shell) with the card DOM injected", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    a.setWidgets([{ id: "v1", anchor: { lon: 10, lat: 10 }, border: "#111",
+      child: { dir: "v", items: [
+        { kind: "glyph", svg: "<svg></svg>" },
+        { kind: "text", value: "NN", editable: true, control: "input" },
+        { kind: "coord" },
+      ] } }]);
+    const card = el.querySelector(".draw-adapter-widget .draw-adapter-widget-card") as HTMLElement | null;
+    expect(card).not.toBeNull();
+    expect(card!.querySelector("input")).not.toBeNull();
+    a.destroy();
+    expect(el.querySelector(".draw-adapter-widget")).toBeNull(); // torn down
+  });
+
+  it("routes a card tap to onPointer as a widget hit; the container mousedown guard ignores it", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const events: PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    a.setWidgets([{ id: "v1", anchor: { lon: 10, lat: 10 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] } }]);
+    const card = el.querySelector(".draw-adapter-widget .draw-adapter-widget-card") as HTMLElement;
+    // a real container mousedown originating on the card must NOT produce a map "down"
+    card.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(events).toHaveLength(0);
+    // the card's own pointer handler emits the widget hit (tap = down → up → click)
+    card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    card.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(events.some((e) => e.hit?.overlay === "widget")).toBe(true);
+    a.destroy();
+  });
+
+  it("fires onWidgetEdit per keystroke", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const edits: { id: string; value: string }[] = [];
+    a.onWidgetEdit((e) => edits.push(e));
+    a.setWidgets([{ id: "v1", anchor: { lon: 10, lat: 10 },
+      child: { dir: "h", items: [{ kind: "text", value: "", editable: true }] } }]);
+    const input = el.querySelector(".draw-adapter-widget input") as HTMLInputElement;
+    input.value = "Z";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(edits).toEqual([{ id: "v1", value: "Z" }]);
+    a.destroy();
+  });
+
+  it("a DOM click on the card does NOT fire a no-hit map click (no select→deselect)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const events: PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    a.setWidgets([{ id: "v1", anchor: { lon: 10, lat: 10 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] } }]);
+    const card = el.querySelector(".draw-adapter-widget .draw-adapter-widget-card") as HTMLElement;
+    card.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(events.filter((e) => e.type === "click")).toHaveLength(0); // Leaflet's map click is suppressed
+    a.destroy();
+  });
+});
+
+describe("LeafletAdapter — camera + overlay + contextmenu (0.3.0)", () => {
+  let map: L.Map;
+  let el: HTMLElement;
+  beforeEach(() => {
+    el = sizedContainer();
+    map = L.map(el, { center: [10, 10], zoom: 4, fadeAnimation: false, zoomAnimation: false, markerZoomAnimation: false });
+  });
+  afterEach(() => { try { map.remove(); } catch { /* ignore */ } document.body.innerHTML = ""; });
+
+  it("getBounds/getZoom/getContainer + fitBounds + setOverlayVisible (pane toggle)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    expect(a.getBounds()).toHaveLength(4);
+    expect(a.getZoom()).toBe(4);
+    expect(a.getContainer()).toBe(el);
+    a.fitBounds([5, 40, 10, 45]); // no throw
+    a.setOverlayVisible("handles", false);
+    expect(map.getPane("dap-handles")!.style.display).toBe("none");
+    a.setOverlayVisible("handles", true);
+    expect(map.getPane("dap-handles")!.style.display).toBe("");
+    a.destroy();
+  });
+
+  it("right-click fires a contextmenu event", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const events: PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    map.fire("contextmenu", { latlng: L.latLng(10, 10), originalEvent: new MouseEvent("contextmenu") });
+    expect(events.some((e) => e.type === "contextmenu")).toBe(true);
     a.destroy();
   });
 });

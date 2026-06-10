@@ -248,3 +248,59 @@ describe("MapLibreAdapter — symbols & teardown", () => {
     expect(map.doubleClickZoom.enable).toHaveBeenCalled();
   });
 });
+
+describe("MapLibreAdapter — click synthesized on release (no native-click dependency)", () => {
+  it("emits a click on release (down+up at one spot)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const types: string[] = [];
+    adapter.onPointer((e) => types.push(e.type));
+    map.emit("mousedown", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    map.emit("mouseup", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    expect(types).toEqual(["down", "up", "click"]); // click comes from the release, not map.on("click")
+  });
+
+  it("a moved release is a drag — no click", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const types: string[] = [];
+    adapter.onPointer((e) => types.push(e.type));
+    map.emit("mousedown", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 60, y: 60 }, originalEvent: { buttons: 1 } });
+    map.emit("mouseup", { lngLat: { lat: 1, lng: 2 }, point: { x: 60, y: 60 } });
+    expect(types).not.toContain("click");
+  });
+});
+
+describe("MapLibreAdapter — touch click fallback + contextmenu (0.3.0)", () => {
+  it("a native click with no prior mouseup (a touch tap) still emits a click", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const types: string[] = [];
+    adapter.onPointer((e) => types.push(e.type));
+    map.emit("click", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    expect(types).toContain("click");
+  });
+
+  it("the native click is deduped after a mouse release (no double click)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const types: string[] = [];
+    adapter.onPointer((e) => types.push(e.type));
+    map.emit("mousedown", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    map.emit("mouseup", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } }); // synthesizes the click
+    map.emit("click", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } }); // native — deduped
+    expect(types.filter((t) => t === "click")).toHaveLength(1);
+  });
+
+  it("right-click emits a contextmenu event", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const events: PointerEvent[] = [];
+    adapter.onPointer((e) => events.push(e));
+    let prevented = false;
+    map.emit("contextmenu", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 }, preventDefault: () => { prevented = true; } });
+    expect(prevented).toBe(true);
+    expect(events.some((e) => e.type === "contextmenu")).toBe(true);
+  });
+});

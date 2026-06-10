@@ -70,3 +70,82 @@ describe("FakeAdapter", () => {
     expect(events[2]).toMatchObject({ ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
   });
 });
+
+describe("FakeAdapter — marker widgets", () => {
+  it("records the widget set and surfaces it by id", () => {
+    const a = new FakeAdapter();
+    a.setWidgets([{ id: "v1", anchor: { lon: 3, lat: 46 }, child: { dir: "v", items: [{ kind: "coord" }] } }]);
+    expect(a.widgets).toHaveLength(1);
+    expect(a.widget("v1")?.anchor).toEqual({ lon: 3, lat: 46 });
+  });
+
+  it("editWidget fires onWidgetEdit({ id, value })", () => {
+    const a = new FakeAdapter();
+    const edits: { id: string; value: string }[] = [];
+    a.onWidgetEdit((e) => edits.push(e));
+    a.editWidget("v1", "ETNA");
+    expect(edits).toEqual([{ id: "v1", value: "ETNA" }]);
+  });
+
+  it("deleteWidget fires onWidgetDelete({ id })", () => {
+    const a = new FakeAdapter();
+    const deleted: { id: string }[] = [];
+    a.onWidgetDelete((e) => deleted.push(e));
+    a.deleteWidget("v1");
+    expect(deleted).toEqual([{ id: "v1" }]);
+  });
+
+  it("clickWidget surfaces a { overlay:'widget', props:{ id } } hit via onPointer", () => {
+    const a = new FakeAdapter();
+    const events: import("../src/index.js").PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    a.clickWidget("v1");
+    expect(events[0]).toMatchObject({ type: "click", hit: { overlay: "widget", props: { id: "v1" } } });
+  });
+
+  it("setCoordFormat is recorded for the consumer's formatter", () => {
+    const a = new FakeAdapter();
+    const fmt = (ll: { lon: number; lat: number }) => `${ll.lon}/${ll.lat}`;
+    a.setCoordFormat(fmt);
+    expect(a.coordFormat).toBe(fmt);
+  });
+});
+
+describe("FakeAdapter — onBlur", () => {
+  it("fires on .blur() (the window-focus-lost signal for deselect)", () => {
+    const a = new FakeAdapter();
+    let blurred = 0;
+    a.onBlur(() => blurred++);
+    a.blur();
+    expect(blurred).toBe(1);
+  });
+});
+
+describe("FakeAdapter — camera + overlay + actions (0.3.0)", () => {
+  it("exposes container/bounds/zoom, records fitBounds + overlay visibility", () => {
+    const a = new FakeAdapter();
+    expect(a.getBounds()).toEqual([-1, -1, 1, 1]);
+    expect(typeof a.getZoom()).toBe("number");
+    expect(a.getContainer()).toBeTruthy();
+    a.fitBounds([1, 2, 3, 4]);
+    expect(a.fittedBounds).toEqual([1, 2, 3, 4]);
+    a.setOverlayVisible("guide", false);
+    expect(a.overlayVisible["guide"]).toBe(false);
+  });
+
+  it("actionWidget fires onWidgetAction({ id, event })", () => {
+    const a = new FakeAdapter();
+    const acts: { id: string; event: string }[] = [];
+    a.onWidgetAction((e) => acts.push(e));
+    a.actionWidget("v1", "draw-again");
+    expect(acts).toEqual([{ id: "v1", event: "draw-again" }]);
+  });
+
+  it("send surfaces a contextmenu (right-click) hit", () => {
+    const a = new FakeAdapter();
+    const events: import("../src/index.js").PointerEvent[] = [];
+    a.onPointer((e) => events.push(e));
+    a.send("contextmenu", 1, 2, "area", { featureId: "x" });
+    expect(events[0]).toMatchObject({ type: "contextmenu", hit: { overlay: "area", props: { featureId: "x" } } });
+  });
+});

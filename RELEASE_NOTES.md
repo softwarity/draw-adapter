@@ -2,6 +2,82 @@
 
 ## NEXT RELEASE
 
+- **Add:** anchored **marker widgets** — a generic, domain-free DOM "card" pinned at a
+  `lon/lat`, built from a tiny box-layout tree (vbox/hbox + `glyph` / `text` / `coord`),
+  with an inline-editable `text` backed by a **real `<input>`** (caret, IME, paste, mobile
+  keyboard) that **auto-grows** to its content. New `MapAdapter.setWidgets(MarkerWidget[])`
+  (declarative, **diffed by `id`** like `setOverlay` — a focused input keeps its focus/caret
+  across re-`setWidgets`), `onWidgetEdit({ id, value })` (per keystroke), and
+  `setCoordFormat(fn)` (formats the live `coord` line). Selection/move **reuse the existing
+  pointer model**: a card click/drag surfaces through `onPointer` as a
+  `{ overlay: "widget", props: { id } }` hit (carrying the real lon/lat), and the card never
+  drives map pan/zoom (an input press just edits). **One implementation across all three
+  engines** — the card rides each engine's native anchored-overlay primitive (MapLibre
+  `Marker` / OpenLayers `Overlay` / Leaflet `divIcon`), so it tracks per-frame through
+  pan/zoom and stays screen-upright; Pointer Events ⇒ touch works. `padding`/`radius` reuse
+  the `TextBoxSize`/`TextBoxRadius` presets. Implemented on all 3 engines + `FakeAdapter`
+  (`.setWidgets`, `.onWidgetEdit`, `.editWidget(id, value)`, `.clickWidget(id)`). New types
+  `MarkerWidget` / `WidgetBox` / `WidgetNode` / `WidgetGlyph` / `WidgetText` / `WidgetCoord` /
+  `WidgetOrigin` / `WidgetEdit`; new export `defaultCoordFormat`. The `control` field is left
+  open for future `gauge` / `dial` / `carousel` (only `input` now). **Purely additive** — no
+  existing consumer is affected.
+- **Add:** widgets can carry a **delete button** — `MarkerWidget.deletable: true` shows a bare
+  `×` in the top-right corner that fires `MapAdapter.onWidgetDelete({ id })`; the lib never removes
+  the card (the consumer drops the `id` from its next `setWidgets`). It's a separate element from
+  the card body, so an **input-only card is still deletable**, and it's excluded from snapshots.
+  Also new: `text.uppercase` — an editable input enters and emits its value in upper case
+  (caret-preserved); a static label displays upper case.
+- **Add:** `snapshot()` now **includes the widget cards** (in their static, non-editable form —
+  each input rendered as its value) on **MapLibre and OpenLayers**, via a `foreignObject`
+  composite. **Safe by design:** the card-less PNG is produced before any `foreignObject` is
+  drawn, so a tainted canvas (e.g. on Safari) **degrades** to the card-less snapshot instead of
+  failing. Leaflet `snapshot()` is still unsupported, so its widgets aren't captured yet.
+- **Fix:** a `click` now carries the hit captured at its `down` (**atomic press**) instead of
+  re-running the hit-test at click time — kills an intermittent **select → immediate-deselect**
+  where the trailing `click` resolved to *no hit*: the select handler had re-rendered the feature
+  (Leaflet drops its hover state, OpenLayers' `singleclick` is ~250 ms delayed and races the
+  re-render). Two further nets fix the **first click after re-focusing the window** (whose `up`
+  is often eaten by the OS focus gesture, leaving `dragging` stuck — which only cleared after a
+  fresh map click): (a) a **move with no button held** finalises the press (emits the missing
+  `up` + clears state) — it fires on the very move toward the element, before the click; and
+  (b) window `blur` purges the press state. All 3 engines. Pure robustness — no API change.
+- **Add:** `MapAdapter.onBlur(cb)` — fires when the map's **window loses focus** (the user
+  switches to another window/app). The adapter stays domain-free and never changes selection
+  itself; this is the signal so the consumer can **deselect** the active element (e.g. so a marker
+  widget stops looking editable once you've left the window). All 3 engines + `FakeAdapter`
+  (`.blur()` helper).
+- **Fix (MapLibre + OpenLayers):** the `click` is now **synthesized from the release** (a
+  `down`+`up` at one spot, reusing the `down` hit) instead of the engine's native click event —
+  OL's was a debounced `singleclick` (~250 ms; a quick second click became a `dblclick`, so
+  click-away-to-**deselect needed several clicks**), and MapLibre's native `click` gets **swallowed
+  by the OS on the first click after re-focusing the window** (which produced a select→deselect on
+  that click). Both now register on the **first** click, consistent with Leaflet. `dblclick` is
+  unchanged (native). No API change.
+- **Add (camera + container):** `getBounds()` (`[west, south, east, north]`), `getZoom()`,
+  `getContainer()`, and `fitBounds([w,s,e,n], { padding? })` on all 3 engines + `FakeAdapter`.
+  `fitBounds` **drives the host camera** (the one legit case — frame your own drawing); documented
+  "use sparingly". (Audit #1 + #4.)
+- **Add:** `setOverlayVisible(id, visible)` — show/hide an overlay layer **without dropping its
+  data** (toggle reference layers / masks / guides); lossless vs. pushing an empty FC. (Audit #3.)
+- **Add:** right-click → `onPointer` with `type: "contextmenu"` (the browser menu is suppressed),
+  carrying the hit + lon/lat — e.g. finish a polygon / delete a vertex. All 3 engines + `FakeAdapter`
+  (`send("contextmenu", …)`). (Audit #5.)
+- **Add (widgets):** **action buttons** on the card edges/corners —
+  `MarkerWidget.buttons: [{ event, place?, svg?, bordered? }]` fire `onWidgetAction({ id, event })`.
+  `place` is an enum (`top`/`bottom`/`left`/`right` · the four corners · `edges`/`h-edges`/`v-edges`
+  · `corners`/`top-corners`/`bottom-corners`/`left-corners`/`right-corners`) **or an array**, unioned
+  and deduped (e.g. `["left-corners","top-corners"]` ⇒ 3 corners). Domain-free: the consumer names
+  the `event` and decides what it does (e.g. "draw another area attached to this panel" ⇒ a
+  multipolygon + a 2nd leader, all consumer-side). `FakeAdapter.actionWidget(id, event)`.
+- **Add:** the `up` event now carries the **real release coordinate** on OpenLayers & Leaflet too
+  (MapLibre already did) — finishing audit #2 (was `{0,0}`).
+- **Change (cleanup):** `PointerEvent.hit` is now the exported `Hit` type instead of a duplicate
+  inline shape — structurally identical, **non-breaking**. (Audit #8.)
+- **Fix (MapLibre touch):** restored tap-to-select on touch — the release-synthesized click doesn't
+  fire on a finger tap (no `mouseup`), so a deduped native-click fallback covers touch taps. (Note:
+  freehand **drawing** on touch is still OpenLayers-only; ML/Leaflet drawing stays mouse-based — the
+  remaining touch chantier #7.)
+
 ---
 
 ## 0.2.9
