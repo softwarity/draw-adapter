@@ -1,5 +1,9 @@
 # Release Notes
 
+## NEXT RELEASE
+
+---
+
 ## 0.3.0
 
 - **Add:** anchored **marker widgets** — a generic, domain-free DOM "card" pinned at a
