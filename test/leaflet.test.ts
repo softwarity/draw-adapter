@@ -431,3 +431,44 @@ describe("LeafletAdapter — camera + overlay + contextmenu (0.3.0)", () => {
     a.destroy();
   });
 });
+
+describe("LeafletAdapter — text label hit (call-out is clickable when hittable)", () => {
+  let map: L.Map;
+  let el: HTMLElement;
+  beforeEach(() => {
+    el = sizedContainer();
+    map = L.map(el, { center: [10, 10], zoom: 4, fadeAnimation: false, zoomAnimation: false, markerZoomAnimation: false });
+  });
+  afterEach(() => { try { map.remove(); } catch { /* ignore */ } document.body.innerHTML = ""; });
+
+  const labelFC = {
+    type: "FeatureCollection" as const,
+    features: [{ type: "Feature" as const, geometry: { type: "Point" as const, coordinates: [10, 10] },
+      properties: { featureId: "cb1", text: "CB", textBackground: "#fff", textBorder: "#111" } }],
+  };
+
+  it("a hittable text overlay ⇒ interactive label; hovering it surfaces the feature hit", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["label"]) });
+    await a.ready();
+    a.setOverlay("label", labelFC);
+    const labelEl = el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement;
+    expect(labelEl).not.toBeNull();
+    expect(labelEl.classList.contains("leaflet-interactive")).toBe(true);
+    let moveHit: PointerEvent["hit"];
+    a.onPointer((e) => { if (e.type === "move") moveHit = e.hit; });
+    labelEl.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); // → this.hovered = label
+    map.fire("mousemove", { latlng: L.latLng(10, 10), originalEvent: new MouseEvent("mousemove") });
+    expect(moveHit?.overlay).toBe("label");
+    expect(moveHit?.props["featureId"]).toBe("cb1");
+    a.destroy();
+  });
+
+  it("a text overlay NOT in hitOverlays stays non-interactive (pass-through)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
+    await a.ready();
+    a.setOverlay("label", labelFC);
+    const labelEl = el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement;
+    expect(labelEl.classList.contains("leaflet-interactive")).toBe(false);
+    a.destroy();
+  });
+});

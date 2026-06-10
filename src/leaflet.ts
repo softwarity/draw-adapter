@@ -153,7 +153,7 @@ export class LeafletAdapter implements MapAdapter {
         const group = L.geoJSON(undefined, {
           pane: paneName,
           style: (f) => this.styleFor(spec.kind, f),
-          pointToLayer: (f, latlng) => this.pointLayer(spec.kind, f, latlng, paneName),
+          pointToLayer: (f, latlng) => this.pointLayer(spec.kind, spec.id, f, latlng, paneName),
           onEachFeature: (f, layer) => this.bindFeature(spec.id, f, layer),
         });
         group.addTo(this.map);
@@ -536,8 +536,9 @@ export class LeafletAdapter implements MapAdapter {
     }
   }
 
-  private pointLayer(kind: LayerKind, f: Feature, latlng: L.LatLng, pane: string): L.Layer {
+  private pointLayer(kind: LayerKind, overlay: string, f: Feature, latlng: L.LatLng, pane: string): L.Layer {
     const p = (f.properties ?? {}) as Record<string, unknown>;
+    const hittable = this.opts.hitOverlays?.has(overlay) ?? true;
     switch (kind) {
       case "circle": {
         const dot = L.circleMarker(latlng, {
@@ -561,7 +562,10 @@ export class LeafletAdapter implements MapAdapter {
         return icon ? L.marker(latlng, { pane, icon }) : L.circleMarker(latlng, { pane, radius: 0, opacity: 0, fillOpacity: 0 });
       }
       case "text":
-        return L.marker(latlng, { pane, icon: this.textIcon(p), interactive: false });
+        // Interactive only when the text overlay is hittable — then its label box (call-out) is
+        // clickable (mouseover sets `this.hovered`, like any feature). Non-hittable text stays
+        // pass-through so it never eats clicks meant for the shape/handles beneath it.
+        return L.marker(latlng, { pane, icon: this.textIcon(p), interactive: hittable });
       default:
         // fill/line never reach pointToLayer (no point geometry); render nothing.
         return L.circleMarker(latlng, { pane, radius: 0, opacity: 0, fillOpacity: 0 });

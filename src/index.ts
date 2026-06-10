@@ -130,18 +130,29 @@ export interface WidgetGlyph {
   color?: string;
 }
 
-/** A text leaf — a static label, or (when `editable`) an inline editing control. */
+/** One choice in a `"carousel"` control — a bare string (text = its own value), or a value with a
+ *  display `label` and/or a `svg` glyph. */
+export type WidgetCarouselOption = string | { value: string; label?: string; svg?: string };
+
+/** A text leaf — a static label, an inline `<input>` (when `editable`), or a click-to-cycle
+ *  `"carousel"` control. */
 export interface WidgetText {
   kind: "text";
+  /** The current value. For a carousel it's the selected option's `value`. */
   value: string;
-  /** Omit/`false` ⇒ a static `<span>` label; `true` ⇒ an editable control. */
+  /** Omit/`false` ⇒ a static `<span>` label; `true` ⇒ an editable `<input>`. */
   editable?: boolean;
   /**
-   * The editing control when `editable`. Only `"input"` is implemented now; the field
-   * is the **extension point** for future `"gauge"` / `"dial"` / `"carousel"` (not in
-   * this lib yet). Defaults to `"input"` when `editable` and omitted.
+   * The control to render. `"input"` (default when `editable`) is a text field. `"carousel"`
+   * cycles through `options` on **click** (next) / **shift-click** (previous) with a slide effect,
+   * emitting the new `value` via {@link MapAdapter.onWidgetEdit}. (`"gauge"`/`"dial"` reserved.)
    */
-  control?: "input";
+  control?: "input" | "carousel";
+  /** The choices for a `"carousel"` control. */
+  options?: WidgetCarouselOption[];
+  /** Identifies this control in the `onWidgetEdit` payload — set it when a card has more than one
+   *  editable control (input + several carousels), so the consumer knows which one changed. */
+  name?: string;
   placeholder?: string;
   /** Focus the control when it **first appears** (not on every re-render). */
   autofocus?: boolean;
@@ -201,6 +212,8 @@ export interface WidgetButton {
   svg?: string;
   /** Draw it as a small **bordered** circle (default `false` ⇒ just the glyph). */
   bordered?: boolean;
+  /** Native tooltip (the `title` attribute) shown on hover. */
+  title?: string;
 }
 
 /** An anchored marker widget (a DOM card). Positions + frames only; layout lives in the
@@ -224,8 +237,9 @@ export interface MarkerWidget {
   font?: { color?: string; size?: number; family?: string };
   /** Show a small **delete** button in the card's top-right corner. Clicking it fires
    *  {@link MapAdapter.onWidgetDelete} with this `id` — the lib does NOT remove the card,
-   *  the consumer drops the `id` from its next `setWidgets`. */
-  deletable?: boolean;
+   *  the consumer drops the `id` from its next `setWidgets`. Pass `{ title }` for a native
+   *  tooltip on the `×`. */
+  deletable?: boolean | { title?: string };
   /** Action buttons on the card's edges/corners (a `+`, a pen, …). Each fires
    *  {@link MapAdapter.onWidgetAction} with its `event`. The lib stays domain-free. */
   buttons?: WidgetButton[];
@@ -233,9 +247,13 @@ export interface MarkerWidget {
   child: WidgetBox;
 }
 
-/** Payload of {@link MapAdapter.onWidgetEdit} — fired per keystroke in an editable input. */
+/** Payload of {@link MapAdapter.onWidgetEdit} — fired per keystroke in an editable input, and on
+ *  each change of a `"carousel"` control. */
 export interface WidgetEdit {
   id: string;
+  /** The control's `name`, if it has one — disambiguates which control changed (a card can hold
+   *  several editable controls). */
+  name?: string;
   value: string;
 }
 

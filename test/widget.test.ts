@@ -281,8 +281,9 @@ describe("WidgetLayer — delete button", () => {
     expect(btn.style.top).toBe("2px"); // framed ⇒ inside the corner with a small inset
     expect(btn.style.transform).toBe("");
     expect(btn.style.display).toBe("flex"); // square centred box ⇒ × equidistant from top/right
-    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(deleted).toEqual([{ id: "d1" }]);
+    btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    btn.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(deleted).toEqual([{ id: "d1" }]); // emitted on the pointerup tap (the native click is ML-suppressed)
   });
 
   it("when unframed (no bg/border) the × is nudged up-and-right, clear of the content", () => {
@@ -303,8 +304,9 @@ describe("WidgetLayer — delete button", () => {
     expect(btn.closest("input")).toBeNull(); // not swallowed by the input
     btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
     expect(host.emits).toHaveLength(0); // pressing × never starts a card drag/select
-    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    btn.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 1, clientY: 1 })); // tap ⇒ delete
     expect(deleted).toEqual([{ id: "d1" }]);
+    expect(host.emits).toHaveLength(0); // and no widget pointer leaked to the card/map
   });
 
   it("doesn't disturb the reconcile, and the button is removed when deletable turns off", () => {
@@ -330,8 +332,10 @@ describe("WidgetLayer — action buttons", () => {
       buttons: [{ event: "draw-again", place: ["right", "bottom"], bordered: true, svg: "<svg id='plus'></svg>" }] }]);
     const btns = cardEl(host).querySelectorAll(".draw-adapter-widget-btn");
     expect(btns.length).toBe(2); // right + bottom
-    (btns[0] as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(actions).toEqual([{ id: "w1", event: "draw-again" }]);
+    const b0 = btns[0] as HTMLElement;
+    b0.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    b0.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(actions).toEqual([{ id: "w1", event: "draw-again" }]); // emitted on the pointerup tap
   });
 
   it("unions place groups (deduped): left-corners + top-corners ⇒ 3 corners", () => {
@@ -342,14 +346,19 @@ describe("WidgetLayer — action buttons", () => {
     expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(3);
   });
 
-  it("a press on an action button never starts a card drag", () => {
+  it("a press never starts a card drag, and a press-drag past the threshold emits no action", () => {
     const host = new FakeHost();
-    new WidgetLayer(host).setWidgets([{ id: "w3", anchor: { lon: 0, lat: 0 },
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([{ id: "w3", anchor: { lon: 0, lat: 0 },
       child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
       buttons: [{ event: "x", place: "right" }] }]);
     const btn = cardEl(host).querySelector(".draw-adapter-widget-btn") as HTMLElement;
     btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
-    expect(host.emits).toHaveLength(0);
+    expect(host.emits).toHaveLength(0); // no card drag
+    btn.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 40, clientY: 40 })); // moved > 3 px
+    expect(actions).toHaveLength(0); // press-drag ⇒ no action (only a tap fires)
   });
 });
 
@@ -371,5 +380,134 @@ describe("WidgetLayer — action buttons are gated by what you pass (deselect)",
     expect(cardEl(host).querySelectorAll(".draw-adapter-widget-del").length).toBe(1);
     layer.setWidgets([w(false)]);
     expect(cardEl(host).querySelectorAll(".draw-adapter-widget-del").length).toBe(0);
+  });
+});
+
+describe("WidgetLayer — carousel control", () => {
+  const carousel = (value: string): MarkerWidget => ({
+    id: "c1", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "coverage", value, options: ["ISOL", "OCNL", "FRQ"] }] },
+  });
+  const cel = (host: FakeHost): HTMLElement => cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+  const tap = (el: Element, shift = false): void => {
+    el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5, shiftKey: shift }));
+  };
+
+  it("renders the current option and cycles forward on click, emitting { id, name, value }", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: { id: string; name?: string; value: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([carousel("ISOL")]);
+    expect(cel(host).textContent).toBe("ISOL");
+    tap(cel(host));
+    expect(edits).toEqual([{ id: "c1", name: "coverage", value: "OCNL" }]);
+    expect(cel(host).textContent).toBe("OCNL"); // optimistic display
+  });
+
+  it("shift-click cycles backward and wraps (ISOL → FRQ)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: { id: string; name?: string; value: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([carousel("ISOL")]);
+    tap(cel(host), true);
+    expect(edits.at(-1)).toEqual({ id: "c1", name: "coverage", value: "FRQ" });
+  });
+
+  it("supports glyph options (svg)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "g", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "carousel", value: "a",
+        options: [{ value: "a", svg: "<svg id='A'></svg>" }, { value: "b", svg: "<svg id='B'></svg>" }] }] } }]);
+    expect(cel(host).querySelector("svg")?.id).toBe("A");
+  });
+
+  it("an external value change re-renders; a press never starts a card drag", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([carousel("ISOL")]);
+    layer.setWidgets([carousel("FRQ")]);
+    expect(cel(host).textContent).toBe("FRQ");
+    cel(host).dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
+    expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — button tooltips", () => {
+  it("action buttons and the delete × render a native `title`", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "t", anchor: { lon: 0, lat: 0 },
+      deletable: { title: "Supprimer" },
+      buttons: [{ event: "add", place: "right", title: "Ajouter une zone" }],
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] } }]);
+    const card = cardEl(host);
+    expect((card.querySelector(".draw-adapter-widget-btn") as HTMLElement).title).toBe("Ajouter une zone");
+    expect((card.querySelector(".draw-adapter-widget-del") as HTMLElement).title).toBe("Supprimer");
+  });
+});
+
+describe("WidgetLayer — carousel is also a drag handle", () => {
+  it("a drag on the carousel forwards down/move/up (moves the card) and does NOT cycle", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: unknown[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "c", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "cov", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const c = cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+    c.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    c.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
+    c.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 40, clientY: 40 }));
+    expect(host.emits.map((e) => e.type)).toEqual(["down", "move", "up"]); // forwarded ⇒ card drag
+    expect(host.emits[0]?.hit?.overlay).toBe("widget");
+    expect(edits).toHaveLength(0); // a drag never cycles
+  });
+});
+
+describe("WidgetLayer — carousel tap selects the card", () => {
+  it("a tap emits the card's down/up/click (widget hit) AND cycles", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: unknown[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "c1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "coverage", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const c = cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+    c.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    c.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(host.emits.map((e) => e.type)).toEqual(["down", "up", "click"]); // selects the card
+    expect(host.emits.every((e) => e.hit?.overlay === "widget" && (e.hit.props as { id: string }).id === "c1")).toBe(true);
+    expect(edits).toHaveLength(1); // and cycles
+  });
+});
+
+describe("WidgetLayer — editable input keeps keys + caret to itself", () => {
+  const inputCard = (): MarkerWidget => ({
+    id: "i", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "text", value: "AB", editable: true }] },
+  });
+
+  it("forces user-select:text (so a click positions the caret despite the card's user-select:none)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([inputCard()]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    expect(input.style.userSelect).toBe("text");
+  });
+
+  it("stops keydown/keyup from bubbling to the map (arrows move the caret, not the map)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([inputCard()]);
+    const input = cardEl(host).querySelector("input") as HTMLInputElement;
+    let bubbled = false;
+    const onDoc = (): void => { bubbled = true; };
+    document.addEventListener("keydown", onDoc);
+    try {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    } finally {
+      document.removeEventListener("keydown", onDoc);
+    }
+    expect(bubbled).toBe(false);
   });
 });

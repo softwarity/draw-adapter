@@ -18,6 +18,7 @@ import type {
   WidgetBox,
   WidgetButton,
   WidgetButtonPlace,
+  WidgetCarouselOption,
   WidgetEdit,
   WidgetNode,
   WidgetOrigin,
@@ -71,7 +72,10 @@ function alignValue(a: WidgetBox["align"]): string {
 const KIND = "wtag";
 function nodeTag(node: WidgetNode): string {
   if (!("kind" in node)) return "box"; // a WidgetBox carries no `kind`
-  if (node.kind === "text") return node.editable ? `text:${node.control ?? "input"}` : "text:label";
+  if (node.kind === "text") {
+    if (node.control === "carousel") return "text:carousel";
+    return node.editable ? "text:input" : "text:label";
+  }
   return node.kind;
 }
 
@@ -146,12 +150,45 @@ function expandPlaces(place: WidgetButton["place"]): [number, number][] {
   return pts;
 }
 
+/**
+ * Wire a chrome button (delete `×` / action) to emit on a **local pointerup tap** rather than the
+ * native `click`. MapLibre's `Marker` (the widget mount) cancels `mousedown` on its element, which
+ * makes the browser **suppress the synthesized `click`** for the whole gesture — so a real mouse
+ * click on a card button never fired its `click` listener (jsdom/`dispatchEvent` doesn't reproduce
+ * this, only trusted input). Pointer-event based, so it's immune on all 3 engines: `pointerdown`
+ * arms + captures, a `pointerup` within ~3 px fires. The (possibly-suppressed) native `click` and
+ * the compat `mousedown` are stop-propagated as guards so neither leaks to the card/map.
+ */
+function wireTapButton(el: HTMLElement, onTap: (e: globalThis.PointerEvent) => void): void {
+  let armed = false;
+  let downX = 0;
+  let downY = 0;
+  el.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); // never start a card drag
+    armed = true;
+    downX = e.clientX;
+    downY = e.clientY;
+    try { el.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+  });
+  el.addEventListener("pointerup", (e) => {
+    e.stopPropagation();
+    try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (!armed) return;
+    armed = false;
+    if (Math.abs(e.clientX - downX) <= 3 && Math.abs(e.clientY - downY) <= 3) onTap(e);
+  });
+  el.addEventListener("pointercancel", () => { armed = false; });
+  el.addEventListener("click", (e) => { e.stopPropagation(); }); // guard only — emit happens on pointerup
+  el.addEventListener("mousedown", (e) => { e.stopPropagation(); }); // keep the compat event off the Marker
+}
+
 /** One action button (bare glyph, or a small bordered circle), straddling its edge/corner point. */
 function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): HTMLButtonElement {
   const el = document.createElement("button");
   el.type = "button";
   el.className = "draw-adapter-widget-btn";
-  el.setAttribute("aria-label", b.event);
+  el.setAttribute("aria-label", b.title ?? b.event);
+  if (b.title) el.title = b.title; // native tooltip on hover
   const s = el.style;
   s.position = "absolute";
   s.left = `${(fx * 100).toFixed(4)}%`;
@@ -188,9 +225,107 @@ function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): 
   } else {
     el.textContent = "•";
   }
-  el.addEventListener("pointerdown", (e) => { e.stopPropagation(); }); // never start a drag
-  el.addEventListener("click", (e) => { e.stopPropagation(); card.emitAction(b.event); });
+  wireTapButton(el, () => card.emitAction(b.event));
   return el;
+}
+
+// ── carousel control (click = next, shift-click = previous, with a slide effect) ──
+
+const carouselState = new WeakMap<HTMLElement, { options: WidgetCarouselOption[]; value: string; name: string | undefined }>();
+
+function optValue(o: WidgetCarouselOption): string {
+  return typeof o === "string" ? o : o.value;
+}
+
+/** Paint the current option — a glyph if it carries `svg`, else its `label`/value text. */
+function renderCarousel(el: HTMLElement, o: WidgetCarouselOption | undefined): void {
+  if (o == null) { el.textContent = ""; return; }
+  if (typeof o !== "string" && o.svg) {
+    el.innerHTML = o.svg;
+    const inner = el.firstElementChild as HTMLElement | null;
+    if (inner) { inner.style.width = "100%"; inner.style.height = "100%"; inner.style.display = "block"; }
+  } else {
+    el.textContent = typeof o === "string" ? o : (o.label ?? o.value);
+  }
+}
+
+/** A quick directional slide + fade as the value swaps (next ⇒ from the right, prev ⇒ from the left). */
+function animateCarousel(el: HTMLElement, dir: number): void {
+  try {
+    const s = el.style;
+    s.transition = "none";
+    s.transform = `translateX(${dir * 8}px)`;
+    s.opacity = "0.25";
+    void el.offsetWidth; // force a reflow so the transition below actually runs
+    s.transition = "transform 140ms ease, opacity 140ms ease";
+    s.transform = "translateX(0)";
+    s.opacity = "1";
+  } catch { /* no layout engine (jsdom) */ }
+}
+
+/** Sync a carousel element to the model — re-paints only when the value changed, so it never
+ *  clobbers an in-flight cycle animation. */
+function updateCarousel(el: HTMLElement, options: WidgetCarouselOption[], value: string, name: string | undefined): void {
+  const opt = options.find((o) => optValue(o) === value) ?? options[0];
+  const st = carouselState.get(el);
+  if (!st) {
+    carouselState.set(el, { options, value, name });
+    renderCarousel(el, opt);
+    return;
+  }
+  st.options = options;
+  st.name = name;
+  if (st.value !== value) {
+    st.value = value;
+    renderCarousel(el, opt);
+  }
+}
+
+/** Advance the carousel by `dir` (+1 next, −1 previous), paint + animate, and emit the new value. */
+function cycleCarousel(el: HTMLElement, dir: number, card: Card): void {
+  const st = carouselState.get(el);
+  if (!st || st.options.length === 0) return;
+  const cur = st.options.findIndex((o) => optValue(o) === st.value);
+  const next = ((cur < 0 ? 0 : cur) + dir + st.options.length) % st.options.length;
+  const opt = st.options[next]!;
+  st.value = optValue(opt);
+  renderCarousel(el, opt);
+  animateCarousel(el, dir);
+  card.emitEdit(st.value, st.name);
+}
+
+/** Wire a carousel as **both** a control and a drag handle: a clean **tap** cycles
+ *  (click = next, shift = previous); a **drag** (press + move past ~3 px) forwards the gesture to
+ *  the card so the whole card moves — so the carousel area no longer blocks dragging. */
+function wireCarousel(el: HTMLElement, card: Card): void {
+  let downEvt: globalThis.PointerEvent | null = null;
+  let dragging = false;
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    downEvt = e;
+    dragging = false;
+    try { el.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!downEvt) return;
+    if (!dragging && (Math.abs(e.clientX - downEvt.clientX) > 3 || Math.abs(e.clientY - downEvt.clientY) > 3)) {
+      dragging = true;
+      card.forwardDrag("down", downEvt); // begin the card drag at the original press point
+    }
+    if (dragging) card.forwardDrag("move", e);
+  });
+  const finish = (e: globalThis.PointerEvent, tap: boolean): void => {
+    try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (dragging) card.forwardDrag("up", e);     // a drag moved the card
+    else if (tap && downEvt) { card.tapSelect(e); cycleCarousel(el, e.shiftKey ? -1 : 1, card); } // a tap selects + cycles
+    dragging = false;
+    downEvt = null;
+  };
+  el.addEventListener("pointerup", (e) => finish(e, true));
+  el.addEventListener("pointercancel", (e) => finish(e, false)); // a cancelled gesture is never a tap
+  el.addEventListener("click", (e) => { e.stopPropagation(); }); // guard — never leak to map
+  el.addEventListener("mousedown", (e) => { e.stopPropagation(); }); // keep the compat event off the Marker
 }
 
 class Card {
@@ -240,6 +375,10 @@ class Card {
     s.whiteSpace = "nowrap";
     s.userSelect = "none";
     s.cursor = "default";
+    // Pin the line-height so multi-line text (carousel, labels) is homogeneous across engines —
+    // MapLibre's container otherwise leaks a 20px line-height into the card. Unitless ⇒ scales
+    // with font-size, deterministic (≈ `normal` but consistent everywhere).
+    s.lineHeight = "1.2";
     this.content = document.createElement("div");
     this.content.style.display = "inline-block";
     this.root.appendChild(this.content);
@@ -271,12 +410,26 @@ class Card {
     s.fontFamily = w.font?.family ?? "";
     this.coordEls.length = 0;
     reconcile(this.content, [w.child], this);
-    this.ensureDeleteButton(!!w.deletable, framed);
+    const del = w.deletable;
+    this.ensureDeleteButton(!!del, framed, typeof del === "object" ? del.title : undefined);
     this.ensureActionButtons(w.buttons);
   }
 
   emitAction(event: string): void {
     this.getActionCb()?.({ id: this.id, event });
+  }
+
+  /** Drive the card's drag pipeline from a control acting as a drag handle (the carousel). */
+  forwardDrag(type: PointerEvent["type"], e: globalThis.PointerEvent): void {
+    this.send(type, e);
+  }
+
+  /** Emit the card's no-move tap (down → up → click, the widget hit) so the consumer **selects**
+   *  the card — used by a control (carousel) that swallows its own press but must still select. */
+  tapSelect(e: globalThis.PointerEvent): void {
+    this.send("down", e);
+    this.send("up", e);
+    this.send("click", e);
   }
 
   /** Build the action buttons (`+`/pen/…) on the card edges/corners. Rebuilt only when the
@@ -299,7 +452,7 @@ class Card {
   /** Create/remove the corner delete button. It's a sibling of `content` (so the reconcile
    *  never touches it) and a separate element from any input (so it's always clickable —
    *  an input-only card can still be deleted). Clicking it fires the delete callback. */
-  private ensureDeleteButton(on: boolean, framed: boolean): void {
+  private ensureDeleteButton(on: boolean, framed: boolean, title?: string): void {
     if (on && !this.delBtn) {
       const b = document.createElement("button");
       b.type = "button";
@@ -328,8 +481,7 @@ class Card {
       s.userSelect = "none";
       s.setProperty("appearance", "none");
       s.setProperty("-webkit-appearance", "none");
-      b.addEventListener("pointerdown", (e) => { e.stopPropagation(); }); // never start a drag
-      b.addEventListener("click", (e) => { e.stopPropagation(); this.getDeleteCb()?.({ id: this.id }); });
+      wireTapButton(b, () => this.getDeleteCb()?.({ id: this.id }));
       this.root.appendChild(b);
       this.delBtn = b;
     } else if (!on && this.delBtn) {
@@ -337,6 +489,8 @@ class Card {
       this.delBtn = undefined;
     }
     if (this.delBtn) {
+      this.delBtn.title = title ?? ""; // native tooltip
+      if (title) this.delBtn.setAttribute("aria-label", title);
       // Framed: a small inset INSIDE the corner (the frame padding gives it room). Unframed: there's
       // no padding to sit in, so nudge the glyph up-and-right, clear of the content.
       const s = this.delBtn.style;
@@ -355,8 +509,8 @@ class Card {
     el.textContent = this.coordFmt(this.anchor);
   }
 
-  emitEdit(value: string): void {
-    this.getEditCb()?.({ id: this.id, value });
+  emitEdit(value: string, name?: string): void {
+    this.getEditCb()?.({ id: this.id, value, ...(name != null && name !== "" ? { name } : {}) });
   }
 
   private wirePointer(): void {
@@ -364,7 +518,7 @@ class Card {
     root.addEventListener("pointerdown", (e) => {
       const t = e.target as HTMLElement | null;
       // editing or the delete button handle their own press — don't start a drag/select
-      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn")) return;
+      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl")) return;
       e.preventDefault();   // no text selection while dragging the card
       e.stopPropagation();  // don't let the map navigate (bubble phase)
       this.dragging = true;
@@ -421,6 +575,19 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     el.style.display = "inline-flex";
   } else if (node.kind === "coord") {
     el = document.createElement("span");
+  } else if (node.control === "carousel") {
+    const span = document.createElement("span");
+    span.className = "draw-adapter-widget-ctrl";
+    const s = span.style;
+    s.display = "inline-block";
+    s.cursor = "pointer";
+    s.userSelect = "none";
+    s.willChange = "transform, opacity";
+    s.whiteSpace = "pre-line"; // honour `\n` in option text (multi-line); no effect on single-line
+    s.textAlign = "center";
+    // tap ⇒ cycle (click = next, shift = previous); drag ⇒ move the whole card (it's a drag handle too).
+    wireCarousel(span, card);
+    el = span;
   } else if (node.editable) {
     const input = document.createElement("input");
     input.type = "text";
@@ -428,6 +595,11 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     s.font = "inherit"; s.color = "inherit"; s.background = "transparent";
     s.border = "none"; s.outline = "none"; s.padding = "0"; s.margin = "0";
     s.minWidth = "0"; s.boxSizing = "content-box"; s.textAlign = "center";
+    // The card sets `user-select: none` (so dragging it never selects text); it cascades into the
+    // input and breaks caret placement / text selection — force it back on so a click drops the
+    // caret under the cursor and you can select within the field.
+    s.userSelect = "text";
+    s.setProperty("-webkit-user-select", "text");
     input.addEventListener("input", () => {
       if (input.dataset["uppercase"] === "1") {
         const a = input.selectionStart;
@@ -438,10 +610,18 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
           if (a != null && b != null) { try { input.setSelectionRange(a, b); } catch { /* ignore */ } }
         }
       }
-      card.emitEdit(input.value);
+      card.emitEdit(input.value, input.dataset["name"] || undefined);
       autosize(input);
     });
     input.addEventListener("pointerdown", (e) => { e.stopPropagation(); }); // edit, don't drag/pan
+    // MapLibre's Marker cancels `mousedown` on the mount, which would steal the input's focus —
+    // stop the compat event here so click-to-focus / caret placement keep working.
+    input.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+    // Keep keystrokes in the field: arrows / Home / End / Backspace… otherwise bubble to the engine's
+    // keyboard handler and pan-or-zoom the map instead of moving the caret. The `input` event (and
+    // thus `onWidgetEdit`) still fires, so editing is unaffected.
+    input.addEventListener("keydown", (e) => { e.stopPropagation(); });
+    input.addEventListener("keyup", (e) => { e.stopPropagation(); });
     if (node.autofocus) queueMicrotask(() => { try { input.focus(); } catch { /* ignore */ } });
     el = input;
   } else {
@@ -477,9 +657,16 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
     return;
   }
   // text
+  if (node.control === "carousel") {
+    updateCarousel(el, node.options ?? [], node.value, node.name);
+    el.style.color = node.color ?? "";
+    el.style.fontSize = node.size != null ? `${node.size}px` : "";
+    return;
+  }
   if (node.editable) {
     const input = el as HTMLInputElement;
     input.placeholder = node.placeholder ?? "";
+    input.dataset["name"] = node.name ?? "";
     input.dataset["uppercase"] = node.uppercase ? "1" : "";
     input.style.textTransform = node.uppercase ? "uppercase" : "";
     const val = node.uppercase ? node.value.toUpperCase() : node.value;

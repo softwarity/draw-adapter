@@ -2,6 +2,38 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** `"carousel"` control — a `text` item with `control: "carousel"` + `options`
+  cycles values on **click** (next) / **shift-click** (previous) with a slide effect, emitting the
+  new value via `onWidgetEdit({ id, name, value })`. A **tap also selects the card** (it emits the
+  card's down/up/click, like tapping its body) and a **press-drag moves the card** (it doubles as a
+  drag handle) — so the carousel area never blocks selecting or dragging. Options are **text or glyphs**
+  (`["ISOL","OCNL","FRQ"]` or `[{ value, label?, svg? }]`); text honours `\n` (multi-line, centered). `onWidgetEdit` gains an optional `name`
+  (also on the `<input>`) so a card with several editable controls knows which one changed.
+  `FakeAdapter.editWidget(id, value, name?)`. New type `WidgetCarouselOption`; `WidgetText.control`
+  is now `"input" | "carousel"` (+ `options`/`name`). Domain-free + additive — sigwx provides the
+  options and reads the value back. (Plus `line-height` is pinned on the card so multi-line text is
+  homogeneous across engines — MapLibre's container otherwise leaked a 20px line-height in.)
+- **Fix (Leaflet):** a `text` feature's **label box (call-out) is now clickable** when its overlay
+  is in `hitOverlays` — the text marker was always non-interactive, so clicking a non-selected label
+  surfaced no hit (you couldn't select it). Non-hittable text stays pass-through (it never eats
+  clicks meant for the shape beneath). Respects the `hitOverlays` contract; no API change.
+- **Add (widgets):** `WidgetButton.title` and `deletable: { title }` render a **native tooltip**
+  (the `title` attribute) on the action buttons and the delete `×`. `deletable` now accepts
+  `boolean | { title }` (backward compatible).
+- **Fix (MapLibre):** widget card **chrome buttons** (the delete `×` and `MarkerWidget.buttons`
+  action buttons) plus the editable `<input>` didn't react to **real** mouse input on MapLibre.
+  Its `Marker` (the widget mount) cancels `mousedown`, which makes the browser **suppress the
+  synthesized `click`** for the whole gesture — so a real click on a card button did nothing (the
+  consumer saw a no-hit map click and deselected), and click-to-focus on the input was lost. Chrome
+  buttons now emit on a **local pointerup tap** (not the native click), and the input stops that
+  compat `mousedown` — robust on all 3 engines. (jsdom/`dispatchEvent` doesn't reproduce the
+  trusted-input suppression, so it warrants a real-browser/Playwright check.)
+- **Fix (widgets):** the editable `<input>` now keeps **keyboard and caret** to itself — arrows /
+  Home / End / Backspace no longer bubble to the engine and pan/zoom the map (the `input` event still
+  fires, so editing is unaffected), and a click positions the caret **under the cursor** (the card's
+  `user-select: none`, needed for card-drag, was cascading in and breaking caret placement / text
+  selection — the input now forces `user-select: text`).
+
 ---
 
 ## 0.3.0

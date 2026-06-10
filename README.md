@@ -395,9 +395,9 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   `TextBoxRadius`/`TextBoxSize` presets, so widgets and label boxes look consistent.
 - **Boxes** (`{ dir: "v"|"h", align?, gap?, color?, size?, items }`) do layout (vbox/hbox) and may
   set `color`/`size` that **cascade** to descendant text/coord (plain CSS inheritance).
-- **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label, or an inline
-  `<input>` when `editable` — it **auto-grows** to its content; `uppercase` enters/emits in upper
-  case) · `coord` (the anchor, formatted by `setCoordFormat`, **live** as the marker moves).
+- **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label; an inline
+  `<input>` when `editable` — auto-grows, `uppercase` enters/emits upper case; or a click-to-cycle
+  `control: "carousel"`, see below) · `coord` (the anchor, formatted by `setCoordFormat`, **live**).
 - **Selection / move reuse the pointer model:** a click or drag on the card surfaces through
   `onPointer` as a hit `{ overlay: "widget", props: { id } }` (with the real lon/lat), so your
   existing select / drag-to-move logic works unchanged. The card **never** drives map pan/zoom;
@@ -405,11 +405,11 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 - **One implementation, all three engines:** the card rides each engine's native anchored-overlay
   primitive (MapLibre `Marker` / OpenLayers `Overlay` / Leaflet `divIcon`), so it tracks per-frame
   through pan/zoom and stays screen-upright. It's wired with Pointer Events, so touch works.
-- **Delete:** `deletable: true` shows a bare `×` in the card's **top-right corner**; clicking it
+- **Delete:** `deletable: true` (or `{ title }` for a tooltip) shows a bare `×` in the card's **top-right corner**; clicking it
   fires `onWidgetDelete({ id })` — the lib doesn't remove the card, the consumer drops the `id`
   from its next `setWidgets`. It's a **separate element** from the input (so an input-only card
   stays deletable) and isn't drawn into snapshots.
-- **Action buttons:** `buttons: [{ event, place?, svg?, bordered? }]` renders small buttons (a `+`,
+- **Action buttons:** `buttons: [{ event, place?, svg?, bordered?, title? }]` renders small buttons (a `+`,
   a pen, …) straddling the card's edges/corners; clicking one fires `onWidgetAction({ id, event })`.
   `place` is an enum (`top`/`bottom`/`left`/`right` · the four corners · `edges`/`h-edges`/`v-edges`
   · `corners`/`top-corners`/`bottom-corners`/`left-corners`/`right-corners`) **or an array** unioned
@@ -418,9 +418,15 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 - **Deselect on window blur:** wire `adapter.onBlur(() => deselect())` if you want a marker to stop
   looking editable once the user switches to another window/app. The lib is domain-free — it emits
   the focus-lost **signal**, the consumer owns the selection and decides whether to drop it.
-- `control` is the **extension point** for future `gauge` / `dial` / `carousel` — only `input`
-  is implemented now. `FakeAdapter` (`./testing`) records the set and adds
-  `.editWidget(id, value)` / `.deleteWidget(id)` / `.actionWidget(id, event)` / `.clickWidget(id)`.
+- **Carousel control:** a `text` item with `control: "carousel"` + `options` cycles values on
+  **click** (next) / **shift-click** (previous), with a slide effect, and emits the new value via
+  `onWidgetEdit({ id, name, value })`. A **tap also selects the card** and a **press-drag** moves it
+  (it doubles as a drag handle) — the carousel never blocks selecting/dragging. Options are text **or** glyphs —
+  `options: ["ISOL","OCNL","FRQ"]` or `[{ value:"a", svg:"<svg…>" }, …]`. Give each control a
+  **`name`** so a card with several editable controls knows which one changed.
+- `control` is the extension point: **`"input"` and `"carousel"` are implemented**; `"gauge"` /
+  `"dial"` are reserved. `FakeAdapter` (`./testing`) records the set and adds
+  `.editWidget(id, value, name?)` / `.deleteWidget(id)` / `.actionWidget(id, event)` / `.clickWidget(id)`.
 
 ## Camera, container & overlay visibility
 

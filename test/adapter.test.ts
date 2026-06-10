@@ -149,3 +149,13 @@ describe("FakeAdapter — camera + overlay + actions (0.3.0)", () => {
     expect(events[0]).toMatchObject({ type: "contextmenu", hit: { overlay: "area", props: { featureId: "x" } } });
   });
 });
+
+describe("FakeAdapter — carousel edit (named control)", () => {
+  it("editWidget(id, value, name) fires onWidgetEdit({ id, name, value })", () => {
+    const a = new FakeAdapter();
+    const edits: { id: string; name?: string; value: string }[] = [];
+    a.onWidgetEdit((e) => edits.push(e));
+    a.editWidget("c1", "OCNL", "coverage");
+    expect(edits).toEqual([{ id: "c1", name: "coverage", value: "OCNL" }]);
+  });
+});
