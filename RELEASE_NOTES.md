@@ -1,6 +1,6 @@
 # Release Notes
 
-## NEXT RELEASE
+## 0.3.0
 
 - **Add:** anchored **marker widgets** — a generic, domain-free DOM "card" pinned at a
   `lon/lat`, built from a tiny box-layout tree (vbox/hbox + `glyph` / `text` / `coord`),
