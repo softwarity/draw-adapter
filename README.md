@@ -15,11 +15,14 @@ One set of engine implementations — **MapLibre GL**, **OpenLayers**, **Leaflet
 shared by every product. The adapter knows **no domain type**: it is driven by a
 declarative `LayerSpec[]` manifest and reads a fixed set of *render props* off each
 feature. Each product's controller resolves its domain style into those props
+*before* `setOverlay`, so styling is entirely **data-driven** and the three engines
+render identically.
 
-> **Why this exists.** Two drawing libs (`sigmet-draw`, `sigwx-draw`) each shipped
-> their own MapLibre + OpenLayers adapters — 4 near-twin implementations, soon 6
-> with Leaflet, where every fix had to be re-applied everywhere. This package is
-> the single, canonical map layer they both graft onto.
+> **Why this exists.** `sigmet-draw` and `sigwx-draw` used to each ship their own
+> MapLibre + OpenLayers adapters — near-twin implementations where every fix had to be
+> re-applied in each. This package replaces all of that: **all three engines (MapLibre,
+> OpenLayers, Leaflet) are implemented here, once** — a single, canonical map layer both
+> products graft onto.
 
 ## Used by
 
@@ -42,6 +45,10 @@ feature. Each product's controller resolves its domain style into those props
 | lock map (`setInteractive` / toolbar lock button) | ✅ | ✅ | ✅ |
 | PNG `snapshot()` (basemap + overlays + widget cards⁵) | ✅ | ✅ | ❌³ |
 | anchored **marker widgets** (`setWidgets` — editable cards) | ✅ | ✅ | ✅ |
+| camera read/drive + container (`getBounds`/`getZoom`/`fitBounds`/`getContainer`) | ✅ | ✅ | ✅ |
+| overlay visibility (`setOverlayVisible`) · right-click (`contextmenu`) · window-blur (`onBlur`) | ✅ | ✅ | ✅ |
+| touch: tap-to-select & edit widgets | ✅ | ✅ | ✅ |
+| touch: freehand **drawing** (drag to draw) | ❌⁶ | ✅ | ❌⁶ |
 | peer dependency | `maplibre-gl >=5` | `ol >=9` | `leaflet >=1.9` |
 
 ¹ data-URI icons are materialized lazily via `styleimagemissing`; sprites are tinted per `symbolColor`.
@@ -49,8 +56,7 @@ feature. Each product's controller resolves its domain style into those props
 ³ Leaflet has no single exportable canvas (tiles are `<img>`, overlays SVG/DOM); `snapshot()` rejects and the toolbar button is shown **disabled**. A DOM-snapshot approach is planned.
 ⁴ MapLibre fakes the box with a per-feature 9-slice image (built on demand via `styleimagemissing`), so it honours `textBackground`/`textBorder`/`textBoxSize`/`textBoxRadius` per feature. OpenLayers uses its native text background — same, **except** `textBoxRadius` (its box is a rectangle).
 ⁵ The PNG composites the [marker widgets](#marker-widgets) in their static form (inputs → their value) on MapLibre/OpenLayers, with a **safe fallback** to a card-less snapshot if the `foreignObject` rasterization taints the canvas (e.g. Safari). Leaflet snapshot is unsupported, so its widgets aren't captured yet.
-*before* `setOverlay`, so styling is entirely **data-driven** and the three engines
-render identically.
+⁶ MapLibre/Leaflet pointer handlers are mouse-based: a finger **tap** still selects (a deduped native-click fallback) and **widgets are touch-capable** (Pointer Events), but **dragging to draw** a shape doesn't fire. OpenLayers uses Pointer Events, so freehand drawing works there; full touch on ML/Leaflet (unify on Pointer Events) is a planned chantier.
 
 ## Install
 
@@ -414,7 +420,27 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   the focus-lost **signal**, the consumer owns the selection and decides whether to drop it.
 - `control` is the **extension point** for future `gauge` / `dial` / `carousel` — only `input`
   is implemented now. `FakeAdapter` (`./testing`) records the set and adds
-  `.editWidget(id, value)` / `.deleteWidget(id)` / `.clickWidget(id)`.
+  `.editWidget(id, value)` / `.deleteWidget(id)` / `.actionWidget(id, event)` / `.clickWidget(id)`.
+
+## Camera, container & overlay visibility
+
+Read the view, drive it (sparingly), reach the DOM, and toggle layers — all on the three
+engines + `FakeAdapter`:
+
+```ts
+adapter.getBounds();        // [west, south, east, north] (lon/lat)
+adapter.getZoom();          // engine-native zoom
+adapter.getContainer();     // the host map's DOM element (attach a panel, measure…)
+adapter.fitBounds([w, s, e, n], { padding: 24 }); // frame the drawing — DRIVES the host camera, use sparingly
+adapter.setOverlayVisible("guide", false);        // hide a layer without dropping its data (lossless)
+```
+
+(`getCenter()` and `getViewSpan()` — a rough lon/lat span for sizing dropped geometry — are also there.)
+
+**Right-click** surfaces through `onPointer` as `type: "contextmenu"` (the browser menu is
+suppressed), carrying the hit + lon/lat — e.g. finish a polygon / delete a vertex. **`onBlur(cb)`**
+fires when the map's window loses focus, so the consumer can drop transient UI state (e.g. deselect
+— see [Marker widgets](#marker-widgets)).
 
 ## API surface
 
