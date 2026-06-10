@@ -1,5 +1,9 @@
 # Release Notes
 
+## NEXT RELEASE
+
+---
+
 ## 0.3.1
 
 - **Add (widgets):** `"carousel"` control — a `text` item with `control: "carousel"` + `options`
