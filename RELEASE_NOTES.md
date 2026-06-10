@@ -1,6 +1,6 @@
 # Release Notes
 
-## NEXT RELEASE
+## 0.3.1
 
 - **Add (widgets):** `"carousel"` control — a `text` item with `control: "carousel"` + `options`
   cycles values on **click** (next) / **shift-click** (previous) with a slide effect, emitting the
