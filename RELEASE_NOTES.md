@@ -1,5 +1,9 @@
 # Release Notes
 
+## NEXT RELEASE
+
+---
+
 ## 0.3.2
 
 - **Fix (focus · all engines):** after a click on a **toolbar button** or a **widget-card button**
