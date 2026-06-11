@@ -1,6 +1,6 @@
 # Release Notes
 
-## NEXT RELEASE
+## 0.3.2
 
 - **Fix (focus · all engines):** after a click on a **toolbar button** or a **widget-card button**
   (action `+`, delete `×`, or a carousel), keyboard focus is returned to the map's key-listening
