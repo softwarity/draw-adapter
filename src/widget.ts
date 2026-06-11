@@ -19,7 +19,9 @@ import type {
   WidgetButton,
   WidgetButtonPlace,
   WidgetCarouselOption,
+  WidgetDial,
   WidgetEdit,
+  WidgetGauge,
   WidgetNode,
   WidgetOrigin,
 } from "./index.js";
@@ -331,6 +333,314 @@ function wireCarousel(el: HTMLElement, card: Card): void {
   el.addEventListener("mousedown", (e) => { e.stopPropagation(); }); // keep the compat event off the Marker
 }
 
+// ── gauge / dial value-editors (shared DOM, one impl across the 3 engines) ─────
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const KNOB = 11;            // knob diameter (px)
+// Both editors share a visual language: a THIN, well-marked central GUIDE line all along, plus a
+// WIDE faint glow marking the SELECTED part — the span between the gauge cursors, or the dial arc
+// from its start up to the value.
+const GUIDE_W = 2;
+const GUIDE_OPACITY = "0.9";
+const SELECT_W = 9;
+const SELECT_OPACITY = "0.4";
+const GAUGE_MARGIN = 12; // px the gauge guide line extends past the outer cursors
+const GAUGE_LEN = 120;      // default gauge track length
+const DIAL_R = 52;          // default dial radius
+const DIAL_SWEEP = 240;     // default dial sweep (deg)
+const DIAL_MIN_ANGLE = 150; // min sits down-left; the sweep runs over the top to max (speedometer)
+const DIAL_LABEL_GAP = 16;  // the dial label sits this far OUTSIDE the radius, at the knob's angle
+
+/** A press on a value-editor must never start a card drag / map pan / leak a native click. */
+function preventCardDrag(el: HTMLElement): void {
+  el.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+  el.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+  el.addEventListener("click", (e) => { e.stopPropagation(); });
+}
+
+function snapStep(v: number, step: number | undefined): number {
+  return step && step > 0 ? Math.round(v / step) * step : v;
+}
+/** Reachable `[lo, hi]` for a gauge incl. the optional one-step `beyond` notches. */
+export function gaugeBounds(g: WidgetGauge): { lo: number; hi: number } {
+  const s = g.step ?? 0;
+  return { lo: g.min - (g.beyond?.below ? s : 0), hi: g.max + (g.beyond?.above ? s : 0) };
+}
+/** Snap + clamp a dragged cursor: inside the bounds, and never past its neighbours (no crossing). */
+export function clampCursor(raw: number, index: number, g: WidgetGauge): number {
+  const { lo, hi } = gaugeBounds(g);
+  let v = snapStep(Math.min(hi, Math.max(lo, raw)), g.step);
+  const prev = g.cursors[index - 1];
+  const next = g.cursors[index + 1];
+  if (prev) v = Math.max(v, prev.value);
+  if (next) v = Math.min(v, next.value);
+  return v;
+}
+function valueFraction(value: number, min: number, max: number): number {
+  return max === min ? 0 : (value - min) / (max - min);
+}
+/** Dial angle (deg) for a value, per the FIXED convention. */
+export function dialAngle(value: number, d: WidgetDial): number {
+  return DIAL_MIN_ANGLE + valueFraction(value, d.min, d.max) * (d.sweep ?? DIAL_SWEEP);
+}
+/** Map a pointer angle (deg, screen convention) to a dial value — a drag into the bottom gap clamps
+ *  to the nearer end. */
+export function dialValueFromAngle(angleDeg: number, d: WidgetDial): number {
+  const sweep = d.sweep ?? DIAL_SWEEP;
+  let rel = (angleDeg - DIAL_MIN_ANGLE) % 360;
+  if (rel < 0) rel += 360;
+  if (rel > sweep) rel = rel < (sweep + 360) / 2 ? sweep : 0; // bottom gap ⇒ snap to nearer end
+  return snapStep(d.min + (rel / sweep) * (d.max - d.min), d.step);
+}
+function polar(cx: number, cy: number, r: number, deg: number): [number, number] {
+  const a = (deg * Math.PI) / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
+/** SVG arc path on the dial ring from `fromDeg` to `toDeg` (clockwise). Empty for a ~0 sweep, so a
+ *  zero-length "selected" arc draws nothing (no round-cap blob at the start). */
+function dialArcPath(R: number, ar: number, fromDeg: number, toDeg: number): string {
+  const sweep = (((toDeg - fromDeg) % 360) + 360) % 360;
+  if (sweep < 0.5) return "";
+  const [x0, y0] = polar(R, R, ar, fromDeg);
+  const [x1, y1] = polar(R, R, ar, toDeg);
+  return `M ${x0} ${y0} A ${ar} ${ar} 0 ${sweep > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+}
+
+interface GaugeKnob { dot: HTMLElement; label: HTMLElement; }
+interface GaugeState { trackHalo: HTMLElement; track: HTMLElement; knobs: GaugeKnob[]; gauge: WidgetGauge; dragging: number | null; live: number[]; }
+const gaugeState = new WeakMap<HTMLElement, GaugeState>();
+
+function createGauge(): HTMLElement {
+  const root = document.createElement("div");
+  root.className = "draw-adapter-widget-gauge";
+  const rs = root.style;
+  rs.position = "relative"; rs.display = "inline-block"; rs.flex = "0 0 auto"; rs.touchAction = "none";
+  preventCardDrag(root);
+  const trackHalo = document.createElement("div"); // WIDE faint glow ⇒ the selected span
+  trackHalo.style.position = "absolute"; trackHalo.style.borderRadius = `${SELECT_W / 2}px`;
+  trackHalo.style.background = "currentColor"; trackHalo.style.opacity = SELECT_OPACITY;
+  const track = document.createElement("div"); // THIN central guide line (extends a bit past the cursors)
+  track.style.position = "absolute"; track.style.borderRadius = `${GUIDE_W / 2}px`;
+  track.style.background = "currentColor"; track.style.opacity = GUIDE_OPACITY;
+  root.append(trackHalo, track); // wide glow behind, thin guide on top
+  gaugeState.set(root, { trackHalo, track, knobs: [], gauge: { kind: "gauge", min: 0, max: 1, cursors: [] }, dragging: null, live: [] });
+  return root;
+}
+
+/** Distance of a fraction along the track from its start (vertical: max ⇒ top). */
+function gaugeAlong(frac: number, len: number, horizontal: boolean): number {
+  return horizontal ? frac * len : (1 - frac) * len;
+}
+function placeKnob(k: GaugeKnob, along: number, horizontal: boolean): void {
+  const s = k.dot.style;
+  if (horizontal) { s.left = `${along}px`; s.top = "0"; } else { s.top = `${along}px`; s.left = "0"; }
+  const ls = k.label.style;
+  if (horizontal) { ls.left = `${along + KNOB / 2}px`; ls.top = `${KNOB + 1}px`; ls.transform = "translateX(-50%)"; }
+  else { ls.top = `${along + KNOB / 2}px`; ls.left = `${KNOB + 4}px`; ls.transform = "translateY(-50%)"; }
+}
+/** Position an absolute bar of thickness `barW` from `lo`→`hi` along the track (px, along-space). */
+function placeBar(el: HTMLElement, lo: number, hi: number, barW: number, horizontal: boolean): void {
+  const s = el.style;
+  const length = Math.max(0, hi - lo);
+  if (horizontal) { s.left = `${KNOB / 2 + lo}px`; s.top = `${(KNOB - barW) / 2}px`; s.width = `${length}px`; s.height = `${barW}px`; }
+  else { s.top = `${KNOB / 2 + lo}px`; s.left = `${(KNOB - barW) / 2}px`; s.height = `${length}px`; s.width = `${barW}px`; }
+}
+
+/** Draw the gauge guide: a THIN central line hugging the cursors (extended a bit past them, never
+ *  min→max) + a WIDE faint glow on the SELECTED span between the first & last cursor. */
+function placeGaugeGuide(st: GaugeState, len: number, horizontal: boolean): void {
+  const g = st.gauge, n = st.live.length;
+  if (n === 0) { st.track.style.display = "none"; st.trackHalo.style.display = "none"; return; }
+  st.track.style.display = "block";
+  st.trackHalo.style.display = "block";
+  const a0 = gaugeAlong(valueFraction(st.live[0]!, g.min, g.max), len, horizontal);
+  const aN = gaugeAlong(valueFraction(st.live[n - 1]!, g.min, g.max), len, horizontal);
+  const lo = Math.min(a0, aN), hi = Math.max(a0, aN);
+  const gLo = Math.max(0, lo - GAUGE_MARGIN), gHi = Math.min(len, hi + GAUGE_MARGIN);
+  placeBar(st.track, gLo, gHi, GUIDE_W, horizontal); // thin guide: cursors ± margin
+  // selected glow: the span between first & last cursor (≥2), or the WHOLE visible guide for one cursor
+  if (n >= 2) placeBar(st.trackHalo, lo, hi, SELECT_W, horizontal);
+  else placeBar(st.trackHalo, gLo, gHi, SELECT_W, horizontal);
+}
+
+function updateGauge(root: HTMLElement, g: WidgetGauge, card: Card): void {
+  const st = gaugeState.get(root)!;
+  st.gauge = g;
+  if (g.color) root.style.color = g.color;
+  const len = g.length ?? GAUGE_LEN;
+  const horizontal = g.orientation === "horizontal";
+  const maxChars = g.cursors.reduce((m, c) => Math.max(m, (c.label ?? "").length), 0);
+  const rs = root.style;
+  if (horizontal) { rs.width = `${len + KNOB}px`; rs.height = `${KNOB + (maxChars ? 14 : 0)}px`; }
+  else { rs.height = `${len + KNOB}px`; rs.width = maxChars ? `calc(${KNOB + 4}px + ${maxChars}ch)` : `${KNOB}px`; }
+  while (st.knobs.length < g.cursors.length) addKnob(root, st, card);
+  while (st.knobs.length > g.cursors.length) { const k = st.knobs.pop()!; k.dot.remove(); k.label.remove(); }
+  // keep the dragged cursor under the pointer; take the others from the model
+  st.live = g.cursors.map((c, i) => (st.dragging === i ? (st.live[i] ?? c.value) : c.value));
+  for (let i = 0; i < g.cursors.length; i++) {
+    const k = st.knobs[i]!;
+    k.label.textContent = g.cursors[i]!.label ?? "";
+    applyLabelStyle(k.label, g.labelColor, g.labelHalo);
+    k.dot.style.background = g.knobFill ?? "currentColor";
+    const gStroke = g.knobStroke ?? "white"; // default white border; pass "" for none
+    k.dot.style.border = gStroke ? `1.5px solid ${gStroke}` : "none";
+    if (st.dragging !== i) placeKnob(k, gaugeAlong(valueFraction(st.live[i]!, g.min, g.max), len, horizontal), horizontal);
+  }
+  placeGaugeGuide(st, len, horizontal);
+}
+
+function addKnob(root: HTMLElement, st: GaugeState, card: Card): void {
+  const dot = document.createElement("div");
+  dot.className = "draw-adapter-widget-knob";
+  const ds = dot.style;
+  ds.position = "absolute"; ds.width = ds.height = `${KNOB}px`; ds.boxSizing = "border-box";
+  ds.borderRadius = "50%"; ds.background = "currentColor"; ds.cursor = "pointer"; ds.touchAction = "none";
+  const label = document.createElement("span");
+  const ls = label.style; ls.position = "absolute"; ls.whiteSpace = "nowrap"; ls.pointerEvents = "none";
+  const index = st.knobs.length;
+  st.knobs.push({ dot, label });
+  root.append(dot, label);
+  wireKnobDrag(root, dot, index, card);
+}
+
+function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: Card): void {
+  dot.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const st = gaugeState.get(root); if (!st) return;
+    st.dragging = index;
+    try { dot.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+  });
+  dot.addEventListener("pointermove", (e) => {
+    const st = gaugeState.get(root); if (!st || st.dragging !== index) return;
+    const g = st.gauge, len = g.length ?? GAUGE_LEN, horizontal = g.orientation === "horizontal";
+    // Map against the CONTAINER (fixed size), NOT the guide line: the guide now resizes to hug the
+    // cursors, so reading its rect would feed back into the value and make the drag jitter. The track
+    // area is inset by KNOB/2 at each end and spans `len`.
+    const rect = root.getBoundingClientRect();
+    const frac = horizontal
+      ? (e.clientX - rect.left - KNOB / 2) / len
+      : 1 - (e.clientY - rect.top - KNOB / 2) / len;
+    const v = clampCursor(g.min + frac * (g.max - g.min), index, g);
+    st.live[index] = v;
+    placeKnob(st.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+    placeGaugeGuide(st, len, horizontal);
+    card.emitEdit(String(v), g.cursors[index]?.name);
+  });
+  const end = (e: globalThis.PointerEvent): void => {
+    const st = gaugeState.get(root); if (!st || st.dragging !== index) return;
+    st.dragging = null;
+    try { dot.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  dot.addEventListener("pointerup", end);
+  dot.addEventListener("pointercancel", end);
+}
+
+interface DialState { svg: SVGSVGElement; arcHalo: SVGPathElement; arc: SVGPathElement; knob: SVGCircleElement; label: HTMLElement; dial: WidgetDial; dragging: boolean; live: number; }
+const dialState = new WeakMap<HTMLElement, DialState>();
+
+function createDial(card: Card): HTMLElement {
+  const root = document.createElement("div");
+  root.className = "draw-adapter-widget-dial";
+  const rs = root.style; rs.position = "relative"; rs.display = "inline-block"; rs.flex = "0 0 auto"; rs.touchAction = "none";
+  preventCardDrag(root);
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.style.display = "block"; svg.style.overflow = "visible";
+  const arcHalo = document.createElementNS(SVGNS, "path");
+  arcHalo.setAttribute("fill", "none"); arcHalo.setAttribute("stroke", "currentColor"); arcHalo.setAttribute("stroke-linecap", "round");
+  arcHalo.style.opacity = SELECT_OPACITY;
+  const arc = document.createElementNS(SVGNS, "path");
+  arc.setAttribute("fill", "none"); arc.setAttribute("stroke", "currentColor"); arc.setAttribute("stroke-linecap", "round");
+  arc.style.opacity = GUIDE_OPACITY;
+  const knob = document.createElementNS(SVGNS, "circle");
+  knob.setAttribute("fill", "currentColor"); knob.classList.add("draw-adapter-widget-knob");
+  knob.style.cursor = "pointer"; knob.style.setProperty("touch-action", "none");
+  svg.append(arcHalo, arc, knob); // glow behind the arc
+  const label = document.createElement("span");
+  const ls = label.style; ls.position = "absolute"; ls.transform = "translate(-50%,-50%)"; // left/top set per-angle in updateDial
+  ls.pointerEvents = "none"; ls.whiteSpace = "nowrap"; ls.textAlign = "center";
+  root.append(svg, label);
+  dialState.set(root, { svg, arcHalo, arc, knob, label, dial: { kind: "dial", name: "", min: 0, max: 1, value: 0 }, dragging: false, live: 0 });
+  wireDialDrag(root, knob, card);
+  return root;
+}
+
+function updateDial(root: HTMLElement, d: WidgetDial, _card: Card): void {
+  const st = dialState.get(root)!;
+  st.dial = d;
+  if (d.color) root.style.color = d.color;
+  const R = d.radius ?? DIAL_R;
+  const ar = R - KNOB / 2; // arc radius leaves room for the knob
+  const size = 2 * R;
+  st.svg.setAttribute("width", String(size));
+  st.svg.setAttribute("height", String(size));
+  st.svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  st.arc.setAttribute("stroke-width", String(GUIDE_W));
+  st.arcHalo.setAttribute("stroke-width", String(SELECT_W));
+  st.knob.setAttribute("r", String(KNOB / 2));
+  root.style.width = `${size}px`; root.style.height = `${size}px`;
+  const sweep = d.sweep ?? DIAL_SWEEP;
+  st.arc.setAttribute("d", dialArcPath(R, ar, DIAL_MIN_ANGLE, DIAL_MIN_ANGLE + sweep)); // thin guide, full sweep
+  if (!st.dragging) st.live = d.value;
+  const ang = dialAngle(st.live, d);
+  st.arcHalo.setAttribute("d", dialArcPath(R, ar, DIAL_MIN_ANGLE, ang)); // wide glow: start → value (selected)
+  const [kx, ky] = polar(R, R, ar, ang);
+  st.knob.setAttribute("cx", String(kx));
+  st.knob.setAttribute("cy", String(ky));
+  st.knob.setAttribute("fill", d.knobFill ?? "currentColor");
+  const dStroke = d.knobStroke ?? "white"; // default white border; pass "" for none
+  if (dStroke) { st.knob.setAttribute("stroke", dStroke); st.knob.setAttribute("stroke-width", "1.5"); }
+  else { st.knob.removeAttribute("stroke"); st.knob.setAttribute("stroke-width", "0"); }
+  st.label.textContent = d.label ?? "";
+  applyLabelStyle(st.label, d.labelColor, d.labelHalo);
+  placeDialLabel(st, R, ang); // follow the knob, just outside the ring (speedometer readout)
+}
+
+/** Optional per-control label colour + a 1px four-direction halo (legibility over the map). */
+function applyLabelStyle(el: HTMLElement, color: string | undefined, halo: string | undefined): void {
+  el.style.color = color ?? "black"; // default black; pass "" to inherit the cascade
+  const h = halo ?? "white";         // default white halo; pass "" for none
+  el.style.textShadow = h ? `-1px -1px 0 ${h},1px -1px 0 ${h},-1px 1px 0 ${h},1px 1px 0 ${h}` : "";
+}
+
+/** Place the dial label at the knob's current angle, just OUTSIDE the ring; it never rotates, so the
+ *  text stays upright/readable as the knob sweeps. */
+function placeDialLabel(st: DialState, R: number, angleDeg: number): void {
+  const [lx, ly] = polar(R, R, R + DIAL_LABEL_GAP, angleDeg);
+  st.label.style.left = `${lx}px`;
+  st.label.style.top = `${ly}px`;
+}
+
+function wireDialDrag(root: HTMLElement, knob: SVGCircleElement, card: Card): void {
+  knob.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const st = dialState.get(root); if (!st) return;
+    st.dragging = true;
+    try { knob.setPointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* jsdom / unsupported */ }
+  });
+  knob.addEventListener("pointermove", (e) => {
+    const st = dialState.get(root); if (!st || !st.dragging) return;
+    const ev = e as globalThis.PointerEvent;
+    const d = st.dial, R = d.radius ?? DIAL_R, ar = R - KNOB / 2;
+    const rect = root.getBoundingClientRect();
+    const deg = (Math.atan2(ev.clientY - (rect.top + R), ev.clientX - (rect.left + R)) * 180) / Math.PI;
+    const v = dialValueFromAngle(deg, d);
+    st.live = v;
+    const ang = dialAngle(v, d);
+    const [kx, ky] = polar(R, R, ar, ang);
+    st.knob.setAttribute("cx", String(kx)); st.knob.setAttribute("cy", String(ky));
+    st.arcHalo.setAttribute("d", dialArcPath(R, ar, DIAL_MIN_ANGLE, ang)); // glow grows/shrinks with the value
+    placeDialLabel(st, R, ang); // the label follows the knob during the drag
+    card.emitEdit(String(v), d.name);
+  });
+  const end = (e: Event): void => {
+    const st = dialState.get(root); if (!st) return;
+    st.dragging = false;
+    try { knob.releasePointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* ignore */ }
+  };
+  knob.addEventListener("pointerup", end);
+  knob.addEventListener("pointercancel", end);
+}
+
 class Card {
   readonly mount: WidgetMount;
   id = "";
@@ -527,7 +837,7 @@ class Card {
     root.addEventListener("pointerdown", (e) => {
       const t = e.target as HTMLElement | null;
       // editing or the delete button handle their own press — don't start a drag/select
-      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl")) return;
+      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl, .draw-adapter-widget-gauge, .draw-adapter-widget-dial")) return;
       e.preventDefault();   // no text selection while dragging the card
       e.stopPropagation();  // don't let the map navigate (bubble phase)
       this.dragging = true;
@@ -584,6 +894,10 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     el.style.display = "inline-flex";
   } else if (node.kind === "coord") {
     el = document.createElement("span");
+  } else if (node.kind === "gauge") {
+    el = createGauge();
+  } else if (node.kind === "dial") {
+    el = createDial(card);
   } else if (node.control === "carousel") {
     const span = document.createElement("span");
     span.className = "draw-adapter-widget-ctrl";
@@ -665,6 +979,8 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
     card.registerCoord(el);
     return;
   }
+  if (node.kind === "gauge") { updateGauge(el, node, card); return; }
+  if (node.kind === "dial") { updateDial(el, node, card); return; }
   // text
   if (node.control === "carousel") {
     updateCarousel(el, node.options ?? [], node.value, node.name);

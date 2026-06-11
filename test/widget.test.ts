@@ -532,3 +532,190 @@ describe("WidgetLayer — focus returns to the map after a card button", () => {
     expect(host.focusCalls).toBe(3);
   });
 });
+
+describe("WidgetLayer — gauge control", () => {
+  const gaugeCard = (cursors: { name: string; value: number; label?: string }[]): MarkerWidget => ({
+    id: "g", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, length: 100, cursors }] },
+  });
+
+  it("renders one knob per cursor positioned by value (max at top); guide hugs the cursors", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([gaugeCard([{ name: "lo", value: 25, label: "L" }, { name: "hi", value: 75, label: "H" }])]);
+    const card = cardEl(host);
+    const knobs = card.querySelectorAll(".draw-adapter-widget-knob");
+    expect(knobs).toHaveLength(2);
+    expect((knobs[0] as HTMLElement).style.top).toBe("75px"); // value 25 ⇒ (1-.25)*100
+    expect((knobs[1] as HTMLElement).style.top).toBe("25px"); // value 75 ⇒ (1-.75)*100
+    const gauge = card.querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    expect((gauge.children[0] as HTMLElement).style.display).not.toBe("none"); // 2 cursors ⇒ selected-span glow shown
+    expect(parseFloat((gauge.children[1] as HTMLElement).style.height)).toBeLessThan(100); // guide hugs the cursors, not full len
+  });
+
+  it("reconciles the cursor count in place (2 → 1 → 3), same gauge element", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([gaugeCard([{ name: "a", value: 10 }, { name: "b", value: 90 }])]);
+    const g1 = cardEl(host).querySelector(".draw-adapter-widget-gauge");
+    layer.setWidgets([gaugeCard([{ name: "a", value: 10 }])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(1);
+    layer.setWidgets([gaugeCard([{ name: "a", value: 10 }, { name: "b", value: 50 }, { name: "c", value: 90 }])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(3);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-gauge")).toBe(g1); // not recreated
+  });
+
+  it("a press on a knob never starts a card drag", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([gaugeCard([{ name: "a", value: 50 }])]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — dial control", () => {
+  it("renders an SVG arc + knob + centre label", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "d", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "dial", name: "spd", min: 0, max: 100, value: 50, label: "50KT" }] } }]);
+    const dial = cardEl(host).querySelector(".draw-adapter-widget-dial") as HTMLElement;
+    expect(dial.querySelector("svg path")).not.toBeNull();
+    expect(dial.querySelector("svg circle.draw-adapter-widget-knob")).not.toBeNull();
+    expect(dial.querySelector("span")?.textContent).toBe("50KT");
+  });
+
+  it("a press on the dial knob never starts a card drag", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "d2", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "dial", name: "spd", min: 0, max: 100, value: 50 }] } }]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-dial .draw-adapter-widget-knob") as Element;
+    knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — dial label follows the knob; gauge/dial label & knob styling", () => {
+  const dialCard = (value: number, extra: Record<string, unknown> = {}): MarkerWidget => ({
+    id: "d", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "dial", name: "s", min: 0, max: 100, value, label: "X", ...extra }] },
+  });
+
+  it("the dial label is positioned at the knob's angle (px, not centred) and moves with the value", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([dialCard(0)]);
+    const label = cardEl(host).querySelector(".draw-adapter-widget-dial span") as HTMLElement;
+    const at0 = label.style.left;
+    expect(at0).toMatch(/px$/);   // angle-positioned, not "50%"
+    expect(at0).not.toBe("50%");
+    layer.setWidgets([dialCard(100)]);
+    expect(label.style.left).not.toBe(at0); // followed the knob round the ring
+  });
+
+  it("dial labelColor/labelHalo + knobFill/knobStroke apply; bare dial is unchanged", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([dialCard(50, { color: "purple", labelColor: "black", labelHalo: "white", knobFill: "red", knobStroke: "blue" })]);
+    const dial = cardEl(host).querySelector(".draw-adapter-widget-dial") as HTMLElement;
+    expect(dial.style.color).toBe("purple");
+    const knob = dial.querySelector("circle.draw-adapter-widget-knob") as Element;
+    expect(knob.getAttribute("fill")).toBe("red");
+    expect(knob.getAttribute("stroke")).toBe("blue");
+    const label = dial.querySelector("span") as HTMLElement;
+    expect(label.style.color).toBe("black");
+    expect(label.style.textShadow).toContain("white");
+  });
+
+  it("gauge labelColor/labelHalo + knobFill/knobStroke apply", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "g", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, color: "purple", labelColor: "black", labelHalo: "white",
+        knobFill: "red", knobStroke: "blue", cursors: [{ name: "a", value: 50, label: "L" }] }] } }]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    expect(gauge.style.color).toBe("purple");
+    const knob = gauge.querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    expect(knob.style.background).toBe("red");
+    expect(knob.style.border).toContain("blue");
+    const label = gauge.querySelector("span") as HTMLElement;
+    expect(label.style.color).toBe("black");
+    expect(label.style.textShadow).toContain("white");
+  });
+});
+
+describe("WidgetLayer — gauge/dial styling defaults", () => {
+  const bareGauge = (extra: Record<string, unknown> = {}): MarkerWidget => ({
+    id: "g", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, cursors: [{ name: "a", value: 50, label: "L" }], ...extra }] },
+  });
+
+  it("default: knobs main-colour fill + white stroke, labels black + white halo", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([bareGauge()]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const knob = gauge.querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    expect(knob.style.background).toMatch(/currentcolor/i); // the control's main colour
+    expect(knob.style.border).toContain("white");           // default white stroke
+    const label = gauge.querySelector("span") as HTMLElement;
+    expect(label.style.color).toBe("black");                // default black
+    expect(label.style.textShadow).toContain("white");      // default white halo
+  });
+
+  it('`""` opts out — no knob border, no halo, label inherits the cascade', () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([bareGauge({ labelColor: "", labelHalo: "", knobStroke: "" })]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    expect((gauge.querySelector(".draw-adapter-widget-knob") as HTMLElement).style.borderStyle).toBe("none");
+    const label = gauge.querySelector("span") as HTMLElement;
+    expect(label.style.color).toBe("");      // inherit
+    expect(label.style.textShadow).toBe("");  // no halo
+  });
+});
+
+describe("WidgetLayer — guide track/arc glow", () => {
+  it("the gauge has a thin marked guide + a wider, fainter glow on the selected span only", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "g", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, length: 100, cursors: [{ name: "a", value: 30 }, { name: "b", value: 70 }] }] } }]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const glow = gauge.children[0] as HTMLElement;  // selected-span glow
+    const guide = gauge.children[1] as HTMLElement; // thin central guide
+    expect(Number(glow.style.opacity)).toBeLessThan(Number(guide.style.opacity)); // glow fainter, guide marked
+    expect(parseFloat(glow.style.width)).toBeGreaterThan(parseFloat(guide.style.width)); // glow wider (vertical ⇒ width)
+    expect(parseFloat(glow.style.height)).toBeLessThan(parseFloat(guide.style.height)); // glow = span only; guide extends past
+    expect(glow.style.background).toMatch(/currentcolor/i);
+  });
+
+  it("the dial has a thin marked guide arc + a wider faint glow from the start to the value", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "d", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "dial", name: "s", min: 0, max: 100, value: 50 }] } }]);
+    const svg = cardEl(host).querySelector(".draw-adapter-widget-dial svg") as SVGElement;
+    const glow = svg.children[0] as SVGElement; // select arc (start → value)
+    const arc = svg.children[1] as SVGElement;  // full guide arc
+    expect(Number((glow as unknown as SVGPathElement).style.opacity)).toBeLessThan(Number((arc as unknown as SVGPathElement).style.opacity));
+    expect(Number(glow.getAttribute("stroke-width"))).toBeGreaterThan(Number(arc.getAttribute("stroke-width")));
+    expect(glow.getAttribute("d")).not.toBe(arc.getAttribute("d")); // select (start→value) ≠ the full sweep
+    expect(glow.getAttribute("d")).toMatch(/^M /); // a real arc was drawn
+  });
+});
+
+describe("WidgetLayer — gauge/dial selected-zone edges", () => {
+  it("a single-cursor gauge glows over the WHOLE visible guide line", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "g1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, length: 100, cursors: [{ name: "a", value: 50 }] }] } }]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const glow = gauge.children[0] as HTMLElement;
+    const guide = gauge.children[1] as HTMLElement;
+    expect(glow.style.display).not.toBe("none");        // shown for one cursor too
+    expect(glow.style.height).toBe(guide.style.height); // covers the whole visible guide
+    expect(glow.style.top).toBe(guide.style.top);
+  });
+
+  it("the dial select arc is empty at the min value (no round-cap blob)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "dm", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "dial", name: "s", min: 0, max: 100, value: 0 }] } }]);
+    const svg = cardEl(host).querySelector(".draw-adapter-widget-dial svg") as SVGElement;
+    expect(svg.children[0].getAttribute("d")).toBe(""); // nothing selected at min
+  });
+});

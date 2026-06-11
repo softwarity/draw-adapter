@@ -173,6 +173,81 @@ export interface WidgetCoord {
   size?: number;
 }
 
+/** One draggable cursor of a {@link WidgetGauge}. `value` is in the control's units; `label` is
+ *  PRE-FORMATTED by the consumer (the control never formats). */
+export interface WidgetCursor {
+  /** Identifies the cursor in {@link MapAdapter.onWidgetEdit} (`{ id, name, value }`). */
+  name: string;
+  /** Current value, in the control's units. */
+  value: number;
+  /** Display label beside the knob (consumer-formatted, e.g. `"FL400"` / `"XXX"`); omit ⇒ none. */
+  label?: string;
+}
+
+/** A linear slider value-editor — vertical by default (the SIGWX FL gauge). 1–3 cursors that may
+ *  **not cross** (array order is the invariant; dragging one is clamped by its neighbours). Dragging
+ *  a knob streams {@link MapAdapter.onWidgetEdit} (`{ id, name: cursor.name, value }`) per move. */
+export interface WidgetGauge {
+  kind: "gauge";
+  min: number;
+  max: number;
+  /** 1..3 cursors, in ascending value order. */
+  cursors: WidgetCursor[];
+  /** Allow dragging one notch PAST a bound (the consumer's off-chart "XXX"): the emitted value is
+   *  then `min - step` / `max + step`. Default `false` (hard clamp). */
+  beyond?: { below?: boolean; above?: boolean };
+  /** Drag granularity in value units (e.g. `10` for flight levels). Default: continuous. */
+  step?: number;
+  /** Track length in px. Default `120`. */
+  length?: number;
+  /** Default `"vertical"` (max at the top). */
+  orientation?: "vertical" | "horizontal";
+  /** Track/knob ink; else inherits the cascade. */
+  color?: string;
+  /** Cursor-label colour. Default `"black"`; pass `""` to inherit the cascade. */
+  labelColor?: string;
+  /** A 1px four-direction halo behind the cursor labels (legibility over the map). Default `"white"`;
+   *  pass `""` for none. */
+  labelHalo?: string;
+  /** Cursor-knob fill; default ⇒ the cascade ink (the control's main colour). */
+  knobFill?: string;
+  /** Cursor-knob border colour (1.5px). Default `"white"`; pass `""` for none. */
+  knobStroke?: string;
+}
+
+/** A radial dial value-editor (the jet speed control): one cursor swept from `min` to `max`. Angle
+ *  convention (FIXED — y-down screen degrees, 0° = east, clockwise): `min` at 150° (down-left), the
+ *  `sweep` runs OVER THE TOP to `max` (default 240° ⇒ `max` at 30°, gap at the bottom, a car
+ *  speedometer). `angle(v) = 150 + (v-min)/(max-min) × sweep` (mod 360). Streams `onWidgetEdit` per
+ *  move. */
+export interface WidgetDial {
+  kind: "dial";
+  /** Identifies the dial in {@link MapAdapter.onWidgetEdit}. */
+  name: string;
+  min: number;
+  max: number;
+  value: number;
+  /** Pre-formatted centre label (e.g. `"220KT"`); omit ⇒ none. */
+  label?: string;
+  /** Drag granularity in value units. Default: continuous. */
+  step?: number;
+  /** Sweep in degrees. Default `240`. */
+  sweep?: number;
+  /** Radius in px. Default `52`. */
+  radius?: number;
+  /** Arc/knob ink; else inherits the cascade. */
+  color?: string;
+  /** Label colour. Default `"black"`; pass `""` to inherit the cascade. */
+  labelColor?: string;
+  /** A 1px four-direction halo behind the label (legibility over the map). Default `"white"`; pass
+   *  `""` for none. */
+  labelHalo?: string;
+  /** Knob fill; default ⇒ the cascade ink (the control's main colour). */
+  knobFill?: string;
+  /** Knob border colour (1.5px). Default `"white"`; pass `""` for none. */
+  knobStroke?: string;
+}
+
 /** A layout box (vbox/hbox). Carries no frame; **may** set `color`/`size` that cascade
  *  to descendant text/coord (plain CSS inheritance). */
 export interface WidgetBox {
@@ -189,7 +264,7 @@ export interface WidgetBox {
   items: WidgetNode[];
 }
 
-export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord;
+export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord | WidgetGauge | WidgetDial;
 
 /** Where a widget action button sits — a single edge/corner point, or a **group** that expands to
  *  a set of points. Pass an **array** to combine groups; the points are unioned (deduped). E.g.

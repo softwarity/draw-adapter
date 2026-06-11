@@ -97,6 +97,11 @@ export class FakeAdapter implements MapAdapter {
   editWidget(id: string, value: string, name?: string): void {
     this.widgetEditCb?.({ id, value, ...(name != null ? { name } : {}) });
   }
+  /** Simulate dragging a gauge/dial cursor `name` to `value` ⇒ fires
+   *  `onWidgetEdit({ id, name, value: String(value) })` (the value is emitted as a string). */
+  dragGauge(id: string, name: string, value: number): void {
+    this.widgetEditCb?.({ id, name, value: String(value) });
+  }
   /** Simulate a click on a widget's delete button ⇒ fires `onWidgetDelete({ id })`. */
   deleteWidget(id: string): void {
     this.widgetDeleteCb?.({ id });

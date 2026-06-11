@@ -2,6 +2,25 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **`gauge` and `dial` value-editors** — two new `WidgetNode` kinds (the carousel's
+  siblings, domain-free). A **`gauge`** is a linear slider (the vertical FL gauge) with **1–3 cursors**
+  that may not cross (each clamped by its neighbours), `step` snapping, an optional one-notch `beyond`
+  (the off-chart "XXX": emits `min - step` / `max + step`), a filled span between cursors, and
+  per-cursor labels (consumer-formatted). A **`dial`** is a radial sweep (the jet speed control) with a
+  fixed speedometer angle convention. Dragging a knob streams `onWidgetEdit({ id, name, value })` per
+  move (string value), wired on **Pointer Events** (touch works) and never starting a card drag/pan;
+  reconciled in place — a re-`setWidgets` won't interrupt a drag, and the cursor count can change
+  (1↔3). The **dial label is a speedometer readout** — it follows the knob just outside the ring (at
+  the knob's angle, never rotated so it stays upright), not pinned at the centre. Per-control styling
+  with **map-ready defaults**: the guide is a **thin, well-marked central line** with a **wider faint
+  same-colour glow on the *selected* part** (the gauge's span between cursors — extended a little past
+  them, never min→max; the dial's arc from its start up to the value), labels are **black with a white
+  1px halo**, and knobs are the control's **main colour with a white border** (all legible over the
+  map out of the box) — `labelColor` /
+  `labelHalo` / `knobFill` / `knobStroke` override any piece, and passing `""` opts it out (inherit /
+  no halo / no border). New types `WidgetCursor` / `WidgetGauge` / `WidgetDial`;
+  `FakeAdapter.dragGauge(id, name, value)`. **One shared DOM/SVG implementation** across all 3 engines.
+
 ---
 
 ## 0.3.2

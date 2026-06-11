@@ -424,9 +424,23 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   (it doubles as a drag handle) — the carousel never blocks selecting/dragging. Options are text **or** glyphs —
   `options: ["ISOL","OCNL","FRQ"]` or `[{ value:"a", svg:"<svg…>" }, …]`. Give each control a
   **`name`** so a card with several editable controls knows which one changed.
-- `control` is the extension point: **`"input"` and `"carousel"` are implemented**; `"gauge"` /
-  `"dial"` are reserved. `FakeAdapter` (`./testing`) records the set and adds
-  `.editWidget(id, value, name?)` / `.deleteWidget(id)` / `.actionWidget(id, event)` / `.clickWidget(id)`.
+- **Gauge / dial value-editors:** two **node kinds** (not text controls) for on-map value editing.
+  `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a linear slider (the vertical
+  FL gauge): **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
+  (off-chart "XXX" ⇒ emits `min - step` / `max + step`), a filled span + per-cursor labels.
+  `{ kind: "dial", name, min, max, value }` is a radial sweep (jet speed; speedometer angle) whose
+  **label is a readout that follows the knob** outside the ring (never rotated). Dragging a knob
+  streams `onWidgetEdit({ id, name, value })` per move (Pointer Events, never drags the card).
+  `length`/`orientation` (gauge), `sweep`/`radius` (dial), and `color` / `labelColor` / `labelHalo` /
+  `knobFill` / `knobStroke` style them. The guide is a **thin, well-marked central line** with a
+  **wider faint glow on the *selected* part** — the gauge span between cursors (whole line for a
+  single cursor; extended a bit past the cursors, never min→max) and the dial arc from its start to
+  the value. **Map-ready defaults**: black labels + white halo, knobs in the main colour + white
+  border; pass `""` to opt a piece out.
+- `control` is the extension point: **`"input"` and `"carousel"` are implemented** (`"gauge"` /
+  `"dial"` are their own `WidgetNode` kinds — see above). `FakeAdapter` (`./testing`) records the set
+  and adds `.editWidget(id, value, name?)` / `.dragGauge(id, name, value)` / `.deleteWidget(id)` /
+  `.actionWidget(id, event)` / `.clickWidget(id)`.
 
 ## Camera, container & overlay visibility
 
