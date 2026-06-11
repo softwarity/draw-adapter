@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.3.3
+
 - **Add (widgets):** **`gauge` and `dial` value-editors** — two new `WidgetNode` kinds (the carousel's
   siblings, domain-free). A **`gauge`** is a linear slider (the vertical FL gauge) with **1–3 cursors**
   that may not cross (each clamped by its neighbours), `step` snapping, an optional one-notch `beyond`
