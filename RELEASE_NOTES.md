@@ -2,6 +2,17 @@
 
 ## NEXT RELEASE
 
+- **Fix (focus · all engines):** after a click on a **toolbar button** or a **widget-card button**
+  (action `+`, delete `×`, or a carousel), keyboard focus is returned to the map's key-listening
+  element — so `onKey` keeps firing and **Escape can cancel a draw mode you just started** without
+  first clicking the map. No-op while a widget `<input>` is focused (it keeps its caret). New
+  `refocusMap(target)` in `keyboard.ts`; the toolbar and widget chrome call it after their action.
+- **Fix (Leaflet):** an interactive **text label** now actually surfaces its click. Leaflet markers
+  default to `bubblingMouseEvents: false`, so the (now-interactive) call-out **swallowed** the click
+  before it reached `map.on("click")` — `leaflet-interactive` was present but no hit fired. The text
+  marker is now created with `bubblingMouseEvents: true`, completing the 0.3.1 label-box fix: a real
+  click on a non-selected feature's call-out selects it.
+
 ---
 
 ## 0.3.1

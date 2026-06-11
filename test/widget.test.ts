@@ -23,6 +23,8 @@ class FakeHost implements WidgetHost {
   }
   unprojectClient(cx: number, cy: number): LatLng { return { lat: cy, lon: cx }; }
   emit(ev: PointerEvent): void { this.emits.push(ev); }
+  focusCalls = 0;
+  focus(): void { this.focusCalls++; }
 }
 
 /** Dispatch a (mouse-backed) pointer event — jsdom has no `PointerEvent` ctor, but a
@@ -509,5 +511,24 @@ describe("WidgetLayer — editable input keeps keys + caret to itself", () => {
       document.removeEventListener("keydown", onDoc);
     }
     expect(bubbled).toBe(false);
+  });
+});
+
+describe("WidgetLayer — focus returns to the map after a card button", () => {
+  it("an action button, the delete ×, and a carousel tap each call host.focus()", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([{ id: "f", anchor: { lon: 0, lat: 0 }, deletable: true,
+      buttons: [{ event: "draw-again", place: "right" }],
+      child: { dir: "h", items: [{ kind: "text", control: "carousel", value: "A", options: ["A", "B"] }] } }]);
+    const card = cardEl(host);
+    const tap = (el: Element): void => {
+      el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 4, clientY: 4 }));
+      el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 4, clientY: 4 }));
+    };
+    tap(card.querySelector(".draw-adapter-widget-btn") as HTMLElement);  // action button
+    tap(card.querySelector(".draw-adapter-widget-ctrl") as HTMLElement); // carousel
+    tap(card.querySelector(".draw-adapter-widget-del") as HTMLElement);  // delete ×
+    expect(host.focusCalls).toBe(3);
   });
 });

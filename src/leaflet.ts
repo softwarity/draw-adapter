@@ -41,7 +41,7 @@ import { colorizeSprite } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
-import { bindKeyListener } from "./keyboard.js";
+import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
@@ -229,7 +229,7 @@ export class LeafletAdapter implements MapAdapter {
     });
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
-    populateToolbar(el, [...items, ...chrome], options);
+    populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
     // Leaflet panes climb to z-index ~700 and its controls to ~1000, so the
     // generic toolbar's z-index:3 (set by applyToolbarLayout) would hide the bar
     // UNDER the tiles. Lift it above everything Leaflet stacks.
@@ -447,6 +447,7 @@ export class LeafletAdapter implements MapAdapter {
           return { lat: ll.lat, lon: ll.lng };
         },
         emit: (ev) => this.cb?.(ev),
+        focus: () => refocusMap(this.map.getContainer()),
       });
     }
     return this.widgets;
@@ -565,7 +566,10 @@ export class LeafletAdapter implements MapAdapter {
         // Interactive only when the text overlay is hittable — then its label box (call-out) is
         // clickable (mouseover sets `this.hovered`, like any feature). Non-hittable text stays
         // pass-through so it never eats clicks meant for the shape/handles beneath it.
-        return L.marker(latlng, { pane, icon: this.textIcon(p), interactive: hittable });
+        // `bubblingMouseEvents: true` is REQUIRED: a Leaflet marker defaults to false, so an
+        // interactive text marker would SWALLOW the click instead of letting it reach `map.on("click")`
+        // (no hit surfaced). With bubbling on, the click reaches the map handler ⇒ select works.
+        return L.marker(latlng, { pane, icon: this.textIcon(p), interactive: hittable, bubblingMouseEvents: true });
       default:
         // fill/line never reach pointToLayer (no point geometry); render nothing.
         return L.circleMarker(latlng, { pane, radius: 0, opacity: 0, fillOpacity: 0 });

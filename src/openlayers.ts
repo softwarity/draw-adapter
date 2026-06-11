@@ -58,7 +58,7 @@ import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
-import { bindKeyListener } from "./keyboard.js";
+import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
 /** True when a hit is something the user grabs to drag (any handle/guide carrying
@@ -202,7 +202,7 @@ export class OpenLayersAdapter implements MapAdapter {
     });
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
-    populateToolbar(el, [...items, ...chrome], options);
+    populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getViewport()));
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;
     return el;
@@ -522,6 +522,7 @@ export class OpenLayersAdapter implements MapAdapter {
           return { lat: lat!, lon: lon! };
         },
         emit: (ev) => this.pointerCb?.(ev),
+        focus: () => refocusMap(this.map.getViewport()),
       });
     }
     return this.widgets;

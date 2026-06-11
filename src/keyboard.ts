@@ -37,3 +37,17 @@ export function bindKeyListener(container: HTMLElement, cb: (ev: KeyEvent) => vo
   container.addEventListener("keydown", handler);
   return () => container.removeEventListener("keydown", handler);
 }
+
+/**
+ * Return keyboard focus to the map's key-listening element after a chrome click (a toolbar button or
+ * a widget-card button) left focus on `<body>` — otherwise `onKey` (Escape to cancel a draw mode you
+ * just started, etc.) stays dead until the user clicks the map again. No-op while an editable element
+ * is focused (a widget `<input>` must keep its focus/caret) or when `target` is already focused.
+ */
+export function refocusMap(target: HTMLElement | null | undefined): void {
+  if (!target) return;
+  const active = target.ownerDocument?.activeElement ?? null;
+  if (isEditable(active) || active === target) return;
+  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+  try { target.focus({ preventScroll: true }); } catch { /* ignore (e.g. detached) */ }
+}

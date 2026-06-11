@@ -44,6 +44,9 @@ export interface WidgetHost {
   unprojectClient(clientX: number, clientY: number): LatLng | null;
   /** Emit a synthetic pointer event into the adapter's `onPointer` stream. */
   emit(ev: PointerEvent): void;
+  /** Return keyboard focus to the map (its key-listening element) after a card button took it —
+   *  so `onKey`/Escape keeps working. No-op while an editable field is focused. */
+  focus(): void;
 }
 
 /** Default `coord` formatter — a compact decimal lat/long. Consumers override via
@@ -318,7 +321,7 @@ function wireCarousel(el: HTMLElement, card: Card): void {
   const finish = (e: globalThis.PointerEvent, tap: boolean): void => {
     try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
     if (dragging) card.forwardDrag("up", e);     // a drag moved the card
-    else if (tap && downEvt) { card.tapSelect(e); cycleCarousel(el, e.shiftKey ? -1 : 1, card); } // a tap selects + cycles
+    else if (tap && downEvt) { card.tapSelect(e); cycleCarousel(el, e.shiftKey ? -1 : 1, card); card.focusHost(); } // a tap selects + cycles
     dragging = false;
     downEvt = null;
   };
@@ -417,6 +420,12 @@ class Card {
 
   emitAction(event: string): void {
     this.getActionCb()?.({ id: this.id, event });
+    this.host.focus(); // the button took focus off the map — give it back so onKey/Escape works
+  }
+
+  /** Return keyboard focus to the map after a card control handled a tap (for module-level wiring). */
+  focusHost(): void {
+    this.host.focus();
   }
 
   /** Drive the card's drag pipeline from a control acting as a drag handle (the carousel). */
@@ -481,7 +490,7 @@ class Card {
       s.userSelect = "none";
       s.setProperty("appearance", "none");
       s.setProperty("-webkit-appearance", "none");
-      wireTapButton(b, () => this.getDeleteCb()?.({ id: this.id }));
+      wireTapButton(b, () => { this.getDeleteCb()?.({ id: this.id }); this.host.focus(); });
       this.root.appendChild(b);
       this.delBtn = b;
     } else if (!on && this.delBtn) {

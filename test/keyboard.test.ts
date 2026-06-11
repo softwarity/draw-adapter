@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { bindKeyListener } from "../src/keyboard.js";
+import { bindKeyListener, refocusMap } from "../src/keyboard.js";
 import type { KeyEvent } from "../src/index.js";
 import { FakeAdapter } from "../src/testing.js";
 
@@ -58,5 +58,26 @@ describe("FakeAdapter.onKey", () => {
     a.key("Backspace");
     a.key("Delete", { meta: true });
     expect(seen).toEqual([{ key: "Backspace", meta: false }, { key: "Delete", meta: true }]);
+  });
+});
+
+describe("refocusMap", () => {
+  it("focuses the target (making it focusable) so onKey works after a chrome click", () => {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    refocusMap(el);
+    expect(el.getAttribute("tabindex")).toBe("-1"); // made focusable
+    expect(document.activeElement).toBe(el);
+    el.remove();
+  });
+
+  it("is a no-op while a text field is focused (keeps the editor's caret)", () => {
+    const el = document.createElement("div");
+    const input = document.createElement("input");
+    document.body.append(el, input);
+    input.focus();
+    refocusMap(el);
+    expect(document.activeElement).toBe(input); // not stolen from the input
+    el.remove(); input.remove();
   });
 });

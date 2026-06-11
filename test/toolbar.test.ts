@@ -238,3 +238,16 @@ describe("populateToolbar — submenus (flyout)", () => {
     expect(menu().classList.contains("open")).toBe(false);
   });
 });
+
+describe("populateToolbar — refocus the map after an action", () => {
+  it("calls the refocus callback after a button's onClick", () => {
+    const el = document.createElement("div");
+    const refocus = vi.fn();
+    const onClick = vi.fn();
+    const item: ToolbarItem = { id: "cb", title: "CB", svg: "<svg/>", onClick };
+    populateToolbar(el, [item], undefined, refocus);
+    (el.querySelector('button[data-tool="cb"]') as HTMLButtonElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(onClick).toHaveBeenCalledOnce();
+    expect(refocus).toHaveBeenCalledOnce();
+  });
+});

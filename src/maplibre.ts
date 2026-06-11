@@ -49,7 +49,7 @@ import { boxPadding, boxRadius } from "./textbox.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
-import { bindKeyListener } from "./keyboard.js";
+import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
@@ -322,7 +322,7 @@ export class MapLibreAdapter implements MapAdapter {
     });
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
-    populateToolbar(el, [...items, ...chrome], options);
+    populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
     this.map.getContainer().appendChild(el);
     this.toolbarEl = el;
     return el;
@@ -586,6 +586,7 @@ export class MapLibreAdapter implements MapAdapter {
           return { lat: c.lat, lon: c.lng };
         },
         emit: (ev) => this.pointerCb?.(ev),
+        focus: () => refocusMap(this.map.getContainer()),
       });
     }
     return this.widgets;

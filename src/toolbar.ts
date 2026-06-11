@@ -89,7 +89,7 @@ function createButton(item: ToolbarItem): HTMLButtonElement {
   return button;
 }
 
-export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?: ToolbarOptions): void {
+export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?: ToolbarOptions, refocus?: () => void): void {
   el.classList.add(TOOLBAR_CLASS);
   ensureToolbarStyle();
   applyToolbarLayout(el, options);
@@ -111,11 +111,11 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
 
   for (const item of shown) {
     if (item.children?.length) {
-      const { trigger, menu } = buildSubmenu(item, side, closeSubmenus, setActive);
+      const { trigger, menu } = buildSubmenu(item, side, closeSubmenus, setActive, refocus);
       el.appendChild(trigger);
       menus.push(menu);
     } else {
-      el.appendChild(buildButton(item, el, setActive, closeSubmenus));
+      el.appendChild(buildButton(item, el, setActive, closeSubmenus, refocus));
     }
   }
 
@@ -143,6 +143,7 @@ function buildButton(
   el: HTMLElement,
   setActive: (btn: HTMLButtonElement) => void,
   closeSubmenus: () => void,
+  refocus?: () => void,
 ): HTMLButtonElement {
   const button = createButton(item);
   if (!item.disabled) {
@@ -152,6 +153,7 @@ function buildButton(
       item.onClick?.(e); // pass the MouseEvent so handlers can read modifier keys
       if (item.toggle) setActive(button);
       else if (!item.standalone) el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
+      refocus?.(); // the click left focus on <body> — give it back to the map so onKey/Escape works
     });
   }
   item.onRender?.(button); // live DOM wiring (e.g. snapshot icon swap on modifier key)
@@ -178,6 +180,7 @@ function buildSubmenu(
   side: string,
   closeSubmenus: () => void,
   setActive: (btn: HTMLButtonElement) => void,
+  refocus?: () => void,
 ): { trigger: HTMLButtonElement; menu: HTMLElement } {
   const isToggle = item.toggle === true;
   const children = item.children ?? [];
@@ -211,6 +214,7 @@ function buildSubmenu(
         child.onClick?.(e);
         if (isToggle) { selected = child; reflect(); setActive(trigger); } // parent adopts the pick
         closeSubmenus(); // pick one ⇒ collapse
+        refocus?.();
       });
     }
     child.onRender?.(cb);
@@ -259,6 +263,7 @@ function buildSubmenu(
     // Already open (hovered): a click runs the parent action.
     if (isToggle) { selected?.onClick?.(e); setActive(trigger); }
     else item.onClick?.(e); // click-mode parent: only acts if given an onClick
+    refocus?.();
   });
 
   item.onRender?.(trigger);
