@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.3.4
+
 - **Fix (widgets):** **the `dial` is now a true ring — its centre lets clicks through.** A map
   handle/feature rendered *at* the dial's centre (e.g. a jet break-point drag handle) now stays
   reachable underneath: a `pointerdown` in the hole falls through to the layer below instead of being
