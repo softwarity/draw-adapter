@@ -2,6 +2,20 @@
 
 ## NEXT RELEASE
 
+- **Fix (widgets):** **the `dial` is now a true ring — its centre lets clicks through.** A map
+  handle/feature rendered *at* the dial's centre (e.g. a jet break-point drag handle) now stays
+  reachable underneath: a `pointerdown` in the hole falls through to the layer below instead of being
+  swallowed by the widget. Two parts: (1) the dial itself exposes only an invisible **ring hit-area**
+  (`pointer-events: stroke`, sized to the couronne) + the knob — its box, hole and corners opt out; and
+  (2) **a lone-dial satellite card** (a card whose whole content is a dial — the break-point speed
+  ring, centred on its anchor) opts the **whole card** out of pointer events. That second part is what
+  actually makes the hole transparent: `pointer-events` inherits, so the card body, the layout box and
+  the SVG all go transparent and only the ring/knob re-enable capture — otherwise the card body sitting
+  behind the dial would keep swallowing the centre press. A dial sharing a card with other controls
+  leaves that card interactive (its centre just hits the card body, as before). The transparent hole
+  tracks the dial radius, and a press anywhere on the ring band now grabs the value (the whole couronne
+  is interactive, not just the knob). DOM-only, so it holds on all 3 engines.
+
 ---
 
 ## 0.3.3

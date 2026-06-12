@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { WidgetLayer } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
-import type { LatLng, MarkerWidget, PointerEvent } from "../src/index.js";
+import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit } from "../src/index.js";
 
 /** Records mounts (as plain divs) + emitted pointer events; `unprojectClient` is the
  *  identity `(x,y) ⇒ { lon:x, lat:y }` so coordinates are easy to assert. */
@@ -591,6 +591,73 @@ describe("WidgetLayer — dial control", () => {
     const knob = cardEl(host).querySelector(".draw-adapter-widget-dial .draw-adapter-widget-knob") as Element;
     knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — dial is a ring: its centre lets clicks through", () => {
+  const dialOf = (radius?: number): MarkerWidget => ({ id: "dr", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "dial", name: "spd", min: 0, max: 100, value: 50, ...(radius ? { radius } : {}) }] } });
+
+  it("the box (incl. the central hole) opts out of pointer events; the knob opts back in", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([dialOf()]);
+    const dial = cardEl(host).querySelector(".draw-adapter-widget-dial") as HTMLElement;
+    expect(dial.style.pointerEvents).toBe("none"); // a pointerdown in the centre falls through to the map below
+    const knob = dial.querySelector("circle.draw-adapter-widget-knob") as SVGCircleElement;
+    expect(knob.style.pointerEvents).toBe("auto");  // the ring's knob stays interactive
+  });
+
+  it("a lone-dial satellite card opts the WHOLE card out (inherits down to the box/svg)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([dialOf()]);
+    const card = cardEl(host);
+    // The break-point speed satellite is a bare ring centred on its anchor: the card itself (not just
+    // the dial box) must let a centre press through, since `pointer-events` inherits down the tree.
+    expect(card.style.pointerEvents).toBe("none");
+  });
+
+  it("a dial sharing a card with another control keeps the card interactive", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "mix", anchor: { lon: 0, lat: 0 }, bg: "#fff",
+      child: { dir: "v", items: [{ kind: "text", text: "JET" }, { kind: "dial", name: "spd", min: 0, max: 100, value: 50 }] } }]);
+    expect(cardEl(host).style.pointerEvents).toBe("auto"); // not a lone dial ⇒ the card body stays a hit target
+  });
+
+  it("a transparent ring hit-area (pointer-events: stroke) captures only the couronne band", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([dialOf()]);
+    const svg = cardEl(host).querySelector(".draw-adapter-widget-dial svg") as SVGElement;
+    const hit = svg.lastElementChild as SVGCircleElement; // kept last so the visible glow/arc stay children[0]/[1]
+    expect(hit.tagName.toLowerCase()).toBe("circle");
+    expect(hit.getAttribute("stroke")).toBe("transparent");
+    expect(hit.style.pointerEvents).toBe("stroke"); // only the stroke band hits; the hole stays transparent
+  });
+
+  it("the transparent hole tracks the dial radius (a bigger dial ⇒ a bigger hole)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const hole = (): number => {
+      const hit = cardEl(host).querySelector(".draw-adapter-widget-dial svg circle:last-of-type") as SVGCircleElement;
+      return Number(hit.getAttribute("r")) - Number(hit.getAttribute("stroke-width")) / 2; // inner radius of the band
+    };
+    layer.setWidgets([dialOf(40)]);
+    const small = hole();
+    layer.setWidgets([dialOf(80)]);
+    expect(hole()).toBeGreaterThan(small);
+    expect(small).toBeGreaterThan(0); // there IS a real hole even on the smaller dial
+  });
+
+  it("a drag on the ring band sets the value (the whole couronne stays interactive)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([dialOf()]);
+    const hit = cardEl(host).querySelector(".draw-adapter-widget-dial svg circle:last-of-type") as SVGCircleElement;
+    hit.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 0, clientY: 0 }));
+    hit.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY: 0 }));
+    expect(edits.length).toBeGreaterThan(0);
+    expect(edits[edits.length - 1]).toMatchObject({ id: "dr", name: "spd" });
   });
 });
 

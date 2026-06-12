@@ -429,8 +429,10 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   FL gauge): **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
   (off-chart "XXX" ⇒ emits `min - step` / `max + step`), a filled span + per-cursor labels.
   `{ kind: "dial", name, min, max, value }` is a radial sweep (jet speed; speedometer angle) whose
-  **label is a readout that follows the knob** outside the ring (never rotated). Dragging a knob
-  streams `onWidgetEdit({ id, name, value })` per move (Pointer Events, never drags the card).
+  **label is a readout that follows the knob** outside the ring (never rotated). It is a **true ring:
+  its centre is transparent to pointer events**, so a handle/feature drawn *at* the dial's centre stays
+  clickable underneath (a press in the hole falls through); the whole couronne (ring band + knob) grabs
+  the value. Dragging streams `onWidgetEdit({ id, name, value })` per move (Pointer Events, never drags the card).
   `length`/`orientation` (gauge), `sweep`/`radius` (dial), and `color` / `labelColor` / `labelHalo` /
   `knobFill` / `knobStroke` style them. The guide is a **thin, well-marked central line** with a
   **wider faint glow on the *selected* part** — the gauge span between cursors (whole line for a

@@ -350,6 +350,7 @@ const DIAL_R = 52;          // default dial radius
 const DIAL_SWEEP = 240;     // default dial sweep (deg)
 const DIAL_MIN_ANGLE = 150; // min sits down-left; the sweep runs over the top to max (speedometer)
 const DIAL_LABEL_GAP = 16;  // the dial label sits this far OUTSIDE the radius, at the knob's angle
+const RING_HIT_W = KNOB + SELECT_W; // px width of the invisible ring hit-area (covers the knob + halo band)
 
 /** A press on a value-editor must never start a card drag / map pan / leak a native click. */
 function preventCardDrag(el: HTMLElement): void {
@@ -535,13 +536,25 @@ function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: 
   dot.addEventListener("pointercancel", end);
 }
 
-interface DialState { svg: SVGSVGElement; arcHalo: SVGPathElement; arc: SVGPathElement; knob: SVGCircleElement; label: HTMLElement; dial: WidgetDial; dragging: boolean; live: number; }
+interface DialState { svg: SVGSVGElement; hit: SVGCircleElement; arcHalo: SVGPathElement; arc: SVGPathElement; knob: SVGCircleElement; label: HTMLElement; dial: WidgetDial; dragging: boolean; live: number; }
 const dialState = new WeakMap<HTMLElement, DialState>();
+
+/** Does this card's content reduce to a single dial? (A dial alone, or wrapped in layout boxes that
+ *  hold nothing else.) Such a card is the break-point speed satellite — a bare ring whose centre must
+ *  let clicks through, so the card opts out of pointer events. */
+function isLoneDial(node: WidgetNode): boolean {
+  if ("kind" in node) return node.kind === "dial";
+  return node.items.length === 1 && isLoneDial(node.items[0]!);
+}
 
 function createDial(card: Card): HTMLElement {
   const root = document.createElement("div");
   root.className = "draw-adapter-widget-dial";
   const rs = root.style; rs.position = "relative"; rs.display = "inline-block"; rs.flex = "0 0 auto"; rs.touchAction = "none";
+  // The dial is a RING: its box (incl. the central hole + the corners) is transparent to pointer
+  // events, so a pointerdown in the centre falls through to whatever sits beneath (a map handle/
+  // feature rendered AT the same point). Only the ring band + knob below re-enable capture.
+  rs.pointerEvents = "none";
   preventCardDrag(root);
   const svg = document.createElementNS(SVGNS, "svg");
   svg.style.display = "block"; svg.style.overflow = "visible";
@@ -554,13 +567,21 @@ function createDial(card: Card): HTMLElement {
   const knob = document.createElementNS(SVGNS, "circle");
   knob.setAttribute("fill", "currentColor"); knob.classList.add("draw-adapter-widget-knob");
   knob.style.cursor = "pointer"; knob.style.setProperty("touch-action", "none");
-  svg.append(arcHalo, arc, knob); // glow behind the arc
+  knob.style.setProperty("pointer-events", "auto"); // the root opts out; the knob opts back in
+  // Invisible ANNULUS hit-area: `pointer-events: stroke` captures only the stroke band (the couronne),
+  // leaving the central hole transparent. Sized in updateDial; kept LAST so it grabs the whole ring,
+  // and so the visible glow/arc stay svg.children[0]/[1].
+  const hit = document.createElementNS(SVGNS, "circle");
+  hit.setAttribute("fill", "none"); hit.setAttribute("stroke", "transparent");
+  hit.style.setProperty("pointer-events", "stroke"); hit.style.cursor = "pointer"; hit.style.setProperty("touch-action", "none");
+  svg.append(arcHalo, arc, knob, hit); // glow behind the arc; transparent ring hit-area on top
   const label = document.createElement("span");
   const ls = label.style; ls.position = "absolute"; ls.transform = "translate(-50%,-50%)"; // left/top set per-angle in updateDial
   ls.pointerEvents = "none"; ls.whiteSpace = "nowrap"; ls.textAlign = "center";
   root.append(svg, label);
-  dialState.set(root, { svg, arcHalo, arc, knob, label, dial: { kind: "dial", name: "", min: 0, max: 1, value: 0 }, dragging: false, live: 0 });
+  dialState.set(root, { svg, hit, arcHalo, arc, knob, label, dial: { kind: "dial", name: "", min: 0, max: 1, value: 0 }, dragging: false, live: 0 });
   wireDialDrag(root, knob, card);
+  wireDialDrag(root, hit, card); // a press anywhere on the ring band grabs the dial, just like the knob
   return root;
 }
 
@@ -577,6 +598,10 @@ function updateDial(root: HTMLElement, d: WidgetDial, _card: Card): void {
   st.arc.setAttribute("stroke-width", String(GUIDE_W));
   st.arcHalo.setAttribute("stroke-width", String(SELECT_W));
   st.knob.setAttribute("r", String(KNOB / 2));
+  // Ring hit-area centred on the knob's travel circle: its band covers the couronne, its hole (radius
+  // `ar - RING_HIT_W/2`) stays transparent and shrinks/grows with the dial.
+  st.hit.setAttribute("cx", String(R)); st.hit.setAttribute("cy", String(R));
+  st.hit.setAttribute("r", String(ar)); st.hit.setAttribute("stroke-width", String(RING_HIT_W));
   root.style.width = `${size}px`; root.style.height = `${size}px`;
   const sweep = d.sweep ?? DIAL_SWEEP;
   st.arc.setAttribute("d", dialArcPath(R, ar, DIAL_MIN_ANGLE, DIAL_MIN_ANGLE + sweep)); // thin guide, full sweep
@@ -610,14 +635,16 @@ function placeDialLabel(st: DialState, R: number, angleDeg: number): void {
   st.label.style.top = `${ly}px`;
 }
 
-function wireDialDrag(root: HTMLElement, knob: SVGCircleElement, card: Card): void {
-  knob.addEventListener("pointerdown", (e) => {
+/** Wire the value-drag onto a grab target (the knob, or the transparent ring hit-area): press to grab,
+ *  move to set the value from the pointer's angle. Geometry is read from state, so it is target-agnostic. */
+function wireDialDrag(root: HTMLElement, target: SVGCircleElement, card: Card): void {
+  target.addEventListener("pointerdown", (e) => {
     e.stopPropagation(); e.preventDefault();
     const st = dialState.get(root); if (!st) return;
     st.dragging = true;
-    try { knob.setPointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* jsdom / unsupported */ }
+    try { target.setPointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* jsdom / unsupported */ }
   });
-  knob.addEventListener("pointermove", (e) => {
+  target.addEventListener("pointermove", (e) => {
     const st = dialState.get(root); if (!st || !st.dragging) return;
     const ev = e as globalThis.PointerEvent;
     const d = st.dial, R = d.radius ?? DIAL_R, ar = R - KNOB / 2;
@@ -635,10 +662,10 @@ function wireDialDrag(root: HTMLElement, knob: SVGCircleElement, card: Card): vo
   const end = (e: Event): void => {
     const st = dialState.get(root); if (!st) return;
     st.dragging = false;
-    try { knob.releasePointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* ignore */ }
+    try { target.releasePointerCapture((e as globalThis.PointerEvent).pointerId); } catch { /* ignore */ }
   };
-  knob.addEventListener("pointerup", end);
-  knob.addEventListener("pointercancel", end);
+  target.addEventListener("pointerup", end);
+  target.addEventListener("pointercancel", end);
 }
 
 class Card {
@@ -721,6 +748,12 @@ class Card {
     s.color = w.font?.color ?? "";
     s.fontSize = w.font?.size != null ? `${w.font.size}px` : "";
     s.fontFamily = w.font?.family ?? "";
+    // A lone-dial card (the break-point speed satellite, centred ON its anchor) is a RING: opt the
+    // WHOLE card out of pointer events — `pointer-events` inherits, so the content/box/svg all go
+    // transparent and a press in the dial's hole falls through to the handle/map beneath. Only the
+    // dial's ring band + knob re-enable capture. A dial sharing a card with other controls keeps the
+    // card interactive (its centre then just hits the card body, as before).
+    s.pointerEvents = isLoneDial(w.child) ? "none" : "auto";
     this.coordEls.length = 0;
     reconcile(this.content, [w.child], this);
     const del = w.deletable;
