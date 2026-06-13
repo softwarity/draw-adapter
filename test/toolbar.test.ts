@@ -239,6 +239,131 @@ describe("populateToolbar — submenus (flyout)", () => {
   });
 });
 
+describe("populateToolbar — nested submenus (sub-sub-menu, alternating direction)", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  // A bar → submenu → sub-submenu tree. Leaf `deep` lives two levels down.
+  const nested = (leafClick = vi.fn()): { item: ToolbarItem; leafClick: ReturnType<typeof vi.fn> } => ({
+    leafClick,
+    item: {
+      id: "root", title: "Root", svg: "<svg/>",
+      children: [
+        { id: "leaf1", title: "Leaf 1", svg: "<svg/>", onClick: vi.fn() },
+        {
+          id: "branch", title: "Branch", svg: "<svg/>",
+          children: [
+            { id: "deep", title: "Deep", svg: "<svg/>", onClick: leafClick },
+            { id: "deep2", title: "Deep 2", svg: "<svg/>", onClick: vi.fn() },
+          ],
+        },
+      ],
+    },
+  });
+  // All flyouts (every depth) share the `.dap-submenu` class; identify them by their `-side` class.
+  const menuBySide = (side: string): HTMLElement | null => document.querySelector(`.dap-submenu-${side}`);
+
+  it("a child with its own children becomes a nested submenu trigger inside the flyout", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, [nested().item]);
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const firstFlyout = menuBySide("down")!; // top bar ⇒ first submenu opens "down" (a column)
+    const branchTrigger = firstFlyout.querySelector<HTMLButtonElement>('button[data-tool="branch"]')!;
+    expect(branchTrigger.classList.contains("dap-submenu-trigger")).toBe(true);
+    expect(branchTrigger.getAttribute("aria-haspopup")).toBe("true");
+    expect(branchTrigger.classList.contains("dap-sub-right")).toBe(true); // its chevron points the way it opens
+  });
+
+  it("the sub-submenu opens on the flipped axis: bar(row) → submenu(column,down) → sub(row,right)", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, [nested().item], { position: "top-left" });
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const firstFlyout = menuBySide("down")!;
+    expect(firstFlyout.style.flexDirection).toBe("column"); // vertical
+    firstFlyout.querySelector<HTMLButtonElement>('button[data-tool="branch"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const subFlyout = menuBySide("right")!;
+    expect(subFlyout).not.toBeNull();
+    expect(subFlyout.classList.contains("open")).toBe(true);
+    expect(subFlyout.style.flexDirection).toBe("row"); // horizontal — flipped from its parent
+  });
+
+  it("opening a sibling branch collapses the other; ancestors stay open", () => {
+    const el = document.createElement("div");
+    const item: ToolbarItem = {
+      id: "root", title: "Root", svg: "<svg/>",
+      children: [
+        { id: "a", title: "A", children: [{ id: "a1", title: "A1", onClick: vi.fn() }] },
+        { id: "b", title: "B", children: [{ id: "b1", title: "B1", onClick: vi.fn() }] },
+      ],
+    };
+    populateToolbar(el, [item]);
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const first = menuBySide("down")!;
+    first.querySelector<HTMLButtonElement>('button[data-tool="a"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const aMenu = [...document.querySelectorAll<HTMLElement>(".dap-submenu-right")].find((m) => m.querySelector('[data-tool="a1"]'))!;
+    expect(aMenu.classList.contains("open")).toBe(true);
+    // hover the sibling B ⇒ A's flyout closes, but the first-level flyout (their ancestor) stays open
+    first.querySelector<HTMLButtonElement>('button[data-tool="b"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const bMenu = [...document.querySelectorAll<HTMLElement>(".dap-submenu-right")].find((m) => m.querySelector('[data-tool="b1"]'))!;
+    expect(aMenu.classList.contains("open")).toBe(false);
+    expect(bMenu.classList.contains("open")).toBe(true);
+    expect(first.classList.contains("open")).toBe(true);
+  });
+
+  it("picking a deep leaf fires its onClick and collapses the whole cascade", () => {
+    const el = document.createElement("div");
+    const { item, leafClick } = nested();
+    populateToolbar(el, [item]);
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    menuBySide("down")!.querySelector<HTMLButtonElement>('button[data-tool="branch"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const sub = menuBySide("right")!;
+    sub.querySelector<HTMLButtonElement>('button[data-tool="deep"]')!.click();
+    expect(leafClick).toHaveBeenCalledOnce();
+    // every flyout collapsed
+    expect([...document.querySelectorAll(".dap-submenu.open")]).toHaveLength(0);
+  });
+
+  it("moving across the gap from a sub-trigger into the sub-flyout keeps the whole chain open", () => {
+    vi.useFakeTimers();
+    const el = document.createElement("div");
+    populateToolbar(el, [nested().item]);
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const first = menuBySide("down")!;
+    const branchTrigger = first.querySelector<HTMLButtonElement>('button[data-tool="branch"]')!;
+    branchTrigger.dispatchEvent(new MouseEvent("mouseenter"));
+    const sub = menuBySide("right")!;
+    // leave the first flyout entirely (cross the gap toward the sub-flyout)
+    first.dispatchEvent(new MouseEvent("mouseleave"));
+    branchTrigger.dispatchEvent(new MouseEvent("mouseleave"));
+    vi.advanceTimersByTime(50);
+    sub.dispatchEvent(new MouseEvent("mouseenter")); // reached the sub-flyout in time
+    vi.advanceTimersByTime(300);
+    expect(first.classList.contains("open")).toBe(true); // ancestor not closed
+    expect(sub.classList.contains("open")).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("arbitrary depth keeps alternating (h → v → h → v)", () => {
+    const el = document.createElement("div");
+    const item: ToolbarItem = {
+      id: "l0", title: "L0", children: [
+        { id: "l1", title: "L1", children: [
+          { id: "l2", title: "L2", children: [
+            { id: "l3", title: "L3", onClick: vi.fn() },
+          ] },
+        ] },
+      ],
+    };
+    populateToolbar(el, [item]);
+    el.querySelector<HTMLButtonElement>('button[data-tool="l0"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    menuBySide("down")!.querySelector<HTMLButtonElement>('button[data-tool="l1"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    menuBySide("right")!.querySelector<HTMLButtonElement>('button[data-tool="l2"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const deepest = menuBySide("down"); // level 3 flips back to "down"
+    // two flyouts now carry the "down" side class (level 1 and level 3); the deepest is open
+    expect([...document.querySelectorAll(".dap-submenu-down.open")].length).toBeGreaterThanOrEqual(2);
+    expect(deepest).not.toBeNull();
+  });
+});
+
 describe("populateToolbar — refocus the map after an action", () => {
   it("calls the refocus callback after a button's onClick", () => {
     const el = document.createElement("div");

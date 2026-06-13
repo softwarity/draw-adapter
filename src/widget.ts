@@ -18,12 +18,12 @@ import type {
   WidgetBox,
   WidgetButton,
   WidgetButtonPlace,
-  WidgetCarouselOption,
   WidgetDial,
   WidgetEdit,
   WidgetGauge,
   WidgetNode,
   WidgetOrigin,
+  WidgetPickerOption,
 } from "./index.js";
 import { boxPadding, boxRadius } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
@@ -78,7 +78,7 @@ const KIND = "wtag";
 function nodeTag(node: WidgetNode): string {
   if (!("kind" in node)) return "box"; // a WidgetBox carries no `kind`
   if (node.kind === "text") {
-    if (node.control === "carousel") return "text:carousel";
+    if (node.control === "picker") return "text:picker";
     return node.editable ? "text:input" : "text:label";
   }
   return node.kind;
@@ -234,23 +234,49 @@ function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): 
   return el;
 }
 
-// ── carousel control (click = next, shift-click = previous, with a slide effect) ──
+// ── picker control (choose among options; presentation degrades with option count) ──
+//
+// One control, three presentations chosen from the `mode` and the number of options:
+//  · carousel — ≤ LINEAR_MAX: click = next, shift-click = previous, with a slide effect (in place).
+//  · flower   — ≤ FLOWER_MAX: a radial petal menu fanned around the control (click to open, pick a
+//               petal ⇒ it becomes the centre, re-click the centre to re-open).
+//  · grid     — beyond: a grid popover next to the control.
+// The flower/grid popups live in <body> (`position:fixed`, JS-placed) so they're never clipped and
+// sit above the map; an outside press closes them. Picking emits the new value via `card.emitEdit`.
 
-const carouselState = new WeakMap<HTMLElement, { options: WidgetCarouselOption[]; value: string; name: string | undefined }>();
+type PickerMode = "carousel" | "flower" | "grid";
+const LINEAR_MAX = 5;   // ≤ this many options ⇒ a linear carousel
+const FLOWER_MAX = 10;  // ≤ this many options ⇒ a radial flower; beyond ⇒ a grid
 
-function optValue(o: WidgetCarouselOption): string {
+const pickerState = new WeakMap<HTMLElement, { options: WidgetPickerOption[]; value: string; name: string | undefined; mode: PickerMode; color: string | undefined }>();
+
+function optValue(o: WidgetPickerOption): string {
   return typeof o === "string" ? o : o.value;
 }
+function optLabel(o: WidgetPickerOption): string {
+  return typeof o === "string" ? o : (o.label ?? o.value);
+}
+/** Tooltip text for an option — its explicit `title`, or `""` (⇒ no tooltip) when there is none. */
+function optTitle(o: WidgetPickerOption): string {
+  return typeof o !== "string" && o.title ? o.title : "";
+}
 
-/** Paint the current option — a glyph if it carries `svg`, else its `label`/value text. */
-function renderCarousel(el: HTMLElement, o: WidgetCarouselOption | undefined): void {
+/** The presentation a picker resolves to for `n` options under `mode` (each mode degrades to grid). */
+function pickerLayout(mode: PickerMode, n: number): "carousel" | "flower" | "grid" {
+  if (mode === "grid") return "grid";
+  if (mode === "flower") return n > FLOWER_MAX ? "grid" : "flower";
+  return n <= LINEAR_MAX ? "carousel" : n <= FLOWER_MAX ? "flower" : "grid"; // "carousel" (auto)
+}
+
+/** Paint an option into an element — a glyph if it carries `svg`, else its `label`/value text. */
+function renderOption(el: HTMLElement, o: WidgetPickerOption | undefined): void {
   if (o == null) { el.textContent = ""; return; }
   if (typeof o !== "string" && o.svg) {
     el.innerHTML = o.svg;
     const inner = el.firstElementChild as HTMLElement | null;
     if (inner) { inner.style.width = "100%"; inner.style.height = "100%"; inner.style.display = "block"; }
   } else {
-    el.textContent = typeof o === "string" ? o : (o.label ?? o.value);
+    el.textContent = optLabel(o);
   }
 }
 
@@ -268,41 +294,243 @@ function animateCarousel(el: HTMLElement, dir: number): void {
   } catch { /* no layout engine (jsdom) */ }
 }
 
-/** Sync a carousel element to the model — re-paints only when the value changed, so it never
- *  clobbers an in-flight cycle animation. */
-function updateCarousel(el: HTMLElement, options: WidgetCarouselOption[], value: string, name: string | undefined): void {
+/** Sync a picker element to the model — re-paints the value only when it changed, so it never
+ *  clobbers an in-flight cycle animation. `color` is the accent the flower/grid inherit too. */
+function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined): void {
   const opt = options.find((o) => optValue(o) === value) ?? options[0];
-  const st = carouselState.get(el);
+  el.title = opt ? optTitle(opt) : ""; // the trigger's tooltip follows the current value
+  const st = pickerState.get(el);
   if (!st) {
-    carouselState.set(el, { options, value, name });
-    renderCarousel(el, opt);
+    pickerState.set(el, { options, value, name, mode, color });
+    renderOption(el, opt);
     return;
   }
   st.options = options;
   st.name = name;
+  st.mode = mode;
+  st.color = color;
   if (st.value !== value) {
     st.value = value;
-    renderCarousel(el, opt);
+    renderOption(el, opt);
   }
 }
 
-/** Advance the carousel by `dir` (+1 next, −1 previous), paint + animate, and emit the new value. */
-function cycleCarousel(el: HTMLElement, dir: number, card: Card): void {
-  const st = carouselState.get(el);
+/** Advance a (carousel-mode) picker by `dir` (+1 next, −1 previous), paint + animate, emit. */
+function cyclePicker(el: HTMLElement, dir: number, card: Card): void {
+  const st = pickerState.get(el);
   if (!st || st.options.length === 0) return;
   const cur = st.options.findIndex((o) => optValue(o) === st.value);
   const next = ((cur < 0 ? 0 : cur) + dir + st.options.length) % st.options.length;
   const opt = st.options[next]!;
   st.value = optValue(opt);
-  renderCarousel(el, opt);
+  renderOption(el, opt);
+  el.title = optTitle(opt);
   animateCarousel(el, dir);
   card.emitEdit(st.value, st.name);
 }
 
-/** Wire a carousel as **both** a control and a drag handle: a clean **tap** cycles
- *  (click = next, shift = previous); a **drag** (press + move past ~3 px) forwards the gesture to
- *  the card so the whole card moves — so the carousel area no longer blocks dragging. */
-function wireCarousel(el: HTMLElement, card: Card): void {
+// ── flower / grid popups ───────────────────────────────────────────────────────
+
+const PICKER_STYLE_ID = "draw-adapter-picker-style";
+function ensurePickerStyle(): void {
+  if (typeof document === "undefined" || document.getElementById(PICKER_STYLE_ID)) return;
+  const st = document.createElement("style");
+  st.id = PICKER_STYLE_ID;
+  st.textContent =
+    // The flower container is a zero-size anchor point centred on the control; petals are absolutely
+    // placed around it. It lets clicks through (pointer-events:none) so a press between petals reaches
+    // the map and closes the flower; each petal re-enables capture.
+    // Clickable choices mirror the trigger: BOLD + the picker's accent ink (`color`, e.g. orange),
+    // carried on the popup container and inherited via `currentColor` (so glyphs tint too). The
+    // container falls back to the neutral ink when no accent is set; the white pill/box keeps them
+    // readable over the map.
+    `.dap-picker-flower{position:fixed;z-index:1000;width:0;height:0;pointer-events:none;color:#24292f}` +
+    `.dap-picker-petal{position:absolute;left:0;top:0;width:30px;height:30px;margin:-15px 0 0 -15px;` +
+    `display:flex;align-items:center;justify-content:center;background:#fff;color:inherit;font-weight:bold;` +
+    `border:1px solid rgba(0,0,0,.15);` +
+    `border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.3);cursor:pointer;padding:0;pointer-events:auto;` +
+    `transition:transform 160ms cubic-bezier(.2,.8,.3,1.2),opacity 160ms ease}` +
+    `.dap-picker-petal svg{display:block;width:18px;height:18px}` +
+    `.dap-picker-petal:hover{background:#f4f4f4}` +
+    // The grid popover is a solid box (like a toolbar flyout), JS-placed next to the control.
+    `.dap-picker-grid{position:fixed;z-index:1000;display:grid;gap:2px;padding:4px;background:#fff;` +
+    `border:1px solid rgba(0,0,0,.15);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3);color:#24292f}` +
+    `.dap-picker-grid button{width:30px;height:30px;display:flex;align-items:center;justify-content:center;` +
+    `background:#fff;color:inherit;border:0;border-radius:4px;cursor:pointer;padding:0;font:inherit;font-weight:bold}` +
+    `.dap-picker-grid button svg{display:block;width:18px;height:18px}` +
+    `.dap-picker-grid button:hover{background:#f4f4f4}` +
+    // Highlight markers — the current value and the keyboard-focused choice. Both the ring AND a light
+    // background tint use the accent (`currentColor`): an accent ring over an accent-into-white fill
+    // (neutral-grey background fallback where `color-mix` is unsupported). Focus = a thicker ring than
+    // the current marker so they're distinguishable when they differ.
+    `.dap-picker-petal.dap-current,.dap-picker-grid button.dap-current{` +
+    `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);outline:1px solid currentColor}` +
+    `.dap-picker-petal.dap-focus{` +
+    `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);box-shadow:0 0 0 2px currentColor,0 2px 8px rgba(0,0,0,.3)}` +
+    `.dap-picker-grid button.dap-focus{` +
+    `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);box-shadow:0 0 0 2px currentColor}`;
+  document.head.appendChild(st);
+}
+
+/** The single open popup (only one picker is ever open). Closing detaches it + its listeners. */
+let openPopup: { el: HTMLElement; trigger: HTMLElement; onDocDown: (e: Event) => void; onKey: (e: KeyboardEvent) => void } | undefined;
+function closePicker(): void {
+  if (!openPopup) return;
+  document.removeEventListener("pointerdown", openPopup.onDocDown, true);
+  document.removeEventListener("keydown", openPopup.onKey, true);
+  openPopup.el.remove();
+  openPopup = undefined;
+}
+/** Is a popup currently open for this exact control? (so re-tapping the centre toggles it shut). */
+function popupOpenFor(trigger: HTMLElement): boolean {
+  return openPopup?.trigger === trigger;
+}
+
+/** Commit a choice: update the centre, emit, and collapse the popup. */
+function choosePicker(trigger: HTMLElement, card: Card, value: string): void {
+  const st = pickerState.get(trigger);
+  if (!st) return;
+  st.value = value;
+  const opt = st.options.find((o) => optValue(o) === value);
+  renderOption(trigger, opt);
+  if (opt) trigger.title = optTitle(opt);
+  closePicker();
+  card.emitEdit(value, st.name);
+}
+
+/**
+ * Place a fixed popup `el` and wire its two global listeners: a "press outside ⇒ close", and a
+ * **keyboard navigation** one. While open, the arrow keys browse `items` (highlighting one), Enter /
+ * Space pick the highlighted choice, Escape closes — all captured on `document` (so they fire before
+ * the map's native pan-on-arrow handler) and swallowed, so the value browsing never moves the map.
+ */
+function mountPopup(el: HTMLElement, trigger: HTMLElement, items: { el: HTMLElement; value: string }[], current: number, card: Card): void {
+  closePicker();
+  if (typeof document === "undefined") return;
+  document.body.appendChild(el);
+  let idx = current >= 0 ? current : 0;
+  const focus = (i: number): void => {
+    if (!items.length) return;
+    items[idx]?.el.classList.remove("dap-focus");
+    idx = (i + items.length) % items.length;
+    items[idx]?.el.classList.add("dap-focus");
+  };
+  focus(idx); // start on the current value
+  const onDocDown = (e: Event): void => {
+    const t = e.target;
+    if (!trigger.isConnected) { closePicker(); return; }
+    if (t instanceof Node && (el.contains(t) || trigger.contains(t))) return;
+    closePicker();
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    const k = e.key;
+    if (k === "ArrowRight" || k === "ArrowDown") focus(idx + 1);
+    else if (k === "ArrowLeft" || k === "ArrowUp") focus(idx - 1);
+    else if (k === "Enter" || k === " " || k === "Spacebar") { if (items[idx]) choosePicker(trigger, card, items[idx]!.value); }
+    else if (k === "Escape") closePicker();
+    else return; // not a navigation key — let the app/map have it
+    e.preventDefault();
+    e.stopPropagation(); // don't let it reach the map (pan) or the consumer's onKey
+  };
+  document.addEventListener("pointerdown", onDocDown, true);
+  document.addEventListener("keydown", onKey, true);
+  openPopup = { el, trigger, onDocDown, onKey };
+}
+
+/** Open the **flower**: petals fanned on a circle around the control, animating out from the centre. */
+function openFlower(trigger: HTMLElement, card: Card): void {
+  const st = pickerState.get(trigger);
+  if (!st) return;
+  ensurePickerStyle();
+  const flower = document.createElement("div");
+  flower.className = "dap-picker-flower";
+  if (st.color) flower.style.color = st.color; // accent the petals (bold + this ink), inherited below
+  const n = st.options.length;
+  // Radius: large enough that N petals (≈34px pitch) don't overlap, with a sensible floor.
+  const radius = Math.max(40, Math.round((n * 34) / (2 * Math.PI)));
+  const items: { el: HTMLElement; value: string }[] = [];
+  let current = -1;
+  st.options.forEach((o, i) => {
+    const petal = document.createElement("button");
+    petal.type = "button";
+    petal.className = "dap-picker-petal";
+    petal.title = optTitle(o);
+    if (optValue(o) === st.value) { petal.classList.add("dap-current"); current = i; } // selected ⇒ tinted bg + black ring
+    renderOption(petal, o);
+    const ang = -Math.PI / 2 + (i / n) * 2 * Math.PI; // start at the top, clockwise
+    const dx = Math.round(Math.cos(ang) * radius);
+    const dy = Math.round(Math.sin(ang) * radius);
+    petal.style.transform = "translate(0,0) scale(.3)"; // start collapsed at the centre
+    petal.style.opacity = "0";
+    petal.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); });
+    petal.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); choosePicker(trigger, card, optValue(o)); });
+    flower.appendChild(petal);
+    items.push({ el: petal, value: optValue(o) });
+    // Fan out on the next frame so the transition runs.
+    const fan = (): void => { petal.style.transform = `translate(${dx}px,${dy}px) scale(1)`; petal.style.opacity = "1"; };
+    try { requestAnimationFrame(fan); } catch { fan(); }
+  });
+  mountPopup(flower, trigger, items, current, card);
+  placeAtCenter(flower, trigger);
+}
+
+/** Open the **grid**: a wrap-grid popover of all options, placed below the control. */
+function openGrid(trigger: HTMLElement, card: Card): void {
+  const st = pickerState.get(trigger);
+  if (!st) return;
+  ensurePickerStyle();
+  const grid = document.createElement("div");
+  grid.className = "dap-picker-grid";
+  if (st.color) grid.style.color = st.color; // accent the cells (bold + this ink), inherited below
+  const cols = Math.min(6, Math.ceil(Math.sqrt(st.options.length)));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 30px)`;
+  const items: { el: HTMLElement; value: string }[] = [];
+  let current = -1;
+  st.options.forEach((o, i) => {
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.title = optTitle(o);
+    if (optValue(o) === st.value) { cell.classList.add("dap-current"); current = i; }
+    renderOption(cell, o);
+    cell.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); });
+    cell.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); choosePicker(trigger, card, optValue(o)); });
+    grid.appendChild(cell);
+    items.push({ el: cell, value: optValue(o) });
+  });
+  mountPopup(grid, trigger, items, current, card);
+  placeBelow(grid, trigger);
+}
+
+/** Centre a (zero-size) popup on the control's centre. */
+function placeAtCenter(el: HTMLElement, trigger: HTMLElement): void {
+  if (typeof window === "undefined") return;
+  const t = trigger.getBoundingClientRect();
+  el.style.left = `${t.left + t.width / 2}px`;
+  el.style.top = `${t.top + t.height / 2}px`;
+}
+/** Place a popup just below the control, left-aligned (viewport coords). */
+function placeBelow(el: HTMLElement, trigger: HTMLElement): void {
+  if (typeof window === "undefined") return;
+  const t = trigger.getBoundingClientRect();
+  el.style.left = `${t.left}px`;
+  el.style.top = `${t.bottom + 4}px`;
+}
+
+/** Tap behaviour for a picker, dispatched by its resolved layout: a carousel cycles in place; a
+ *  flower/grid toggles its popup open (re-tapping the centre closes it). */
+function tapPicker(el: HTMLElement, card: Card, shift: boolean): void {
+  const st = pickerState.get(el);
+  const layout = st ? pickerLayout(st.mode, st.options.length) : "carousel";
+  if (layout === "carousel") { cyclePicker(el, shift ? -1 : 1, card); return; }
+  if (popupOpenFor(el)) { closePicker(); return; }
+  if (layout === "flower") openFlower(el, card);
+  else openGrid(el, card);
+}
+
+/** Wire a picker as **both** a control and a drag handle: a clean **tap** acts on it (cycle, or open
+ *  the flower/grid); a **drag** (press + move past ~3 px) forwards the gesture to the card so the
+ *  whole card moves — so the control area no longer blocks dragging. */
+function wirePicker(el: HTMLElement, card: Card): void {
   let downEvt: globalThis.PointerEvent | null = null;
   let dragging = false;
   el.addEventListener("pointerdown", (e) => {
@@ -323,7 +551,7 @@ function wireCarousel(el: HTMLElement, card: Card): void {
   const finish = (e: globalThis.PointerEvent, tap: boolean): void => {
     try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
     if (dragging) card.forwardDrag("up", e);     // a drag moved the card
-    else if (tap && downEvt) { card.tapSelect(e); cycleCarousel(el, e.shiftKey ? -1 : 1, card); card.focusHost(); } // a tap selects + cycles
+    else if (tap && downEvt) { card.tapSelect(e); tapPicker(el, card, e.shiftKey); card.focusHost(); } // a tap selects + acts
     dragging = false;
     downEvt = null;
   };
@@ -739,7 +967,11 @@ class Card {
     s.background = w.bg ?? "transparent";
     s.border = w.border ? `1px solid ${w.border}` : ""; // "" clears it (no frame border)
     s.borderRadius = `${boxRadius(w.radius)}px`;
-    if (framed) {
+    // Padding is decoupled from the frame: apply it when the card is framed (default `medium`) OR an
+    // explicit `padding` is given — so a BARE call-out (no bg/border) can still space its content
+    // (e.g. to keep edge buttons off the text/glyph). Absent + unframed ⇒ 0 (unchanged). Note:
+    // `boxPadding(undefined)` is `medium`, not 0 — hence the guard, so bare cards aren't padded by default.
+    if (framed || w.padding != null) {
       const [pv, ph] = boxPadding(w.padding);
       s.padding = `${pv}px ${ph}px`;
     } else {
@@ -931,7 +1163,7 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     el = createGauge();
   } else if (node.kind === "dial") {
     el = createDial(card);
-  } else if (node.control === "carousel") {
+  } else if (node.control === "picker") {
     const span = document.createElement("span");
     span.className = "draw-adapter-widget-ctrl";
     const s = span.style;
@@ -941,8 +1173,12 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     s.willChange = "transform, opacity";
     s.whiteSpace = "pre-line"; // honour `\n` in option text (multi-line); no effect on single-line
     s.textAlign = "center";
-    // tap ⇒ cycle (click = next, shift = previous); drag ⇒ move the whole card (it's a drag handle too).
-    wireCarousel(span, card);
+    // Affordance: a picker is BOLD so it reads as interactive (vs a static label), without adding any
+    // width that would shift the value off the anchor. The accent colour (e.g. orange) is the
+    // consumer's call — set per node via `color`, like the gauge/dial controls.
+    s.fontWeight = "bold";
+    // tap ⇒ act (cycle, or open the flower/grid); drag ⇒ move the whole card (it's a drag handle too).
+    wirePicker(span, card);
     el = span;
   } else if (node.editable) {
     const input = document.createElement("input");
@@ -1015,8 +1251,8 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
   if (node.kind === "gauge") { updateGauge(el, node, card); return; }
   if (node.kind === "dial") { updateDial(el, node, card); return; }
   // text
-  if (node.control === "carousel") {
-    updateCarousel(el, node.options ?? [], node.value, node.name);
+  if (node.control === "picker") {
+    updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color);
     el.style.color = node.color ?? "";
     el.style.fontSize = node.size != null ? `${node.size}px` : "";
     return;

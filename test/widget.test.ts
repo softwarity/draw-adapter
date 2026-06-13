@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { WidgetLayer } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
@@ -85,6 +85,19 @@ describe("WidgetLayer — builds the card tree", () => {
     expect(card.style.background).toBe("transparent");
     expect(card.style.border).toBe(""); // no frame border
     expect(card.style.padding).toBe("0px"); // unframed ⇒ no inner padding
+  });
+
+  it("padding is decoupled from the frame: a BARE card (no bg/border) with `padding` still spaces its content", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "b1", anchor: { lon: 0, lat: 0 }, padding: "large",
+      buttons: [{ event: "add", place: "right" }], // edge button that would otherwise sit on the content
+      child: { dir: "v", items: [{ kind: "glyph", svg: "<svg></svg>", size: 20 }] },
+    }]);
+    const card = cardEl(host);
+    expect(card.style.padding).toBe("10px 13px"); // padding "large" applied…
+    expect(card.style.background).toBe("transparent"); // …while staying visually bare
+    expect(card.style.border).toBe("");
   });
 
   it("static (non-editable) text renders a <span>, not an <input>", () => {
@@ -388,9 +401,9 @@ describe("WidgetLayer — action buttons are gated by what you pass (deselect)",
 describe("WidgetLayer — carousel control", () => {
   const carousel = (value: string): MarkerWidget => ({
     id: "c1", anchor: { lon: 0, lat: 0 },
-    child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "coverage", value, options: ["ISOL", "OCNL", "FRQ"] }] },
+    child: { dir: "h", items: [{ kind: "text", control: "picker", name: "coverage", value, options: ["ISOL", "OCNL", "FRQ"] }] },
   });
-  const cel = (host: FakeHost): HTMLElement => cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+  const cel = (host: FakeHost): HTMLElement => cardEl(host).querySelector('[data-wtag="text:picker"]') as HTMLElement;
   const tap = (el: Element, shift = false): void => {
     el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5, shiftKey: shift }));
@@ -421,7 +434,7 @@ describe("WidgetLayer — carousel control", () => {
   it("supports glyph options (svg)", () => {
     const host = new FakeHost();
     new WidgetLayer(host).setWidgets([{ id: "g", anchor: { lon: 0, lat: 0 },
-      child: { dir: "h", items: [{ kind: "text", control: "carousel", value: "a",
+      child: { dir: "h", items: [{ kind: "text", control: "picker", value: "a",
         options: [{ value: "a", svg: "<svg id='A'></svg>" }, { value: "b", svg: "<svg id='B'></svg>" }] }] } }]);
     expect(cel(host).querySelector("svg")?.id).toBe("A");
   });
@@ -434,6 +447,270 @@ describe("WidgetLayer — carousel control", () => {
     expect(cel(host).textContent).toBe("FRQ");
     cel(host).dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
     expect(host.emits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — picker flower / grid modes", () => {
+  // Close any popup left open + clear mounts between tests (popups live in <body>).
+  afterEach(() => {
+    document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    document.body.innerHTML = "";
+  });
+
+  type Mode = "carousel" | "flower" | "grid";
+  const opts = (n: number): string[] => Array.from({ length: n }, (_, i) => `o${i}`);
+  const picker = (n: number, mode?: Mode, options?: NonNullable<MarkerWidget["child"]>): MarkerWidget => {
+    const list = options ?? opts(n);
+    return {
+      id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{
+        kind: "text", control: "picker", name: "sym",
+        value: (typeof list[0] === "string" ? list[0] : (list[0] as { value: string }).value),
+        options: list as never, ...(mode ? { mode } : {}),
+      }] },
+    };
+  };
+  const cel = (host: FakeHost): HTMLElement => cardEl(host).querySelector('[data-wtag="text:picker"]') as HTMLElement;
+  const tap = (el: Element, shift = false): void => {
+    el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5, shiftKey: shift }));
+  };
+  const flower = (): HTMLElement | null => document.querySelector(".dap-picker-flower");
+  const grid = (): HTMLElement | null => document.querySelector(".dap-picker-grid");
+
+  it("auto: ≤5 options stays a carousel (cycles in place, no popup)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(5)]);
+    tap(cel(host));
+    expect(flower()).toBeNull();
+    expect(grid()).toBeNull();
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "o1" }]); // cycled to next, in place
+  });
+
+  it("auto: 6–10 options ⇒ a flower; tapping opens N petals; picking one emits + closes", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(7)]);
+    tap(cel(host)); // opens (no edit yet)
+    expect(edits).toHaveLength(0);
+    expect(flower()).not.toBeNull();
+    const petals = flower()!.querySelectorAll(".dap-picker-petal");
+    expect(petals).toHaveLength(7);
+    petals[3]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "o3" }]);
+    expect(flower()).toBeNull(); // collapsed after the pick
+    expect(cel(host).textContent).toBe("o3"); // centre adopts the pick
+  });
+
+  it("auto: >10 options ⇒ a grid; picking a cell emits + closes", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(12)]);
+    tap(cel(host));
+    expect(flower()).toBeNull();
+    expect(grid()).not.toBeNull();
+    const cells = grid()!.querySelectorAll("button");
+    expect(cells).toHaveLength(12);
+    cells[9]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "o9" }]);
+    expect(grid()).toBeNull();
+  });
+
+  it("forced mode:flower keeps a flower even for few options (2 petals)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(2, "flower")]);
+    tap(cel(host));
+    expect(flower()).not.toBeNull();
+    expect(flower()!.querySelectorAll(".dap-picker-petal")).toHaveLength(2);
+  });
+
+  it("forced mode:grid is a grid even for few options", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(3, "grid")]);
+    tap(cel(host));
+    expect(grid()).not.toBeNull();
+    expect(grid()!.querySelectorAll("button")).toHaveLength(3);
+  });
+
+  it("forced mode:flower beyond 10 degrades to a grid", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(11, "flower")]);
+    tap(cel(host));
+    expect(flower()).toBeNull();
+    expect(grid()).not.toBeNull();
+  });
+
+  it("re-tapping the centre toggles the flower shut", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(7)]);
+    tap(cel(host));
+    expect(flower()).not.toBeNull();
+    tap(cel(host)); // re-tap ⇒ close
+    expect(flower()).toBeNull();
+  });
+
+  it("a press outside the popup closes it", () => {
+    const host = new FakeHost();
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    new WidgetLayer(host).setWidgets([picker(7)]);
+    tap(cel(host));
+    expect(flower()).not.toBeNull();
+    outside.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    expect(flower()).toBeNull();
+  });
+
+  it("petals render glyph options (svg)", () => {
+    const host = new FakeHost();
+    const glyphs = [
+      { value: "a", svg: "<svg id='PA'></svg>" }, { value: "b", svg: "<svg id='PB'></svg>" },
+      { value: "c", svg: "<svg id='PC'></svg>" }, { value: "d", svg: "<svg id='PD'></svg>" },
+      { value: "e", svg: "<svg id='PE'></svg>" }, { value: "f", svg: "<svg id='PF'></svg>" },
+    ];
+    new WidgetLayer(host).setWidgets([picker(6, "flower", glyphs as never)]);
+    tap(cel(host));
+    expect(flower()!.querySelector("svg")?.id).toBe("PA");
+  });
+
+  it("the flower carries the picker's accent color (petals inherit it via currentColor)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "o0", color: "#e8731a",
+        options: opts(7) }] } }]);
+    tap(cel(host));
+    expect(flower()!.style.color).toBe("rgb(232, 115, 26)"); // accent on the container ⇒ inherited by petals
+  });
+
+  it("the grid carries the picker's accent color", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "o0", color: "#e8731a",
+        options: opts(12) }] } }]);
+    tap(cel(host));
+    expect(grid()!.style.color).toBe("rgb(232, 115, 26)");
+  });
+
+  const key = (k: string): boolean =>
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+  it("arrow keys browse the choices (highlight moves); the event is swallowed so the map can't pan", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(7)]); // value o0 ⇒ starts on index 0
+    tap(cel(host));
+    const petals = [...flower()!.querySelectorAll(".dap-picker-petal")];
+    expect(petals[0]!.classList.contains("dap-focus")).toBe(true); // starts on the current value
+    const consumed = key("ArrowRight");
+    expect(consumed).toBe(false); // preventDefault ⇒ the map's native pan never runs
+    expect(petals[0]!.classList.contains("dap-focus")).toBe(false);
+    expect(petals[1]!.classList.contains("dap-focus")).toBe(true);
+    key("ArrowLeft"); key("ArrowLeft"); // 1 → 0 → wraps to 6
+    expect(petals[6]!.classList.contains("dap-focus")).toBe(true);
+  });
+
+  it("Enter picks the highlighted choice (emits + closes); Escape just closes", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(7)]);
+    tap(cel(host));
+    key("ArrowRight"); key("ArrowRight"); // highlight index 2 (o2)
+    key("Enter");
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "o2" }]);
+    expect(flower()).toBeNull(); // closed
+    // reopen, Escape ⇒ closes without emitting
+    tap(cel(host));
+    expect(flower()).not.toBeNull();
+    key("Escape");
+    expect(flower()).toBeNull();
+    expect(edits).toHaveLength(1);
+  });
+
+  it("arrow keys also drive the grid", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(12)]);
+    tap(cel(host));
+    key("ArrowDown"); // index 1
+    key("Enter");
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "o1" }]);
+    expect(grid()).toBeNull();
+  });
+
+  it("an option's `title` is its tooltip in the flower; a bare option has none", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "CI",
+        options: [{ value: "CI", title: "Cirrus" }, { value: "CB", title: "Cumulonimbus" }, "X3", "X4", "X5", "X6"] }] } }]);
+    tap(cel(host));
+    const petals = [...flower()!.querySelectorAll<HTMLElement>(".dap-picker-petal")];
+    expect(petals[0]!.title).toBe("Cirrus");
+    expect(petals[1]!.title).toBe("Cumulonimbus");
+    expect(petals[2]!.title).toBe(""); // no title ⇒ no tooltip (no label/value fallback)
+  });
+
+  it("the trigger's tooltip follows the current option's title (empty when it has none)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "CI",
+        options: [{ value: "CI", title: "Cirrus" }, { value: "CB", title: "Cumulonimbus" }] }] } }]);
+    expect(cel(host).title).toBe("Cirrus");
+    layer.setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", options: ["ISOL", "OCNL"] }] } }]);
+    expect(cel(host).title).toBe(""); // plain options ⇒ no tooltip
+  });
+
+  it("a drag on a flower-mode picker moves the card and does NOT open a popup", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([picker(7)]);
+    const c = cel(host);
+    c.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    c.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
+    c.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 40, clientY: 40 }));
+    expect(host.emits.map((e) => e.type)).toEqual(["down", "move", "up"]); // card drag
+    expect(flower()).toBeNull(); // a drag never opens the flower
+    expect(edits).toHaveLength(0);
+  });
+});
+
+describe("WidgetLayer — picker is bold (interactive affordance)", () => {
+  const trig = (host: FakeHost): HTMLElement => cardEl(host).querySelector('[data-wtag="text:picker"]') as HTMLElement;
+
+  it("a picker value renders bold (so it reads as interactive), no extra width vs the value", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const t = trig(host);
+    expect(t.style.fontWeight).toBe("bold");
+    expect(t.textContent).toBe("ISOL"); // just the value — no affordance glyph mixed into the text
+  });
+
+  it("the accent colour is the consumer's call — a picker honours node.color (e.g. orange)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", color: "#e8731a", options: ["ISOL", "OCNL"] }] } }]);
+    expect(trig(host).style.color).toBe("rgb(232, 115, 26)");
+  });
+
+  it("a static text item is NOT bold", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "s", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", value: "FL120" }] } }]);
+    const label = cardEl(host).querySelector('[data-wtag="text:label"]') as HTMLElement;
+    expect(label.style.fontWeight).toBe("");
   });
 });
 
@@ -457,8 +734,8 @@ describe("WidgetLayer — carousel is also a drag handle", () => {
     const edits: unknown[] = [];
     layer.onWidgetEdit((e) => edits.push(e));
     layer.setWidgets([{ id: "c", anchor: { lon: 0, lat: 0 },
-      child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "cov", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
-    const c = cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "cov", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const c = cardEl(host).querySelector('[data-wtag="text:picker"]') as HTMLElement;
     c.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     c.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
     c.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 40, clientY: 40 }));
@@ -475,8 +752,8 @@ describe("WidgetLayer — carousel tap selects the card", () => {
     const edits: unknown[] = [];
     layer.onWidgetEdit((e) => edits.push(e));
     layer.setWidgets([{ id: "c1", anchor: { lon: 0, lat: 0 },
-      child: { dir: "h", items: [{ kind: "text", control: "carousel", name: "coverage", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
-    const c = cardEl(host).querySelector('[data-wtag="text:carousel"]') as HTMLElement;
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "coverage", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const c = cardEl(host).querySelector('[data-wtag="text:picker"]') as HTMLElement;
     c.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     c.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
     expect(host.emits.map((e) => e.type)).toEqual(["down", "up", "click"]); // selects the card
@@ -520,7 +797,7 @@ describe("WidgetLayer — focus returns to the map after a card button", () => {
     const layer = new WidgetLayer(host);
     layer.setWidgets([{ id: "f", anchor: { lon: 0, lat: 0 }, deletable: true,
       buttons: [{ event: "draw-again", place: "right" }],
-      child: { dir: "h", items: [{ kind: "text", control: "carousel", value: "A", options: ["A", "B"] }] } }]);
+      child: { dir: "h", items: [{ kind: "text", control: "picker", value: "A", options: ["A", "B"] }] } }]);
     const card = cardEl(host);
     const tap = (el: Element): void => {
       el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 4, clientY: 4 }));

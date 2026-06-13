@@ -2,6 +2,50 @@
 
 ## NEXT RELEASE
 
+- **Fix (widgets):** **card `padding` is decoupled from the frame.** Padding used to apply *only* to a
+  framed card (`bg`/`border`), so a **bare** call-out could never space its content — edge buttons
+  (`+`/`−`) sat on the text/glyph. Now padding applies when the card is framed (default `medium`, as
+  before) **or** an explicit `padding` is given, while `bg`/`border` stay independent — so a bare card
+  can be padded yet stay transparent/borderless. No regression: a card with no `padding` and no frame
+  is still unpadded (`boxPadding(undefined)` is `medium`, so the absent case is guarded, not defaulted).
+
+- **Add (toolbar):** **nested submenus (sub-sub-menus).** A submenu child that itself has `children`
+  now becomes its own flyout, recursively. Each level opens on the **flipped axis** so the menus
+  zig-zag (with a top/bottom bar: `bar (h) → submenu (v) → sub-submenu (h) → …`), and a nested trigger
+  shows a chevron pointing the way its flyout opens. Hover-bridging across the gaps, click/touch open,
+  sibling auto-collapse (one open path at a time, ancestors stay open) and outside-press close all work
+  at any depth; picking any leaf collapses the whole cascade. Depth is unlimited in code — two levels is
+  the practical UX limit. No API change: `ToolbarItem.children` was already recursive.
+
+- **Add (widgets):** **`picker` control with three presentations that scale with option count.** The
+  text `control: "carousel"` is renamed **`"picker"`** and gains a **`mode`**: `"carousel"` (default),
+  `"flower"`, `"grid"`. Each mode **degrades** as choices grow so the control stays usable —
+  `"carousel"`: a linear cycle (click/shift-click) for ≤5 options, a **flower** for 6–10, a **grid**
+  beyond; `"flower"`: a **radial petal menu** (tap fans the petals out, pick one and it becomes the
+  centre, re-tap the centre to re-open) up to 10, else a grid; `"grid"`: a grid popover always. The
+  flower/grid popups live in `<body>` (`position:fixed`, JS-placed) so they're never clipped and sit
+  above the map; an outside press closes them, and a press *between* petals falls through to the map.
+  Selecting + drag-to-move are unchanged (the control is still a drag handle). The ≤5-option carousel is
+  byte-for-byte the old behaviour. **Breaking:** `control: "carousel"` is removed (use `"picker"`), and
+  `WidgetCarouselOption` is renamed `WidgetPickerOption`.
+
+- **Add (widgets):** a `picker` renders **bold** so it reads as interactive — otherwise it looked
+  identical to a static label. Bold (not an added glyph/chevron) keeps the value perfectly centred on
+  the anchor. The accent colour stays the consumer's call: set `color` on the picker node (like the
+  gauge/dial controls) so all editable elements share one cue (e.g. orange). The **flower petals and
+  grid cells inherit that same cue** — bold + the accent ink (`currentColor`, so glyphs tint too) —
+  and the selected/keyboard-focused marker uses the accent for **both** an accent ring **and** a light
+  background tint (`color-mix` of the accent into white) instead of a fixed blue.
+
+- **Add (widgets):** a picker option can carry a **`title`** used as its **tooltip** in the
+  flower/grid and on the trigger — so a terse glyph value (`"CI"`) can hover as `"Cirrus"`. No `title`
+  ⇒ **no tooltip** (no fallback to the label/value).
+
+- **Add (widgets):** the picker **flower/grid are keyboard-navigable**. While open, the **arrow keys**
+  browse the choices, **Enter**/**Space** picks the highlighted one, **Escape** closes — and the event
+  is swallowed (capture) so it no longer reaches the map's native pan-on-arrow handler (you browse
+  values, the map stays put).
+
 ---
 
 ## 0.3.4

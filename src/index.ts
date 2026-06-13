@@ -130,28 +130,40 @@ export interface WidgetGlyph {
   color?: string;
 }
 
-/** One choice in a `"carousel"` control — a bare string (text = its own value), or a value with a
- *  display `label` and/or a `svg` glyph. */
-export type WidgetCarouselOption = string | { value: string; label?: string; svg?: string };
+/** One choice in a `"picker"` control — a bare string (text = its own value), or a value with a
+ *  display `label` and/or a `svg` glyph, plus an optional `title` used as the **tooltip** for that
+ *  choice (in the flower/grid and on the trigger) — e.g. a terse glyph value `"CI"` showing `"Cirrus"`
+ *  on hover. **No `title` ⇒ no tooltip** (no fallback to the `label`/`value`). */
+export type WidgetPickerOption = string | { value: string; label?: string; svg?: string; title?: string };
 
-/** A text leaf — a static label, an inline `<input>` (when `editable`), or a click-to-cycle
- *  `"carousel"` control. */
+/** A text leaf — a static label, an inline `<input>` (when `editable`), or a `"picker"` control
+ *  for choosing among `options`. */
 export interface WidgetText {
   kind: "text";
-  /** The current value. For a carousel it's the selected option's `value`. */
+  /** The current value. For a picker it's the selected option's `value`. */
   value: string;
   /** Omit/`false` ⇒ a static `<span>` label; `true` ⇒ an editable `<input>`. */
   editable?: boolean;
   /**
-   * The control to render. `"input"` (default when `editable`) is a text field. `"carousel"`
-   * cycles through `options` on **click** (next) / **shift-click** (previous) with a slide effect,
-   * emitting the new `value` via {@link MapAdapter.onWidgetEdit}. (`"gauge"`/`"dial"` reserved.)
+   * The control to render. `"input"` (default when `editable`) is a text field. `"picker"` lets the
+   * user choose among `options`, emitting the new `value` via {@link MapAdapter.onWidgetEdit}; how it
+   * presents the choices is set by `mode`. (`"gauge"`/`"dial"` are reserved.)
    */
-  control?: "input" | "carousel";
-  /** The choices for a `"carousel"` control. */
-  options?: WidgetCarouselOption[];
+  control?: "input" | "picker";
+  /**
+   * How a `"picker"` presents its `options` — each mode degrades to the next when there are too many
+   * choices to stay usable (thresholds: ≤5 carousel, ≤10 flower, beyond ⇒ grid):
+   * - `"carousel"` (default) — **carousel** for ≤5 options (click = next, shift-click = previous, with
+   *   a slide effect); a **flower** for 6–10; a **grid** beyond.
+   * - `"flower"` — a **radial petal menu** (click the centre to fan the petals out; pick one and it
+   *   becomes the centre; re-click the centre to re-open); a **grid** beyond 10.
+   * - `"grid"` — a **grid popover**, always.
+   */
+  mode?: "carousel" | "flower" | "grid";
+  /** The choices for a `"picker"` control. */
+  options?: WidgetPickerOption[];
   /** Identifies this control in the `onWidgetEdit` payload — set it when a card has more than one
-   *  editable control (input + several carousels), so the consumer knows which one changed. */
+   *  editable control (input + several pickers), so the consumer knows which one changed. */
   name?: string;
   placeholder?: string;
   /** Focus the control when it **first appears** (not on every re-render). */
@@ -306,7 +318,10 @@ export interface MarkerWidget {
   border?: string;
   /** Corner radius preset (reuses {@link TextBoxRadius}). Default `"none"`. */
   radius?: TextBoxRadius;
-  /** Inner padding preset (reuses {@link TextBoxSize}), applied when framed. Default `"medium"`. */
+  /** Inner padding preset (reuses {@link TextBoxSize}). Decoupled from the frame: a **framed** card
+   *  is padded (default `"medium"`); a **bare** card (no `bg`/`border`) is padded only when `padding`
+   *  is given explicitly — so a call-out can space its content (e.g. keep edge buttons off the text)
+   *  without forcing a frame. Absent + unframed ⇒ no padding. */
   padding?: TextBoxSize;
   /** Root text style; cascades to ALL descendants (a box or item may override its subtree). */
   font?: { color?: string; size?: number; family?: string };
@@ -323,7 +338,7 @@ export interface MarkerWidget {
 }
 
 /** Payload of {@link MapAdapter.onWidgetEdit} — fired per keystroke in an editable input, and on
- *  each change of a `"carousel"` control. */
+ *  each change of a `"picker"` control. */
 export interface WidgetEdit {
   id: string;
   /** The control's `name`, if it has one — disambiguates which control changed (a card can hold

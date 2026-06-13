@@ -248,6 +248,23 @@ parent adopt its icon; clicking the (open) parent re-runs the selected child:
 ]}
 ```
 
+**Nested** — a child can itself have `children`, becoming a **sub-submenu**. Each level opens on
+the **flipped axis**, so the menus zig-zag (with a top/bottom bar: `bar (horizontal) → submenu
+(vertical) → sub-submenu (horizontal) → …`); a nested trigger shows a chevron pointing the way
+its flyout opens. Hover-bridging, click/touch open, sibling auto-collapse and outside-press close
+all work at every depth — picking any leaf collapses the whole cascade. Nesting is unlimited in
+code, but **two levels deep** is the practical UX limit:
+
+```ts
+{ id: "shapes", title: "Shapes", svg: SHAPES_ICON, children: [
+  { id: "rect",   title: "Rectangle", svg: RECT_ICON, onClick: () => draw.rect() },
+  { id: "curves", title: "Curves", svg: CURVES_ICON, children: [   // ← sub-submenu
+    { id: "bezier", title: "Bézier", svg: BEZIER_ICON, onClick: () => draw.bezier() },
+    { id: "arc",    title: "Arc",    svg: ARC_ICON,    onClick: () => draw.arc() },
+  ]},
+]}
+```
+
 ## Snapshots (PNG)
 
 Capture the current map — basemap **and** overlays — as a PNG `Blob`. The capture
@@ -396,8 +413,9 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 - **Boxes** (`{ dir: "v"|"h", align?, gap?, color?, size?, items }`) do layout (vbox/hbox) and may
   set `color`/`size` that **cascade** to descendant text/coord (plain CSS inheritance).
 - **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label; an inline
-  `<input>` when `editable` — auto-grows, `uppercase` enters/emits upper case; or a click-to-cycle
-  `control: "carousel"`, see below) · `coord` (the anchor, formatted by `setCoordFormat`, **live**).
+  `<input>` when `editable` — auto-grows, `uppercase` enters/emits upper case; or a
+  `control: "picker"` for choosing among `options`, see below) · `coord` (the anchor, formatted by
+  `setCoordFormat`, **live**).
 - **Selection / move reuse the pointer model:** a click or drag on the card surfaces through
   `onPointer` as a hit `{ overlay: "widget", props: { id } }` (with the real lon/lat), so your
   existing select / drag-to-move logic works unchanged. The card **never** drives map pan/zoom;
@@ -418,12 +436,24 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 - **Deselect on window blur:** wire `adapter.onBlur(() => deselect())` if you want a marker to stop
   looking editable once the user switches to another window/app. The lib is domain-free — it emits
   the focus-lost **signal**, the consumer owns the selection and decides whether to drop it.
-- **Carousel control:** a `text` item with `control: "carousel"` + `options` cycles values on
-  **click** (next) / **shift-click** (previous), with a slide effect, and emits the new value via
-  `onWidgetEdit({ id, name, value })`. A **tap also selects the card** and a **press-drag** moves it
-  (it doubles as a drag handle) — the carousel never blocks selecting/dragging. Options are text **or** glyphs —
-  `options: ["ISOL","OCNL","FRQ"]` or `[{ value:"a", svg:"<svg…>" }, …]`. Give each control a
-  **`name`** so a card with several editable controls knows which one changed.
+- **Picker control:** a `text` item with `control: "picker"` + `options` lets the user choose a value,
+  emitting it via `onWidgetEdit({ id, name, value })`. The presentation is set by `mode` and
+  **degrades with the option count** so the control stays usable:
+  - `mode: "carousel"` *(default)* — **carousel** for ≤5 options (**click** = next, **shift-click** =
+    previous, slide effect, cycles in place); a **flower** for 6–10; a **grid** beyond 10.
+  - `mode: "flower"` — a **radial petal menu**: a tap fans the petals out around the control, picking a
+    petal makes it the centre and closes the flower (re-tap the centre to re-open); a **grid** beyond 10.
+  - `mode: "grid"` — a **grid popover**, always.
+
+  The flower/grid popups are appended to `<body>` (`position:fixed`, JS-placed), so they're never
+  clipped and sit above the map; a press outside closes them, and a press *between* petals falls through
+  to the map. A **tap also selects the card** and a **press-drag** moves it (the control doubles as a
+  drag handle) — it never blocks selecting/dragging. Options are text **or** glyphs —
+  `options: ["ISOL","OCNL","FRQ"]` or `[{ value:"a", svg:"<svg…>" }, …]`. Give each control a **`name`**
+  so a card with several editable controls knows which one changed. A picker renders **bold** so it
+  reads as interactive (vs a static label) without adding width that would shift the value off the
+  anchor; give it an **accent `color`** (like the gauge/dial controls) so all editable elements share
+  one cue.
 - **Gauge / dial value-editors:** two **node kinds** (not text controls) for on-map value editing.
   `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a linear slider (the vertical
   FL gauge): **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
@@ -439,7 +469,7 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   single cursor; extended a bit past the cursors, never min→max) and the dial arc from its start to
   the value. **Map-ready defaults**: black labels + white halo, knobs in the main colour + white
   border; pass `""` to opt a piece out.
-- `control` is the extension point: **`"input"` and `"carousel"` are implemented** (`"gauge"` /
+- `control` is the extension point: **`"input"` and `"picker"` are implemented** (`"gauge"` /
   `"dial"` are their own `WidgetNode` kinds — see above). `FakeAdapter` (`./testing`) records the set
   and adds `.editWidget(id, value, name?)` / `.dragGauge(id, name, value)` / `.deleteWidget(id)` /
   `.actionWidget(id, event)` / `.clickWidget(id)`.

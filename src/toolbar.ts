@@ -16,13 +16,23 @@ const FALLBACK_ICON =
   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
   `stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg>`;
 
-/** Toolbar edge → the side a submenu flyout opens toward (always into the map). */
-const SUBMENU_SIDE: Record<string, "down" | "up" | "right" | "left"> = {
+/** The four directions a flyout can open toward (relative to its trigger). */
+type Side = "down" | "up" | "right" | "left";
+
+/** Toolbar edge → the side the **first** submenu flyout opens toward (always into the map). */
+const SUBMENU_SIDE: Record<string, Side> = {
   top: "down",
   bottom: "up",
   left: "right",
   right: "left",
 };
+
+/**
+ * Direction for the **next** nesting level: it flips the axis so menus zig-zag (a vertical
+ * column spawns rows, a horizontal row spawns columns). With a top bar that's the requested
+ * `toolbar (h) → submenu (v) → sub-submenu (h) → …` — and it keeps alternating to any depth.
+ */
+const ALTERNATE: Record<Side, Side> = { down: "right", up: "right", right: "down", left: "down" };
 
 function ensureToolbarStyle(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
@@ -39,10 +49,17 @@ function ensureToolbarStyle(): void {
     `.dap-submenu{position:fixed;display:none;flex-direction:column;background:#fff;` +
     `border:1px solid rgba(0,0,0,.15);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.3);overflow:hidden;z-index:1000}` +
     `.dap-submenu.open{display:flex}` +
-    `.dap-submenu button{color:#24292f;background:#fff;border:0;width:30px;height:30px;cursor:pointer;padding:0}` +
+    `.dap-submenu button{position:relative;color:#24292f;background:#fff;border:0;width:30px;height:30px;cursor:pointer;padding:0}` +
     `.dap-submenu button svg{display:block;margin:auto}` +
     `.dap-submenu button:hover{background:#f4f4f4}` +
-    `.dap-submenu button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}`;
+    `.dap-submenu button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}` +
+    // A nested-submenu trigger (a submenu sitting *inside* a flyout) shows a little chevron
+    // pointing the way its own flyout opens — set per-trigger via a `dap-sub-<side>` class.
+    `.dap-submenu .dap-submenu-trigger::after{content:"";position:absolute;width:0;height:0;opacity:.5}` +
+    `.dap-submenu .dap-sub-right::after{right:2px;top:50%;transform:translateY(-50%);border:3px solid transparent;border-left-color:currentColor}` +
+    `.dap-submenu .dap-sub-left::after{left:2px;top:50%;transform:translateY(-50%);border:3px solid transparent;border-right-color:currentColor}` +
+    `.dap-submenu .dap-sub-down::after{bottom:2px;left:50%;transform:translateX(-50%);border:3px solid transparent;border-top-color:currentColor}` +
+    `.dap-submenu .dap-sub-up::after{top:2px;left:50%;transform:translateX(-50%);border:3px solid transparent;border-bottom-color:currentColor}`;
   document.head.appendChild(style);
 }
 
@@ -101,21 +118,40 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
 
   const side = SUBMENU_SIDE[(options?.position ?? "top-left").split("-")[0]!] ?? "down";
 
-  // Flyouts live in <body> (not in `el`), so we track them here for close/cleanup.
+  // Flyouts (at every nesting depth) live in <body>, not in `el`, so we track them all here
+  // for hierarchical open/close and for teardown.
   const menus: HTMLElement[] = [];
-  const closeSubmenus = (): void => { for (const m of menus) m.classList.remove("open"); };
   const setActive = (btn: HTMLButtonElement): void => {
     el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
   };
+  // Open `node` (and its ancestors) while collapsing every *other* branch — so a cascade
+  // shows exactly one path. Ancestors are placed first (a nested flyout anchors to its
+  // trigger, which lives inside the parent flyout, so the parent must be positioned already).
+  const openOnly = (node: SubmenuNode): void => {
+    const chain: SubmenuNode[] = [];
+    for (let n: SubmenuNode | undefined = node; n; n = n.parent) chain.unshift(n); // root → leaf
+    const keep = new Set(chain.map((n) => n.menu));
+    for (const m of menus) if (!keep.has(m)) m.classList.remove("open");
+    for (const n of chain) {
+      if (!n.menu.isConnected && typeof document !== "undefined") document.body.appendChild(n.menu);
+      n.menu.classList.add("open");
+    }
+    for (const n of chain) n.place();
+  };
+  const ctx: MenuCtx = {
+    registerMenu: (m) => menus.push(m),
+    closeAll: () => { for (const m of menus) m.classList.remove("open"); },
+    openOnly,
+    setActive,
+    ...(refocus ? { refocus } : {}),
+  };
 
   for (const item of shown) {
     if (item.children?.length) {
-      const { trigger, menu } = buildSubmenu(item, side, closeSubmenus, setActive, refocus);
-      el.appendChild(trigger);
-      menus.push(menu);
+      el.appendChild(buildSubmenu(item, side, ctx).trigger);
     } else {
-      el.appendChild(buildButton(item, el, setActive, closeSubmenus, refocus));
+      el.appendChild(buildButton(item, el, setActive, ctx.closeAll, refocus));
     }
   }
 
@@ -131,7 +167,7 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
       }
       const t = e.target;
       if (t instanceof Node && (el.contains(t) || menus.some((m) => m.contains(t)))) return;
-      closeSubmenus();
+      ctx.closeAll();
     };
     document.addEventListener("pointerdown", onDocDown, true);
   }
@@ -160,31 +196,59 @@ function buildButton(
   return button;
 }
 
+/** A node in the submenu cascade: its trigger button, its flyout, and its tree links. */
+interface SubmenuNode {
+  trigger: HTMLButtonElement;
+  menu: HTMLElement;
+  parent?: SubmenuNode | undefined;
+  children: SubmenuNode[];
+  closeTimer?: ReturnType<typeof setTimeout> | undefined;
+  /** (Re)position the flyout next to its trigger. */
+  place(): void;
+}
+
+/** Shared services a submenu needs from the toolbar that owns it. */
+interface MenuCtx {
+  /** Track a flyout for outside-close + teardown. */
+  registerMenu(menu: HTMLElement): void;
+  /** Collapse the whole cascade (every depth). */
+  closeAll(): void;
+  /** Open this branch, collapsing the others. */
+  openOnly(node: SubmenuNode): void;
+  /** Highlight a bar button as the active tool. */
+  setActive(btn: HTMLButtonElement): void;
+  refocus?: () => void;
+}
+
 /**
- * A submenu: a trigger button (a plain bar button) + a flyout of child buttons. The
- * flyout is appended to `<body>` and `position:fixed`, JS-placed next to the trigger via
- * `getBoundingClientRect` — so it's never clipped (Leaflet's `overflow:hidden`) and is
- * correctly anchored even when the bar is transformed (centred positions). Opens on
- * **hover** (desktop) and **click** (touch). Two modes:
+ * Build a submenu (recursively). A submenu is a trigger button + a flyout of child buttons;
+ * a child that itself has `children` becomes a **nested submenu** whose flyout opens on the
+ * *flipped* axis ({@link ALTERNATE}), so menus zig-zag — `bar (h) → v → h → …` to any depth.
  *
- * - **click** (default): the parent is a fixed category opener with **no action of its
- *   own** unless you give it `onClick`; only the children act.
- * - **toggle** (`toggle: true`, a split button): the parent shows the **selected** child's
- *   icon (first child initially) and becomes the active tool; picking a child runs it and
- *   makes the parent adopt it; clicking the (open) parent re-runs the selected child.
+ * Each flyout is appended to `<body>` and `position:fixed`, JS-placed next to its trigger via
+ * `getBoundingClientRect` — never clipped (Leaflet's `overflow:hidden`) and correctly anchored
+ * even when the bar is transformed (centred positions). Opens on **hover** (desktop) and
+ * **click** (touch). Two modes (apply at each level independently):
  *
- * Returns the `trigger` (goes in the bar) and the `menu` (tracked by the caller).
+ * - **click** (default): the parent is a fixed category opener with **no action of its own**
+ *   unless you give it `onClick`; only its leaves act.
+ * - **toggle** (`toggle: true`, a split button): the parent shows the **selected** child's icon
+ *   (first child initially) and becomes the active tool; picking a child runs it and makes the
+ *   parent adopt it; clicking the (open) parent re-runs the selected child.
+ *
+ * `parent`/`top` thread the cascade together (`top` is the bar trigger to highlight as active).
+ * Returns this node; the caller puts `node.trigger` in the bar (or in the parent's flyout).
  */
 function buildSubmenu(
   item: ToolbarItem,
-  side: string,
-  closeSubmenus: () => void,
-  setActive: (btn: HTMLButtonElement) => void,
-  refocus?: () => void,
-): { trigger: HTMLButtonElement; menu: HTMLElement } {
+  side: Side,
+  ctx: MenuCtx,
+  parent?: SubmenuNode,
+  top?: HTMLButtonElement,
+): SubmenuNode {
   const isToggle = item.toggle === true;
-  const children = item.children ?? [];
-  const sideways = side === "left" || side === "right"; // vertical toolbar ⇒ row flyout
+  const items = item.children ?? [];
+  const sideways = side === "left" || side === "right"; // opening sideways ⇒ row flyout
 
   const trigger = createButton(item);
   trigger.classList.add("dap-submenu-trigger");
@@ -192,40 +256,10 @@ function buildSubmenu(
 
   const menu = document.createElement("div");
   menu.className = `dap-submenu dap-submenu-${side}`;
-  // The flyout follows the bar's orientation: a horizontal bar (top/bottom) opens a
-  // vertical column; a vertical bar (left/right) opens a horizontal row.
+  // A flyout opening up/down is a vertical column; one opening left/right is a horizontal row.
   menu.style.flexDirection = sideways ? "row" : "column";
+  ctx.registerMenu(menu);
 
-  // Toggle mode: the trigger mirrors the currently-selected child (first one initially).
-  let selected: ToolbarItem | undefined = children[0];
-  const reflect = (): void => {
-    if (!isToggle || !selected) return;
-    trigger.innerHTML = selected.svg ?? FALLBACK_ICON;
-    trigger.title = selected.title;
-    trigger.dataset["tool"] = selected.id;
-  };
-  reflect();
-
-  for (const child of children) {
-    const cb = createButton(child);
-    if (!child.disabled) {
-      cb.addEventListener("click", (e) => {
-        e.preventDefault();
-        child.onClick?.(e);
-        if (isToggle) { selected = child; reflect(); setActive(trigger); } // parent adopts the pick
-        closeSubmenus(); // pick one ⇒ collapse
-        refocus?.();
-      });
-    }
-    child.onRender?.(cb);
-    menu.appendChild(cb);
-  }
-
-  // Place the fixed flyout next to the **trigger button** with a uniform gap (viewport
-  // coords). Anchoring to the trigger (not the bar) keeps the gap tight whatever padding
-  // the engine's control box adds; for `up`/`left` we offset by the flyout's measured
-  // size so all four sides get the same gap. (Reads offsetW/H ⇒ the menu is `display:flex`
-  // by the time this runs.)
   const place = (): void => {
     if (typeof window === "undefined") return;
     const t = trigger.getBoundingClientRect();
@@ -239,33 +273,67 @@ function buildSubmenu(
     else if (side === "left") { s.left = `${t.left - gap - mw}px`; s.top = `${t.top}px`; }
     else { s.left = `${t.left}px`; s.top = `${t.bottom + gap}px`; } // "down"
   };
-  const open = (): void => {
-    closeSubmenus();
-    if (!menu.isConnected && typeof document !== "undefined") document.body.appendChild(menu);
-    menu.classList.add("open");
-    place();
-  };
 
-  // Hover with a small close delay so moving across the gap into the flyout doesn't close
-  // it (the flyout's own mouseenter cancels the pending close).
-  let closeTimer: ReturnType<typeof setTimeout> | undefined;
-  const cancelClose = (): void => { if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; } };
-  const scheduleClose = (): void => { cancelClose(); closeTimer = setTimeout(() => menu.classList.remove("open"), 150); };
-  trigger.addEventListener("mouseenter", () => { cancelClose(); open(); });
+  const node: SubmenuNode = { trigger, menu, parent, children: [], place };
+  const barBtn = top ?? trigger; // the bar trigger that wears the "active" highlight
+
+  // Toggle mode: the trigger mirrors the currently-selected child (first one initially).
+  let selected: ToolbarItem | undefined = items[0];
+  const reflect = (): void => {
+    if (!isToggle || !selected) return;
+    trigger.innerHTML = selected.svg ?? FALLBACK_ICON;
+    trigger.title = selected.title;
+    trigger.dataset["tool"] = selected.id;
+  };
+  reflect();
+
+  for (const child of items) {
+    if (child.children?.length) {
+      // A nested submenu: its flyout opens on the flipped axis. The chevron on the trigger
+      // hints at that direction.
+      const childSide = ALTERNATE[side];
+      const sub = buildSubmenu(child, childSide, ctx, node, barBtn);
+      sub.trigger.classList.add(`dap-sub-${childSide}`);
+      node.children.push(sub);
+      menu.appendChild(sub.trigger);
+    } else {
+      const cb = createButton(child);
+      if (!child.disabled) {
+        cb.addEventListener("click", (e) => {
+          e.preventDefault();
+          child.onClick?.(e);
+          if (isToggle) { selected = child; reflect(); ctx.setActive(barBtn); } // parent adopts the pick
+          ctx.closeAll(); // pick a leaf ⇒ collapse the whole cascade
+          ctx.refocus?.();
+        });
+      }
+      child.onRender?.(cb);
+      menu.appendChild(cb);
+    }
+  }
+
+  // Hover with a small close delay so crossing the gap into the (or a nested) flyout doesn't
+  // close it. Entering a flyout cancels the pending close of itself AND its ancestors, so a
+  // deep cascade survives the gaps between levels.
+  const cancelClose = (): void => { if (node.closeTimer) { clearTimeout(node.closeTimer); node.closeTimer = undefined; } };
+  const cancelChainClose = (): void => { for (let n: SubmenuNode | undefined = node; n; n = n.parent) { if (n.closeTimer) { clearTimeout(n.closeTimer); n.closeTimer = undefined; } } };
+  const closeSelfAndChildren = (n: SubmenuNode): void => { n.menu.classList.remove("open"); for (const c of n.children) closeSelfAndChildren(c); };
+  const scheduleClose = (): void => { cancelClose(); node.closeTimer = setTimeout(() => closeSelfAndChildren(node), 150); };
+  trigger.addEventListener("mouseenter", () => { cancelChainClose(); ctx.openOnly(node); });
   trigger.addEventListener("mouseleave", scheduleClose);
-  menu.addEventListener("mouseenter", cancelClose);
+  menu.addEventListener("mouseenter", cancelChainClose);
   menu.addEventListener("mouseleave", scheduleClose);
 
   trigger.addEventListener("click", (e) => {
     e.preventDefault();
-    cancelClose();
-    if (!menu.classList.contains("open")) { open(); return; } // closed (touch) ⇒ just open
+    cancelChainClose();
+    if (!menu.classList.contains("open")) { ctx.openOnly(node); return; } // closed (touch) ⇒ just open
     // Already open (hovered): a click runs the parent action.
-    if (isToggle) { selected?.onClick?.(e); setActive(trigger); }
+    if (isToggle) { selected?.onClick?.(e); ctx.setActive(barBtn); }
     else item.onClick?.(e); // click-mode parent: only acts if given an onClick
-    refocus?.();
+    ctx.refocus?.();
   });
 
   item.onRender?.(trigger);
-  return { trigger, menu };
+  return node;
 }

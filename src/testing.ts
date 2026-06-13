@@ -93,7 +93,7 @@ export class FakeAdapter implements MapAdapter {
     this.blurCb?.();
   }
   /** Simulate a change in an editable widget control ⇒ fires `onWidgetEdit({ id, name?, value })`
-   *  (a keystroke in an input, or a carousel cycle when `name` is given). */
+   *  (a keystroke in an input, or a picker choice when `name` is given). */
   editWidget(id: string, value: string, name?: string): void {
     this.widgetEditCb?.({ id, value, ...(name != null ? { name } : {}) });
   }
