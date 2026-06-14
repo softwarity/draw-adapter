@@ -54,7 +54,8 @@ import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { boxPadding, textBoxBorderWidth } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
-import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
+import { colorizeSprite, svgToDataUrl } from "./symbols.js";
+import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
@@ -99,7 +100,7 @@ export class OpenLayersAdapter implements MapAdapter {
   /** OpenLayers composites onto `<canvas>` layers → snapshot is supported. */
   protected readonly snapshotSupported = true;
   private readonly map: OlMap;
-  private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
+  private readonly opts: ResolvedAdapterOptions;
   private readonly kindOf: Map<string, LayerKind>;
   /** overlay id → manifest z-index (higher = drawn on top), for hit priority. */
   private readonly zOf: Map<string, number>;
@@ -114,6 +115,7 @@ export class OpenLayersAdapter implements MapAdapter {
   private readyPromise: Promise<void> | undefined;
   private tooltipStyle: TooltipStyle | undefined;
   private olKeys: EventsKey[] = [];
+  private viewKey: EventsKey | undefined;
   private domPointerUp: ((e: globalThis.PointerEvent) => void) | undefined;
   private windowBlur: (() => void) | undefined;
   private blurListener: (() => void) | undefined;
@@ -140,12 +142,7 @@ export class OpenLayersAdapter implements MapAdapter {
 
   constructor(opts: { map: OlMap } & AdapterOptions) {
     this.map = opts.map;
-    this.opts = {
-      layers: opts.layers,
-      spritePx: opts.spritePx ?? SPRITE_PX,
-      defaultSymbolColor: opts.defaultSymbolColor ?? "#000000",
-      ...(opts.hitOverlays ? { hitOverlays: opts.hitOverlays } : {}),
-    };
+    this.opts = resolveAdapterOptions(opts);
     this.kindOf = new Map(opts.layers.map((l) => [l.id, l.kind]));
     this.zOf = new Map(opts.layers.map((l, i) => [l.id, i]));
   }
@@ -331,7 +328,8 @@ export class OpenLayersAdapter implements MapAdapter {
   }
 
   onViewChange(cb: () => void): void {
-    this.olKeys.push(this.map.on("moveend", cb));
+    if (this.viewKey) unByKey(this.viewKey); // single slot — drop the previous so a re-call never leaks
+    this.viewKey = this.map.on("moveend", cb);
   }
 
   setPanEnabled(enabled: boolean): void {
@@ -363,9 +361,9 @@ export class OpenLayersAdapter implements MapAdapter {
     if (el) el.style.cursor = cursor;
   }
 
-  setTooltip(t: string | null, at: LatLng, style?: TooltipStyle): void {
+  setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void {
     if (style) this.tooltipStyle = style;
-    if (t == null) {
+    if (text == null) {
       if (this.tooltipEl) this.tooltipEl.style.display = "none";
       return;
     }
@@ -379,7 +377,7 @@ export class OpenLayersAdapter implements MapAdapter {
     }
     const px = this.map.getPixelFromCoordinate(fromLonLat([at.lon, at.lat]));
     if (!px) return;
-    this.tooltipEl.textContent = t;
+    this.tooltipEl.textContent = text;
     this.tooltipEl.style.display = "block";
     this.tooltipEl.style.left = `${px[0]}px`;
     this.tooltipEl.style.top = `${px[1]}px`;
@@ -542,6 +540,7 @@ export class OpenLayersAdapter implements MapAdapter {
     this.iconCache.clear();
     unByKey(this.olKeys);
     this.olKeys = [];
+    if (this.viewKey) { unByKey(this.viewKey); this.viewKey = undefined; }
     if (this.viewportPointerDown) {
       this.map.getViewport().removeEventListener("pointerdown", this.viewportPointerDown, true);
       this.viewportPointerDown = undefined;

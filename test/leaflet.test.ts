@@ -310,6 +310,18 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  it("onViewChange is single-slot — re-calling drops the previous handler (no leak)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const cb1 = vi.fn(), cb2 = vi.fn();
+    a.onViewChange(cb1);
+    a.onViewChange(cb2); // must `off` cb1 before registering cb2
+    map.fire("moveend");
+    expect(cb1).not.toHaveBeenCalled(); // the old handler was removed
+    expect(cb2).toHaveBeenCalledOnce();
+    a.destroy();
+  });
+
   it("forwards the live modifier state on the pointer event (read off originalEvent), default false", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();

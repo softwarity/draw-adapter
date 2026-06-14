@@ -62,7 +62,9 @@ describe("populateToolbar", () => {
     populateToolbar(el, items);
     const btns = el.querySelectorAll("button");
     expect(btns).toHaveLength(3);
-    expect(btns[0]!.innerHTML).toBe("<svg></svg>");
+    const svg = btns[0]!.querySelector("svg")!;
+    expect(svg).not.toBeNull();
+    expect(svg.getAttribute("aria-hidden")).toBe("true"); // glyph decorative; the button carries the name
     expect(btns[0]!.dataset["tool"]).toBe("circle");
     expect(btns[0]!.getAttribute("aria-label")).toBe("Circle");
   });
@@ -97,6 +99,15 @@ describe("populateToolbar", () => {
 
 describe("populateToolbar — submenus (flyout)", () => {
   afterEach(() => { document.body.innerHTML = ""; });
+
+  it("the submenu chrome CSS interpolates the shared tokens to their original values (no drift)", () => {
+    populateToolbar(document.createElement("div"), [{ id: "a", title: "A", children: [{ id: "b", title: "B", onClick() {} }] }]);
+    const css = document.getElementById("draw-adapter-toolbar-style")!.textContent!;
+    expect(css).toContain(".dap-submenu{position:fixed;display:none;flex-direction:column;background:#fff;");
+    expect(css).toContain("border:1px solid rgba(0,0,0,.15);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.3)");
+    expect(css).toContain("width:30px;height:30px");
+    expect(css).toContain(".dap-submenu button:hover{background:#f4f4f4}");
+  });
 
   const withChildren = (): ToolbarItem => ({
     id: "text",

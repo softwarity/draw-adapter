@@ -13,6 +13,9 @@ export type { SymbolSprites };
 /** Sprite pixel size the adapters rasterize/draw at (icon-size 1 ⇒ this many px). */
 export const SPRITE_PX = 32;
 
+/** Default ink for a sprite when the feature sets no `symbolColor` (shared by all adapters). */
+export const DEFAULT_SYMBOL_COLOR = "#000000";
+
 /** Bake a concrete colour into a sprite (replaces the `currentColor` token). */
 export function colorizeSprite(svg: string, color: string): string {
   return svg.split("currentColor").join(color);

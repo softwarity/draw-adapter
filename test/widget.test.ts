@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 
-import { WidgetLayer, boxShapeLayout, resolveBoxShape } from "../src/widget.js";
+import { WidgetLayer, boxShapeLayout, inlineStatic, resolveBoxShape, snapshotWithWidgets } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
 import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit } from "../src/index.js";
 
@@ -206,6 +206,39 @@ describe("WidgetLayer — diff by id (in place)", () => {
     expect(cardEl(host).querySelector("input")).not.toBeNull();
     layer.setWidgets([make(false)]);
     expect(cardEl(host).querySelector("input")).toBeNull();
+  });
+});
+
+describe("snapshot compositing (DOM pipeline)", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  it("inlineStatic swaps an editable input for a static span carrying its value (labels kept)", () => {
+    const src = document.createElement("div");
+    const input = document.createElement("input"); input.value = "ETNA";
+    const label = document.createElement("span"); label.textContent = "FL120";
+    src.append(input, label);
+    document.body.appendChild(src);
+    const clone = src.cloneNode(true) as HTMLElement;
+    inlineStatic(src, clone);
+    expect(clone.querySelector("input")).toBeNull(); // input → static span
+    expect(clone.textContent).toContain("ETNA");     // value preserved
+    expect(clone.textContent).toContain("FL120");    // sibling label untouched
+  });
+
+  it("snapshotWithWidgets returns the base blob unchanged when there are no cards", async () => {
+    const base = new Blob(["base"], { type: "image/png" });
+    const mapCanvas = { toBlob: (cb: (b: Blob) => void) => cb(base) } as unknown as HTMLCanvasElement;
+    expect(await snapshotWithWidgets(mapCanvas, [], () => null, 1)).toBe(base);
+  });
+
+  it("snapshotWithWidgets degrades to the card-less base blob when compositing can't run (safe by design)", async () => {
+    const base = new Blob(["base"], { type: "image/png" });
+    const mapCanvas = { width: 10, height: 10, toBlob: (cb: (b: Blob) => void) => cb(base) } as unknown as HTMLCanvasElement;
+    const card = document.createElement("div");
+    document.body.appendChild(card);
+    // jsdom's composite <canvas> has no 2D context ⇒ the pipeline returns the base blob, never throws.
+    const out = await snapshotWithWidgets(mapCanvas, [{ root: card, anchor: { lon: 0, lat: 0 } }], () => [5, 5], 1);
+    expect(out).toBe(base);
   });
 });
 
@@ -772,6 +805,50 @@ describe("WidgetLayer — picker flower / grid modes", () => {
     expect(cel(host).title).toBe(""); // plain options ⇒ no tooltip
   });
 
+  it("auto-mode thresholds: 5 ⇒ carousel · 6 ⇒ flower · 10 ⇒ flower · 11 ⇒ grid", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const openKind = (n: number): string => {
+      layer.setWidgets([picker(n)]);
+      tap(cel(host));
+      const k = flower() ? "flower" : grid() ? "grid" : "carousel";
+      document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); // close before the next
+      return k;
+    };
+    expect(openKind(5)).toBe("carousel"); // ≤ LINEAR_MAX ⇒ cycles in place, no popup
+    expect(openKind(6)).toBe("flower");
+    expect(openKind(10)).toBe("flower"); // = FLOWER_MAX
+    expect(openKind(11)).toBe("grid");   // > FLOWER_MAX
+  });
+
+  it("places the flower on the trigger's centre and the grid just below it", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const rect = { left: 100, top: 50, right: 120, bottom: 70, width: 20, height: 20, x: 100, y: 50, toJSON() {} };
+    layer.setWidgets([picker(7)]);
+    let t = cel(host);
+    Object.defineProperty(t, "getBoundingClientRect", { configurable: true, value: () => rect });
+    tap(t); // flower ⇒ centred on the trigger centre (110, 60)
+    expect(flower()!.style.left).toBe("110px");
+    expect(flower()!.style.top).toBe("60px");
+    document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    layer.setWidgets([picker(12)]);
+    t = cel(host);
+    Object.defineProperty(t, "getBoundingClientRect", { configurable: true, value: () => rect });
+    tap(t); // grid ⇒ just below the trigger (left, bottom + 4)
+    expect(grid()!.style.left).toBe("100px");
+    expect(grid()!.style.top).toBe("74px");
+  });
+
+  it("a11y: a flower-mode trigger has aria-haspopup=menu and ArrowDown opens it from the keyboard", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([picker(7)]); // ≥6 ⇒ flower
+    const t = cel(host);
+    expect(t.getAttribute("aria-haspopup")).toBe("menu");
+    t.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(flower()).not.toBeNull(); // opened from the keyboard
+  });
+
   it("dragging the card FROM an open picker trigger closes the popup as the drag starts", () => {
     const host = new FakeHost();
     const layer = new WidgetLayer(host);
@@ -820,6 +897,30 @@ describe("WidgetLayer — picker is bold (interactive affordance)", () => {
     new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
       child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", color: "#e8731a", options: ["ISOL", "OCNL"] }] } }]);
     expect(trig(host).style.color).toBe("rgb(232, 115, 26)");
+  });
+
+  it("a11y: the trigger is a keyboard-operable button (role/tabindex/aria); Enter cycles in carousel mode", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", options: ["ISOL", "OCNL", "FRQ"] }] } }]);
+    const t = trig(host);
+    expect(t.getAttribute("role")).toBe("button");
+    expect(t.tabIndex).toBe(0);
+    expect(t.getAttribute("aria-haspopup")).toBe("false"); // ≤5 ⇒ carousel, not a popup
+    expect(t.getAttribute("aria-label")).toBe("sym: ISOL");
+    t.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(edits).toEqual([{ id: "p1", name: "sym", value: "OCNL" }]); // cycled via keyboard
+  });
+
+  it("a11y: a glyph option's title feeds the aria-label", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "CI",
+        options: [{ value: "CI", svg: "<svg/>", title: "Cirrus" }] }] } }]);
+    expect(trig(host).getAttribute("aria-label")).toBe("sym: Cirrus");
   });
 
   it("a static text item is NOT bold", () => {
@@ -996,6 +1097,25 @@ describe("WidgetLayer — gauge control", () => {
     knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     expect(host.emits).toHaveLength(0);
   });
+
+  it("a11y: a knob is a slider (role + aria-value*) and arrow keys step the value", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "g", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 100, step: 10, length: 100, cursors: [{ name: "lo", value: 50, label: "L" }] }] } }]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    expect(knob.getAttribute("role")).toBe("slider");
+    expect(knob.tabIndex).toBe(0);
+    expect(knob.getAttribute("aria-valuemin")).toBe("0");
+    expect(knob.getAttribute("aria-valuemax")).toBe("100");
+    expect(knob.getAttribute("aria-valuenow")).toBe("50");
+    expect(knob.getAttribute("aria-label")).toBe("L");
+    knob.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(edits.at(-1)).toEqual({ id: "g", name: "lo", value: "60" }); // +step, emitted
+    expect(knob.getAttribute("aria-valuenow")).toBe("60");
+  });
 });
 
 describe("WidgetLayer — dial control", () => {
@@ -1016,6 +1136,24 @@ describe("WidgetLayer — dial control", () => {
     const knob = cardEl(host).querySelector(".draw-adapter-widget-dial .draw-adapter-widget-knob") as Element;
     knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
     expect(host.emits).toHaveLength(0);
+  });
+
+  it("a11y: the knob is a slider (role + aria-value*) and arrow keys step the value", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([{ id: "d", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "dial", name: "spd", min: 0, max: 100, value: 50, step: 5 }] } }]);
+    const knob = cardEl(host).querySelector("circle.draw-adapter-widget-knob") as Element;
+    expect(knob.getAttribute("role")).toBe("slider");
+    expect(knob.getAttribute("tabindex")).toBe("0");
+    expect(knob.getAttribute("aria-valuemin")).toBe("0");
+    expect(knob.getAttribute("aria-valuemax")).toBe("100");
+    expect(knob.getAttribute("aria-valuenow")).toBe("50");
+    knob.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(edits.at(-1)).toEqual({ id: "d", name: "spd", value: "55" }); // +step, emitted
+    expect(knob.getAttribute("aria-valuenow")).toBe("55");
   });
 });
 

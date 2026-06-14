@@ -26,6 +26,8 @@ import type {
   WidgetPickerOption,
 } from "./index.js";
 import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
+import { defaultCoordFormat } from "./coerce.js";
+import { CHROME_SURFACE, CHROME_BORDER, CHROME_SHADOW, CHROME_HOVER, CHROME_INK, CHROME_BTN_PX, CHROME_GLYPH_PX } from "./chrome.js";
 import { modifiers } from "./modifiers.js";
 
 /** A handle to one engine-anchored card mount. The card DOM lives inside `el`. */
@@ -49,14 +51,6 @@ export interface WidgetHost {
   /** Return keyboard focus to the map (its key-listening element) after a card button took it —
    *  so `onKey`/Escape keeps working. No-op while an editable field is focused. */
   focus(): void;
-}
-
-/** Default `coord` formatter — a compact decimal lat/long. Consumers override via
- *  {@link MapAdapter.setCoordFormat} (e.g. sigwx supplies its own `formatLatLng`). */
-export function defaultCoordFormat(ll: LatLng): string {
-  const lat = `${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? "N" : "S"}`;
-  const lon = `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? "E" : "W"}`;
-  return `${lat} ${lon}`;
 }
 
 /** `origin` → the [x, y] fraction (0..1) of the card that pins to the anchor. */
@@ -300,6 +294,10 @@ function animateCarousel(el: HTMLElement, dir: number): void {
 function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined, size: number | undefined): void {
   const opt = options.find((o) => optValue(o) === value) ?? options[0];
   el.title = opt ? optTitle(opt) : ""; // the trigger's tooltip follows the current value
+  // a11y: announce the control + its current value, and whether it opens a menu (flower/grid).
+  el.setAttribute("aria-haspopup", pickerLayout(mode, options.length) === "carousel" ? "false" : "menu");
+  const cur = opt ? (optTitle(opt) || optLabel(opt)) : "";
+  el.setAttribute("aria-label", name ? (cur ? `${name}: ${cur}` : name) : cur);
   // Size the trigger box. A GLYPH option needs a DEFINED px box — the inline svg is `width:100%`, so
   // without a box it falls back to its intrinsic size (e.g. 128px). A TEXT option uses `fontSize`.
   if (opt && typeof opt !== "string" && opt.svg) {
@@ -357,21 +355,21 @@ function ensurePickerStyle(): void {
     // carried on the popup container and inherited via `currentColor` (so glyphs tint too). The
     // container falls back to the neutral ink when no accent is set; the white pill/box keeps them
     // readable over the map.
-    `.dap-picker-flower{position:fixed;z-index:1000;width:0;height:0;pointer-events:none;color:#24292f}` +
-    `.dap-picker-petal{position:absolute;left:0;top:0;width:30px;height:30px;margin:-15px 0 0 -15px;` +
-    `display:flex;align-items:center;justify-content:center;background:#fff;color:inherit;font-weight:bold;` +
-    `border:1px solid rgba(0,0,0,.15);` +
-    `border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.3);cursor:pointer;padding:0;pointer-events:auto;` +
+    `.dap-picker-flower{position:fixed;z-index:1000;width:0;height:0;pointer-events:none;color:${CHROME_INK}}` +
+    `.dap-picker-petal{position:absolute;left:0;top:0;width:${CHROME_BTN_PX}px;height:${CHROME_BTN_PX}px;margin:${-CHROME_BTN_PX / 2}px 0 0 ${-CHROME_BTN_PX / 2}px;` +
+    `display:flex;align-items:center;justify-content:center;background:${CHROME_SURFACE};color:inherit;font-weight:bold;` +
+    `border:${CHROME_BORDER};` +
+    `border-radius:50%;box-shadow:${CHROME_SHADOW};cursor:pointer;padding:0;pointer-events:auto;` +
     `transition:transform 160ms cubic-bezier(.2,.8,.3,1.2),opacity 160ms ease}` +
-    `.dap-picker-petal svg{display:block;width:18px;height:18px}` +
-    `.dap-picker-petal:hover{background:#f4f4f4}` +
+    `.dap-picker-petal svg{display:block;width:${CHROME_GLYPH_PX}px;height:${CHROME_GLYPH_PX}px}` +
+    `.dap-picker-petal:hover{background:${CHROME_HOVER}}` +
     // The grid popover is a solid box (like a toolbar flyout), JS-placed next to the control.
-    `.dap-picker-grid{position:fixed;z-index:1000;display:grid;gap:2px;padding:4px;background:#fff;` +
-    `border:1px solid rgba(0,0,0,.15);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3);color:#24292f}` +
-    `.dap-picker-grid button{width:30px;height:30px;display:flex;align-items:center;justify-content:center;` +
-    `background:#fff;color:inherit;border:0;border-radius:4px;cursor:pointer;padding:0;font:inherit;font-weight:bold}` +
-    `.dap-picker-grid button svg{display:block;width:18px;height:18px}` +
-    `.dap-picker-grid button:hover{background:#f4f4f4}` +
+    `.dap-picker-grid{position:fixed;z-index:1000;display:grid;gap:2px;padding:4px;background:${CHROME_SURFACE};` +
+    `border:${CHROME_BORDER};border-radius:6px;box-shadow:${CHROME_SHADOW};color:${CHROME_INK}}` +
+    `.dap-picker-grid button{width:${CHROME_BTN_PX}px;height:${CHROME_BTN_PX}px;display:flex;align-items:center;justify-content:center;` +
+    `background:${CHROME_SURFACE};color:inherit;border:0;border-radius:4px;cursor:pointer;padding:0;font:inherit;font-weight:bold}` +
+    `.dap-picker-grid button svg{display:block;width:${CHROME_GLYPH_PX}px;height:${CHROME_GLYPH_PX}px}` +
+    `.dap-picker-grid button:hover{background:${CHROME_HOVER}}` +
     // Highlight markers — the current value and the keyboard-focused choice. Both the ring AND a light
     // background tint use the accent (`currentColor`): an accent ring over an accent-into-white fill
     // (neutral-grey background fallback where `color-mix` is unsupported). Focus = a thicker ring than
@@ -379,7 +377,7 @@ function ensurePickerStyle(): void {
     `.dap-picker-petal.dap-current,.dap-picker-grid button.dap-current{` +
     `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);outline:1px solid currentColor}` +
     `.dap-picker-petal.dap-focus{` +
-    `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);box-shadow:0 0 0 2px currentColor,0 2px 8px rgba(0,0,0,.3)}` +
+    `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);box-shadow:0 0 0 2px currentColor,${CHROME_SHADOW}}` +
     `.dap-picker-grid button.dap-focus{` +
     `background:rgba(0,0,0,.06);background:color-mix(in srgb,currentColor 16%,#fff);box-shadow:0 0 0 2px currentColor}`;
   document.head.appendChild(st);
@@ -726,6 +724,12 @@ function updateGauge(root: HTMLElement, g: WidgetGauge, card: Card): void {
     k.dot.style.background = g.knobFill ?? "currentColor";
     const gStroke = g.knobStroke ?? "white"; // default white border; pass "" for none
     k.dot.style.border = gStroke ? `1.5px solid ${gStroke}` : "none";
+    k.dot.setAttribute("aria-valuemin", String(g.min));
+    k.dot.setAttribute("aria-valuemax", String(g.max));
+    k.dot.setAttribute("aria-valuenow", String(st.live[i]!));
+    k.dot.setAttribute("aria-orientation", horizontal ? "horizontal" : "vertical");
+    const clabel = g.cursors[i]!.label || g.cursors[i]!.name;
+    if (clabel) k.dot.setAttribute("aria-label", clabel);
     if (st.dragging !== i) placeKnob(k, gaugeAlong(valueFraction(st.live[i]!, g.min, g.max), len, horizontal), horizontal);
   }
   placeGaugeGuide(st, len, horizontal);
@@ -743,6 +747,24 @@ function addKnob(root: HTMLElement, st: GaugeState, card: Card): void {
   st.knobs.push({ dot, label });
   root.append(dot, label);
   wireKnobDrag(root, dot, index, card);
+  // a11y: a focusable slider; arrows step the value by `step` (or 1% of the range), clamped like a drag.
+  dot.setAttribute("role", "slider");
+  dot.tabIndex = 0;
+  dot.addEventListener("keydown", (e) => {
+    const s = gaugeState.get(root); if (!s) return;
+    const dir = e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault(); e.stopPropagation();
+    const g = s.gauge, len = g.length ?? GAUGE_LEN, horizontal = g.orientation === "horizontal";
+    const step = g.step ?? (g.max - g.min) / 100;
+    const cur = s.live[index] ?? g.cursors[index]?.value ?? g.min;
+    const v = clampCursor(cur + dir * step, index, g);
+    s.live[index] = v;
+    placeKnob(s.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+    placeGaugeGuide(s, len, horizontal);
+    dot.setAttribute("aria-valuenow", String(v));
+    card.emitEdit(String(v), g.cursors[index]?.name);
+  });
 }
 
 function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: Card): void {
@@ -823,6 +845,27 @@ function createDial(card: Card): HTMLElement {
   dialState.set(root, { svg, hit, arcHalo, arc, knob, label, dial: { kind: "dial", name: "", min: 0, max: 1, value: 0 }, dragging: false, live: 0 });
   wireDialDrag(root, knob, card);
   wireDialDrag(root, hit, card); // a press anywhere on the ring band grabs the dial, just like the knob
+  // a11y: a focusable slider; arrows step the value by `step` (or 1% of the range), clamped to [min,max].
+  knob.setAttribute("role", "slider");
+  knob.setAttribute("tabindex", "0");
+  knob.addEventListener("keydown", (ev) => {
+    const e = ev as KeyboardEvent;
+    const st = dialState.get(root); if (!st) return;
+    const dir = e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault(); e.stopPropagation();
+    const d = st.dial, R = d.radius ?? DIAL_R, ar = R - KNOB / 2;
+    const step = d.step ?? (d.max - d.min) / 100;
+    const v = Math.max(d.min, Math.min(d.max, st.live + dir * step));
+    st.live = v;
+    const ang = dialAngle(v, d);
+    const [kx, ky] = polar(R, R, ar, ang);
+    knob.setAttribute("cx", String(kx)); knob.setAttribute("cy", String(ky));
+    st.arcHalo.setAttribute("d", dialArcPath(R, ar, DIAL_MIN_ANGLE, ang));
+    placeDialLabel(st, R, ang);
+    knob.setAttribute("aria-valuenow", String(v));
+    card.emitEdit(String(v), d.name);
+  });
   return root;
 }
 
@@ -830,6 +873,10 @@ function updateDial(root: HTMLElement, d: WidgetDial, _card: Card): void {
   const st = dialState.get(root)!;
   st.dial = d;
   if (d.color) root.style.color = d.color;
+  st.knob.setAttribute("aria-valuemin", String(d.min));
+  st.knob.setAttribute("aria-valuemax", String(d.max));
+  st.knob.setAttribute("aria-valuenow", String(st.dragging ? st.live : d.value));
+  if (d.name) st.knob.setAttribute("aria-label", d.name);
   const R = d.radius ?? DIAL_R;
   const ar = R - KNOB / 2; // arc radius leaves room for the knob
   const size = 2 * R;
@@ -1277,6 +1324,16 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     // width that would shift the value off the anchor. The accent colour (e.g. orange) is the
     // consumer's call — set per node via `color`, like the gauge/dial controls.
     s.fontWeight = "bold";
+    // a11y: a focusable button so it's keyboard-operable. Enter/Space/Down act (cycle or open the
+    // flower/grid); Up cycles back. When a popup is open, its own capture-phase nav handles the keys
+    // first (stopPropagation), so this never double-fires.
+    span.setAttribute("role", "button");
+    span.tabIndex = 0;
+    span.addEventListener("keydown", (e) => {
+      const k = e.key;
+      if (k === "Enter" || k === " " || k === "Spacebar" || k === "ArrowDown") { e.preventDefault(); e.stopPropagation(); tapPicker(span, card, false); }
+      else if (k === "ArrowUp") { e.preventDefault(); e.stopPropagation(); tapPicker(span, card, true); }
+    });
     // tap ⇒ act (cycle, or open the flower/grid); drag ⇒ move the whole card (it's a drag handle too).
     wirePicker(span, card);
     el = span;
@@ -1470,7 +1527,7 @@ function copyComputedStyle(src: HTMLElement, clone: HTMLElement): void {
 
 /** Inline computed styles across the clone, and swap each editable `<input>` for a static
  *  `<span>` carrying its current value (the "non-selected" look wanted in the export). */
-function inlineStatic(src: HTMLElement, clone: HTMLElement): void {
+export function inlineStatic(src: HTMLElement, clone: HTMLElement): void {
   copyComputedStyle(src, clone);
   const sk = src.children;
   const ck = clone.children;

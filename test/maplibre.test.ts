@@ -54,7 +54,7 @@ class FakeMlMap {
   addImage(id: string) { this.images.add(id); }
   removeImage(id: string) { this.images.delete(id); }
   on(ev: string, fn: (e: unknown) => void) { (this.handlers.get(ev) ?? this.handlers.set(ev, []).get(ev)!).push(fn); }
-  off() {}
+  off(ev?: string, fn?: (e: unknown) => void) { if (ev == null) return; const a = this.handlers.get(ev); if (a && fn) this.handlers.set(ev, a.filter((h) => h !== fn)); }
   once() {}
   emit(ev: string, payload: unknown) { for (const fn of this.handlers.get(ev) ?? []) fn(payload); }
   queryRenderedFeatures() { return this.queryResult; }
@@ -302,5 +302,18 @@ describe("MapLibreAdapter — touch click fallback + contextmenu (0.3.0)", () =>
     map.emit("contextmenu", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 }, preventDefault: () => { prevented = true; } });
     expect(prevented).toBe(true);
     expect(events.some((e) => e.type === "contextmenu")).toBe(true);
+  });
+});
+
+describe("MapLibreAdapter — onViewChange single-slot (no listener leak on re-call)", () => {
+  it("re-calling onViewChange drops the previous handler (only the latest fires)", () => {
+    const { map, adapter } = build();
+    const cb1 = vi.fn(), cb2 = vi.fn();
+    adapter.onViewChange(cb1);
+    adapter.onViewChange(cb2); // must `off` cb1 before registering cb2
+    map.emit("moveend", {});
+    expect(cb1).not.toHaveBeenCalled();
+    expect(cb2).toHaveBeenCalledOnce();
+    expect(map.handlers.get("moveend")).toHaveLength(1); // no leaked listener
   });
 });

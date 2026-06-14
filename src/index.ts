@@ -621,6 +621,6 @@ export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
 export { bindKeyListener } from "./keyboard.js";
 export { snapshotScale, downloadPng, copyPng, shutterFlash, SNAPSHOT_ICON_SVG, SNAPSHOT_CLIPBOARD_ICON } from "./snapshot.js";
 export { applyTooltipStyle } from "./tooltip.js";
-export { defaultCoordFormat } from "./widget.js";
+export { defaultCoordFormat } from "./coerce.js";
 export { rgba, deg2rad, num, str, bool, wrapLabel } from "./coerce.js";
 export type { TextBoxSize, TextBoxRadius } from "./textbox.js";

@@ -38,6 +38,7 @@ import { WidgetLayer } from "./widget.js";
 import { num, str, rgba } from "./coerce.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
+import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
 import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
@@ -99,7 +100,7 @@ export class LeafletAdapter implements MapAdapter {
   /** Leaflet has no single exportable canvas (tiles are <img>, overlays SVG/DOM). */
   protected readonly snapshotSupported = false;
   private readonly map: L.Map;
-  private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
+  private readonly opts: ResolvedAdapterOptions;
   private readonly kindOf: Map<string, LayerKind>;
   private readonly groups = new Map<string, L.GeoJSON>();
   private readonly paneNames: string[] = [];
@@ -129,12 +130,7 @@ export class LeafletAdapter implements MapAdapter {
 
   constructor(opts: { map: L.Map } & AdapterOptions) {
     this.map = opts.map;
-    this.opts = {
-      layers: opts.layers,
-      spritePx: opts.spritePx ?? 32,
-      defaultSymbolColor: opts.defaultSymbolColor ?? "#000000",
-      ...(opts.hitOverlays ? { hitOverlays: opts.hitOverlays } : {}),
-    };
+    this.opts = resolveAdapterOptions(opts);
     this.kindOf = new Map(opts.layers.map((l) => [l.id, l.kind]));
   }
 
@@ -281,6 +277,7 @@ export class LeafletAdapter implements MapAdapter {
   }
 
   onViewChange(cb: () => void): void {
+    if (this.viewHandler) this.map.off("moveend zoomend", this.viewHandler); // single slot — drop the previous so a re-call never leaks
     this.viewHandler = cb;
     this.map.on("moveend zoomend", cb);
   }

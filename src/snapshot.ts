@@ -202,20 +202,24 @@ export function snapshotToolbarItem(
 function bindIconPreview(btn: HTMLButtonElement, primary: SnapshotDelivery, secondary: SnapshotDelivery): void {
   if (typeof window === "undefined") return;
   let mod = false;
+  let ac: AbortController | undefined; // scopes the window listeners so they're removed in one call
   const paint = (m: boolean): void => { btn.innerHTML = DELIVERY_ICON[m ? secondary : primary]; };
+  const stop = (): void => {
+    ac?.abort(); ac = undefined; // drops both window listeners
+    if (mod) { mod = false; paint(false); }
+  };
   const onKey = (e: KeyboardEvent): void => {
+    if (!btn.isConnected) { stop(); return; } // button removed while hovered (no mouseleave) ⇒ self-clean
     const m = e.ctrlKey || e.metaKey;
     if (m !== mod) { mod = m; paint(m); }
   };
   btn.addEventListener("mouseenter", (e) => {
+    ac?.abort();
+    ac = new AbortController();
     mod = e.ctrlKey || e.metaKey;
     paint(mod);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKey);
+    window.addEventListener("keydown", onKey, { signal: ac.signal });
+    window.addEventListener("keyup", onKey, { signal: ac.signal });
   });
-  btn.addEventListener("mouseleave", () => {
-    window.removeEventListener("keydown", onKey);
-    window.removeEventListener("keyup", onKey);
-    if (mod) { mod = false; paint(false); }
-  });
+  btn.addEventListener("mouseleave", stop);
 }

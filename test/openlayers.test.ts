@@ -38,7 +38,8 @@ class FakeOlMap {
   removeOverlay(o: Overlay) { this.overlays = this.overlays.filter((x) => x !== o); o.getElement()?.remove(); }
   on(ev: string, fn: (e: unknown) => unknown) {
     (this.handlers.get(ev) ?? this.handlers.set(ev, []).get(ev)!).push(fn);
-    return { ev };
+    // Return a key the real `unByKey` can resolve: it calls `key.target.removeEventListener(key.type, key.listener)`.
+    return { type: ev, listener: fn, target: { removeEventListener: (t: string, l: unknown) => { const a = this.handlers.get(t); if (a) this.handlers.set(t, a.filter((h) => h !== l)); } } };
   }
   emit(ev: string, payload: unknown) { for (const fn of this.handlers.get(ev) ?? []) fn(payload); }
   getView() { return { getCenter: () => [0, 0], calculateExtent: () => [0, 0, 1, 1], getZoom: () => 6, fit: () => {} }; }
@@ -341,5 +342,18 @@ describe("OpenLayersAdapter — camera + overlay + contextmenu (0.3.0)", () => {
     map.viewportListeners.find((l) => l.ev === "contextmenu")!.fn({ preventDefault: () => { prevented = true; } });
     expect(prevented).toBe(true);
     expect(events.some((e) => e.type === "contextmenu" && e.hit?.overlay === "area")).toBe(true);
+  });
+});
+
+describe("OpenLayersAdapter — onViewChange single-slot (no listener leak on re-call)", () => {
+  it("re-calling onViewChange drops the previous handler (only the latest fires)", () => {
+    const { map, adapter } = build();
+    const cb1 = vi.fn(), cb2 = vi.fn();
+    adapter.onViewChange(cb1);
+    adapter.onViewChange(cb2); // must unByKey cb1's key before registering cb2
+    map.emit("moveend", {});
+    expect(cb1).not.toHaveBeenCalled();
+    expect(cb2).toHaveBeenCalledOnce();
+    expect(map.handlers.get("moveend")).toHaveLength(1); // no leaked listener
   });
 });

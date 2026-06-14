@@ -7,6 +7,7 @@
  * of the child buttons, positioned *into the map* based on the toolbar edge.
  */
 import type { ToolbarItem, ToolbarOptions } from "./index.js";
+import { CHROME_SURFACE, CHROME_BORDER, CHROME_SHADOW, CHROME_HOVER, CHROME_INK, CHROME_BTN_PX } from "./chrome.js";
 
 const STYLE_ID = "draw-adapter-toolbar-style";
 const TOOLBAR_CLASS = "draw-adapter-toolbar";
@@ -40,18 +41,18 @@ function ensureToolbarStyle(): void {
   style.id = STYLE_ID;
   style.textContent =
     `.${TOOLBAR_CLASS} button svg{display:block;margin:auto}` +
-    `.${TOOLBAR_CLASS} button{color:#24292f}` +
+    `.${TOOLBAR_CLASS} button{color:${CHROME_INK}}` +
     `.${TOOLBAR_CLASS} button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}` +
     // Submenu: the trigger is a plain bar button (no wrapper → native first/last-child
     // styling intact). The flyout is appended to <body> and `position:fixed`, JS-placed
     // next to the trigger via getBoundingClientRect — so it's never clipped (Leaflet's
     // `overflow:hidden`) nor mis-anchored by a transformed toolbar (centred positions).
-    `.dap-submenu{position:fixed;display:none;flex-direction:column;background:#fff;` +
-    `border:1px solid rgba(0,0,0,.15);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.3);overflow:hidden;z-index:1000}` +
+    `.dap-submenu{position:fixed;display:none;flex-direction:column;background:${CHROME_SURFACE};` +
+    `border:${CHROME_BORDER};border-radius:4px;box-shadow:${CHROME_SHADOW};overflow:hidden;z-index:1000}` +
     `.dap-submenu.open{display:flex}` +
-    `.dap-submenu button{position:relative;color:#24292f;background:#fff;border:0;width:30px;height:30px;cursor:pointer;padding:0}` +
+    `.dap-submenu button{position:relative;color:${CHROME_INK};background:${CHROME_SURFACE};border:0;width:${CHROME_BTN_PX}px;height:${CHROME_BTN_PX}px;cursor:pointer;padding:0}` +
     `.dap-submenu button svg{display:block;margin:auto}` +
-    `.dap-submenu button:hover{background:#f4f4f4}` +
+    `.dap-submenu button:hover{background:${CHROME_HOVER}}` +
     `.dap-submenu button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}` +
     // A nested-submenu trigger (a submenu sitting *inside* a flyout) shows a little chevron
     // pointing the way its own flyout opens — set per-trigger via a `dap-sub-<side>` class.
@@ -102,6 +103,7 @@ function createButton(item: ToolbarItem): HTMLButtonElement {
   button.title = item.title;
   button.setAttribute("aria-label", item.title);
   button.innerHTML = item.svg ?? FALLBACK_ICON;
+  button.firstElementChild?.setAttribute("aria-hidden", "true"); // the button carries the accessible name; the glyph is decorative
   if (item.disabled) button.disabled = true;
   return button;
 }

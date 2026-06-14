@@ -5,7 +5,7 @@
  */
 import type { FeatureCollection, Feature } from "geojson";
 
-import type { KeyEvent, LatLng, LngLatBounds, MapAdapter, MarkerWidget, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, TooltipStyle, WidgetEdit } from "./index.js";
+import type { KeyEvent, LatLng, LngLatBounds, MapAdapter, MarkerWidget, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, ToolbarOptions, TooltipStyle, WidgetEdit } from "./index.js";
 import { modifiers } from "./modifiers.js";
 
 export class FakeAdapter implements MapAdapter {
@@ -39,7 +39,7 @@ export class FakeAdapter implements MapAdapter {
   setTooltip(text: string | null, at: LatLng, style?: TooltipStyle): void {
     this.tooltip = style ? { text, at, style } : { text, at };
   }
-  addToolbar(_items: ToolbarItem[]): HTMLElement {
+  addToolbar(_items: ToolbarItem[], _options?: ToolbarOptions): HTMLElement {
     return (globalThis.document?.createElement("div") ?? ({} as HTMLElement));
   }
   getCenter(): LatLng { return this.centre; }

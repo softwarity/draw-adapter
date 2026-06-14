@@ -118,6 +118,7 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
   it("hovering + holding a modifier swaps the ICON only; the tooltip stays fixed", () => {
     const item = snapshotToolbarItem({ quality: "native" }, cap(true))!; // primary download
     const btn = document.createElement("button");
+    document.body.appendChild(btn); // the real toolbar button is connected while hovered
     btn.title = item.title; // populateToolbar would set this; it must never change after
     item.onRender!(btn);
     // Both icons are the camera; the lens fill is the difference (download = filled,
@@ -140,6 +141,23 @@ describe("snapshotToolbarItem — one button, two deliveries (plain vs modifier-
     btn.dispatchEvent(new MouseEvent("mouseleave")); // unhook key listeners
     window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
     expect(isDownload()).toBe(true); // no longer reacts after leave
+    btn.remove();
+  });
+
+  it("self-cleans its window key listeners if the button is removed while hovered (no leak)", () => {
+    const item = snapshotToolbarItem({ quality: "native" }, cap(true))!;
+    const btn = document.createElement("button");
+    document.body.appendChild(btn);
+    item.onRender!(btn);
+    const isDownload = () => btn.querySelector("circle")?.getAttribute("fill") === "currentColor";
+    btn.dispatchEvent(new MouseEvent("mouseenter")); // installs window keydown/keyup
+    btn.remove(); // toolbar torn down while hovered — no mouseleave fires
+    // the next key event finds the button detached ⇒ drops the listeners instead of repainting it
+    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
+    expect(isDownload()).toBe(true); // not swapped to clipboard ⇒ the orphaned handler stopped
+    // listeners are gone now: a further key event is inert
+    window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
+    expect(isDownload()).toBe(true);
   });
 });
 

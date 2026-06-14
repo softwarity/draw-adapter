@@ -1,4 +1,14 @@
 /** Small prop coercions + colour/geometry helpers shared by the engine adapters. */
+import type { LatLng } from "./index.js";
+
+/** Default `coord` formatter — a compact decimal lat/long. Consumers override via
+ *  {@link MapAdapter.setCoordFormat} (e.g. sigwx supplies its own `formatLatLng`). Lives here (a leaf)
+ *  rather than in `widget.ts` so `index.ts` can re-export it without an index↔widget import cycle. */
+export function defaultCoordFormat(ll: LatLng): string {
+  const lat = `${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? "N" : "S"}`;
+  const lon = `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? "E" : "W"}`;
+  return `${lat} ${lon}`;
+}
 
 /** Read a numeric prop, falling back to `d` when absent/not a number. */
 export function num(v: unknown, d: number): number {

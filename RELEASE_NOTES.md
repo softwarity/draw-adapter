@@ -2,6 +2,27 @@
 
 ## NEXT RELEASE
 
+- **Add (a11y):** **in-card controls are now keyboard-operable + screen-reader friendly.** The picker
+  trigger is a focusable `role="button"` with `aria-haspopup` (`menu` for flower/grid) and an
+  `aria-label` from its value/`title`; **Enter/Space/↓** act (cycle or open), **↑** cycles back. Gauge
+  and dial knobs are `role="slider"` with `aria-valuemin/max/now` (+ `aria-orientation`/`aria-label`),
+  and **arrow keys step the value** by `step` (or 1% of the range), emitting like a drag. Decorative
+  toolbar glyphs are `aria-hidden` (the button already carries the accessible name).
+
+- **Internal:** shared `resolveAdapterOptions` (one set of defaults for the 3 engines, incl.
+  `DEFAULT_SYMBOL_COLOR`), shared popup-chrome tokens (`chrome.ts`), `defaultCoordFormat` moved to a
+  leaf to break the `index`↔`widget` import cycle, and consistency tidy-ups (OL `setTooltip` param,
+  `FakeAdapter.addToolbar` signature). No behaviour change.
+
+- **Fix (engines):** **`onViewChange` is single-slot — no listener leak on re-call.** Re-calling it used
+  to add another `moveend` listener (OpenLayers) or orphan the previous one (MapLibre/Leaflet); now each
+  adapter drops the prior handler before registering the new one (and OpenLayers cleans its key on
+  `destroy`). Matches the existing `onPointer`/`onKey` single-slot behaviour.
+
+- **Fix (toolbar):** the **snapshot button's icon-preview no longer leaks `window` key listeners** if the
+  toolbar is torn down while the pointer is over the button (no `mouseleave` fires). The listeners are
+  now scoped to an `AbortController` and self-clean once the button is detached.
+
 - **Fix (widgets):** **card `padding` is decoupled from the frame.** Padding used to apply *only* to a
   framed card (`bg`/`border`), so a **bare** call-out could never space its content — edge buttons
   (`+`/`−`) sat on the text/glyph. Now padding applies when the card is framed (default `medium`, as

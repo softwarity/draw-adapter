@@ -44,7 +44,8 @@ import type {
 } from "./index.js";
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
-import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
+import { colorizeSprite, loadSpriteImage } from "./symbols.js";
+import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
@@ -106,7 +107,7 @@ export class MapLibreAdapter implements MapAdapter {
   /** MapLibre exposes the WebGL canvas → snapshot is supported. */
   protected readonly snapshotSupported = true;
   private readonly map: MapLibreMap;
-  private readonly opts: Required<Omit<AdapterOptions, "hitOverlays">> & Pick<AdapterOptions, "hitOverlays">;
+  private readonly opts: ResolvedAdapterOptions;
   private readonly overlayIds: string[];
   private readyPromise: Promise<void> | undefined;
   /** rendered MapLibre layer id → overlay id (for hit-testing). */
@@ -147,12 +148,7 @@ export class MapLibreAdapter implements MapAdapter {
 
   constructor(opts: { map: MapLibreMap } & AdapterOptions) {
     this.map = opts.map;
-    this.opts = {
-      layers: opts.layers,
-      spritePx: opts.spritePx ?? SPRITE_PX,
-      defaultSymbolColor: opts.defaultSymbolColor ?? "#000000",
-      ...(opts.hitOverlays ? { hitOverlays: opts.hitOverlays } : {}),
-    };
+    this.opts = resolveAdapterOptions(opts);
     this.overlayIds = opts.layers.map((l) => l.id);
   }
 
@@ -432,6 +428,7 @@ export class MapLibreAdapter implements MapAdapter {
   }
 
   onViewChange(cb: () => void): void {
+    if (this.viewHandler) this.map.off("moveend", this.viewHandler); // single slot — drop the previous so a re-call never leaks
     this.viewHandler = cb;
     this.map.on("moveend", cb);
   }

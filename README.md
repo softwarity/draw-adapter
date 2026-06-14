@@ -475,7 +475,9 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   **wider faint glow on the *selected* part** — the gauge span between cursors (whole line for a
   single cursor; extended a bit past the cursors, never min→max) and the dial arc from its start to
   the value. **Map-ready defaults**: black labels + white halo, knobs in the main colour + white
-  border; pass `""` to opt a piece out.
+  border; pass `""` to opt a piece out. **A11y**: knobs are `role="slider"` (`aria-valuemin/max/now`)
+  and **arrow keys** step the value by `step` (or 1% of the range); the picker trigger is a focusable
+  button (Enter/Space/↓ act, ↑ cycles back).
 - `control` is the extension point: **`"input"` and `"picker"` are implemented** (`"gauge"` /
   `"dial"` are their own `WidgetNode` kinds — see above). `FakeAdapter` (`./testing`) records the set
   and adds `.editWidget(id, value, name?)` / `.dragGauge(id, name, value)` / `.deleteWidget(id)` /
