@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.4.0
+
 - **Add (a11y):** **in-card controls are now keyboard-operable + screen-reader friendly.** The picker
   trigger is a focusable `role="button"` with `aria-haspopup` (`menu` for flower/grid) and an
   `aria-label` from its value/`title`; **Enter/Space/↓** act (cycle or open), **↑** cycles back. Gauge
