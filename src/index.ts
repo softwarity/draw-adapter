@@ -48,6 +48,33 @@ export interface LatLng {
 /** A geographic bounding box, `[west, south, east, north]` in decimal degrees. */
 export type LngLatBounds = [number, number, number, number];
 
+/**
+ * A live map projection. `"mercator"` and `"globe"` are the MapLibre built-ins; the
+ * `{ kind: "proj4" }` form names an arbitrary CRS by its SRS `code` plus the proj4 `def`
+ * string registering it (e.g. polar stereographic for the WAFS polar charts).
+ *
+ * **Only the OpenLayers adapter actually reprojects.** MapLibre stays on `mercator`/`globe`
+ * (a `proj4` spec is a no-op + one console warning); Leaflet is lat/lng-native (any
+ * non-`"mercator"` spec is a no-op + one warning). See {@link MapAdapter.setProjection}.
+ */
+export type ProjectionSpec =
+  | "mercator"
+  | "globe"
+  /** `code` = the SRS id to register/select (e.g. `"EPSG:3995"`); `def` = its proj4 definition string. */
+  | { kind: "proj4"; code: string; def: string };
+
+/** Style of the {@link MapAdapter.highlightArea} frame. Defaults: thin grey dashed, no fill. */
+export interface HighlightStyle {
+  /** Stroke colour. Default `"#666"`. */
+  color?: string;
+  /** Stroke width in px. Default `1`. */
+  width?: number;
+  /** Dash pattern. Default `[6, 4]`. (On MapLibre the units are line-widths, per the engine.) */
+  dash?: number[];
+  /** Fill colour; omit ⇒ no fill (outline only). */
+  fill?: string;
+}
+
 /** How a layer is rendered. The overlay's source shares the layer `id`. */
 export type LayerKind = "fill" | "line" | "symbol" | "text" | "circle";
 
@@ -532,8 +559,38 @@ export interface MapAdapter {
   /**
    * Frame the host camera to `bbox` (optional `padding` in px). **Drives the host map** — the
    * host normally owns the camera, so use sparingly (it's the one legit case: cadrer son dessin).
+   * For a fixed chart area (dateline-aware, projection-aware) prefer {@link viewArea}.
    */
   fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void;
+
+  /**
+   * Switch the live map projection. Idempotent and safe to call before or after data load;
+   * the current center is preserved as best it can (normally a {@link viewArea} call follows).
+   *
+   * **Only OpenLayers reprojects.** On OpenLayers a `{ kind: "proj4" }` spec registers the CRS
+   * (proj4 must be installed — it is an optional peer dependency) and rebuilds the view + re-reads
+   * the overlays into it, so handles/overlays stay aligned with the basemap. MapLibre handles
+   * `"mercator"`/`"globe"` natively and ignores `proj4` (stays Mercator, warns once); Leaflet is
+   * lat/lng-native and ignores any non-`"mercator"` spec (warns once).
+   */
+  setProjection(projection: ProjectionSpec): void;
+
+  /**
+   * Frame the camera to a lon/lat bbox `[west, south, east, north]`. Unlike {@link fitBounds} this
+   * is **antimeridian-aware** — an extent whose `west > east` (e.g. `110°E → -110°W`) is treated as
+   * crossing the dateline and framed as one span, not the whole globe — and **projection-aware**
+   * (under a non-Mercator OpenLayers view it fits the projected, possibly-curved area). Use it to
+   * frame a fixed chart area; the host otherwise owns the camera.
+   */
+  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void;
+
+  /**
+   * Outline an area with a **non-interactive** dashed frame, in a dedicated overlay drawn ABOVE the
+   * basemap and BELOW the drawing overlays. `null` clears it. The frame is a **densified geographic
+   * polygon**, so under a non-Mercator OpenLayers view its edges curve to follow the projection
+   * (it is not a screen-space rectangle). It never intercepts pointer events.
+   */
+  highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void;
 
   /** lon/lat → screen pixels (for the call-out placement pass). null if off-view. */
   project(p: LatLng): [number, number] | null;

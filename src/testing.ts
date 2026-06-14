@@ -5,7 +5,7 @@
  */
 import type { FeatureCollection, Feature } from "geojson";
 
-import type { KeyEvent, LatLng, LngLatBounds, MapAdapter, MarkerWidget, PointerEvent, SnapshotOptions, SymbolSprites, ToolbarItem, ToolbarOptions, TooltipStyle, WidgetEdit } from "./index.js";
+import type { HighlightStyle, KeyEvent, LatLng, LngLatBounds, MapAdapter, MarkerWidget, PointerEvent, ProjectionSpec, SnapshotOptions, SymbolSprites, ToolbarItem, ToolbarOptions, TooltipStyle, WidgetEdit } from "./index.js";
 import { modifiers } from "./modifiers.js";
 
 export class FakeAdapter implements MapAdapter {
@@ -51,6 +51,21 @@ export class FakeAdapter implements MapAdapter {
   getZoom(): number { return 5; }
   getContainer(): HTMLElement { return (this.container ??= globalThis.document?.createElement("div") ?? ({} as HTMLElement)); }
   fitBounds(bbox: LngLatBounds): void { this.fittedBounds = bbox; }
+  /** Last `setProjection` argument. */
+  projection: ProjectionSpec = "mercator";
+  setProjection(projection: ProjectionSpec): void { this.projection = projection; }
+  /** Last `viewArea` request (extent + opts). */
+  viewedArea: { extent: LngLatBounds; opts?: { padding?: number; duration?: number } } | undefined;
+  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+    this.viewedArea = opts ? { extent, opts } : { extent };
+  }
+  /** Last `highlightArea` extent (`null` once cleared) + its style. */
+  highlightedArea: LngLatBounds | null = null;
+  highlightStyle: HighlightStyle | undefined;
+  highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    this.highlightedArea = extent;
+    this.highlightStyle = style;
+  }
   project(_: LatLng): [number, number] { return [0, 0]; }
   unproject(_: [number, number]): LatLng { return { lat: 0, lon: 0 }; }
   onViewChange(cb: () => void): void { this.viewCb = cb; }

@@ -28,6 +28,7 @@ const MaplibreMarker: MlMarkerCtor = ((ns: { Marker?: MlMarkerCtor; default?: { 
 
 import type {
   AdapterOptions,
+  HighlightStyle,
   Hit,
   KeyEvent,
   LatLng,
@@ -35,6 +36,7 @@ import type {
   MapAdapter,
   MarkerWidget,
   PointerEvent,
+  ProjectionSpec,
   SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
@@ -43,6 +45,7 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit, EMPTY_FC } from "./index.js";
+import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { colorizeSprite, loadSpriteImage } from "./symbols.js";
 import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
@@ -65,6 +68,11 @@ interface PointerHandlers {
 }
 
 export type Projection = "mercator" | "globe";
+
+/** Source + layer ids for the {@link MapLibreAdapter.highlightArea} frame (internal, `__dap` prefix). */
+const HL_SOURCE = "__dap-highlight";
+const HL_FILL = "__dap-highlight-fill";
+const HL_LINE = "__dap-highlight-line";
 
 const OSM_STYLE = {
   version: 8 as const,
@@ -421,6 +429,54 @@ export class MapLibreAdapter implements MapAdapter {
     this.map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: opts?.padding ?? 0 });
   }
 
+  setProjection(projection: ProjectionSpec): void {
+    if (projection === "mercator") { this.map.setProjection({ type: "mercator" }); return; }
+    if (projection === "globe") { this.map.setProjection({ type: "globe" }); return; }
+    // MapLibre has no arbitrary-CRS support (as of v5) — stay Mercator, warn once.
+    warnOnce("draw-adapter (MapLibre): a custom proj4 projection is not supported; staying in Web Mercator. Use the OpenLayers adapter to reproject.");
+  }
+
+  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+    const [w, s, e0, n] = extent;
+    const e = unwrapEast(w, e0); // antimeridian-crossing bbox ⇒ one continuous span
+    this.map.fitBounds([[w, s], [e, n]], {
+      padding: opts?.padding ?? 0,
+      ...(opts?.duration != null ? { duration: opts.duration } : {}),
+    });
+  }
+
+  highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    if (!extent) {
+      for (const id of [HL_FILL, HL_LINE]) if (this.map.getLayer(id)) this.map.removeLayer(id);
+      if (this.map.getSource(HL_SOURCE)) this.map.removeSource(HL_SOURCE);
+      return;
+    }
+    const data: FeatureCollection = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [densifyBboxRing(extent, 64)] } }],
+    };
+    const src = this.map.getSource(HL_SOURCE) as { setData?: (d: FeatureCollection) => void } | undefined;
+    if (src?.setData) {
+      src.setData(data);
+    } else {
+      // Insert BELOW the first drawing overlay (so: above basemap, below overlays).
+      const beforeId = this.builtLayers.find((id) => this.map.getLayer(id));
+      this.map.addSource(HL_SOURCE, { type: "geojson", data } as never);
+      this.map.addLayer({ id: HL_FILL, type: "fill", source: HL_SOURCE, paint: { "fill-color": "#000", "fill-opacity": 0 } } as never, beforeId);
+      this.map.addLayer({ id: HL_LINE, type: "line", source: HL_SOURCE, layout: { "line-cap": "butt", "line-join": "round" }, paint: { "line-color": "#666", "line-width": 1, "line-dasharray": [2, 2] } } as never, beforeId);
+    }
+    // (Re)apply the style every call (it may change between calls).
+    if (this.map.getLayer(HL_LINE)) {
+      this.map.setPaintProperty(HL_LINE, "line-color", style?.color ?? "#666");
+      this.map.setPaintProperty(HL_LINE, "line-width", style?.width ?? 1);
+      this.map.setPaintProperty(HL_LINE, "line-dasharray", style?.dash ?? [2, 2]);
+    }
+    if (this.map.getLayer(HL_FILL)) {
+      this.map.setPaintProperty(HL_FILL, "fill-color", style?.fill ?? "#000");
+      this.map.setPaintProperty(HL_FILL, "fill-opacity", style?.fill ? 1 : 0);
+    }
+  }
+
   project(p: LatLng): [number, number] | null {
     const pt = this.map.project([p.lon, p.lat]);
     return [pt.x, pt.y];
@@ -634,6 +690,8 @@ export class MapLibreAdapter implements MapAdapter {
       this.map.off("styleimagemissing", this.imgMissing);
       this.imgMissing = undefined;
     }
+    for (const id of [HL_FILL, HL_LINE]) if (this.map.getLayer(id)) this.map.removeLayer(id);
+    if (this.map.getSource(HL_SOURCE)) this.map.removeSource(HL_SOURCE);
     for (const id of this.builtLayers) if (this.map.getLayer(id)) this.map.removeLayer(id);
     this.builtLayers.length = 0;
     this.renderedToOverlay.clear();

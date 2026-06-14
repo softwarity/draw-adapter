@@ -50,6 +50,8 @@ class FakeMlMap {
   removeLayer(id: string) { this.layers = this.layers.filter((l) => l.id !== id); }
   removeSource(id: string) { this.sources.delete(id); }
   setPaintProperty(id: string, k: string, v: unknown) { (this.paint[id] ??= {})[k] = v; }
+  setProjection = vi.fn();
+  fitBounds = vi.fn();
   hasImage(id: string) { return this.images.has(id); }
   addImage(id: string) { this.images.add(id); }
   removeImage(id: string) { this.images.delete(id); }
@@ -328,5 +330,41 @@ describe("MapLibreAdapter — setActiveTool (consumer-driven highlight)", () => 
     expect(cb.style.background).toBe("rgb(219, 234, 254)"); // #dbeafe — MapLibre now highlights too
     adapter.setActiveTool(null);
     expect(bar.querySelector("button.active")).toBeNull();
+  });
+});
+
+describe("MapLibreAdapter — setProjection / viewArea / highlightArea", () => {
+  it("setProjection passes mercator/globe to the native setter; proj4 stays Mercator (warn once)", () => {
+    const { map, adapter } = build();
+    adapter.setProjection("globe");
+    adapter.setProjection("mercator");
+    expect(map.setProjection).toHaveBeenNthCalledWith(1, { type: "globe" });
+    expect(map.setProjection).toHaveBeenNthCalledWith(2, { type: "mercator" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    adapter.setProjection({ kind: "proj4", code: "EPSG:3995", def: "+proj=stere" });
+    expect(map.setProjection).toHaveBeenCalledTimes(2); // proj4 did NOT call the native setter
+    warn.mockRestore();
+  });
+
+  it("viewArea unwraps an antimeridian bbox into one continuous span", () => {
+    const { map, adapter } = build();
+    adapter.viewArea([110, -10, -110, 72], { padding: 20 }); // area M
+    expect(map.fitBounds).toHaveBeenCalledOnce();
+    const [bounds, opts] = map.fitBounds.mock.calls[0]!;
+    expect(bounds).toEqual([[110, -10], [250, 72]]); // east unwrapped −110 → 250
+    expect(opts).toMatchObject({ padding: 20 });
+  });
+
+  it("highlightArea adds a source + line/fill below the overlays; null clears them", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.highlightArea([-90, 0, 30, 90], { color: "#f00", width: 2 });
+    expect(map.sources.has("__dap-highlight")).toBe(true);
+    expect(map.getLayer("__dap-highlight-line")).toBeTruthy();
+    expect(map.getLayer("__dap-highlight-fill")).toBeTruthy();
+    expect(map.paint["__dap-highlight-line"]!["line-color"]).toBe("#f00");
+    adapter.highlightArea(null);
+    expect(map.sources.has("__dap-highlight")).toBe(false);
+    expect(map.getLayer("__dap-highlight-line")).toBeFalsy();
   });
 });

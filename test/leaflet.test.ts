@@ -517,3 +517,43 @@ describe("LeafletAdapter — setActiveTool (consumer-driven highlight)", () => {
     a.destroy();
   });
 });
+
+describe("LeafletAdapter — setProjection / viewArea / highlightArea", () => {
+  let map: L.Map; let el: HTMLElement;
+  beforeEach(() => { el = sizedContainer(); map = L.map(el, { center: [10, 10], zoom: 4 }); });
+  afterEach(() => { try { map.remove(); } catch { /* ignore */ } document.body.innerHTML = ""; });
+
+  it("setProjection: 'mercator' is silent; a non-mercator spec warns once", () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    a.setProjection("mercator");
+    expect(warn).not.toHaveBeenCalled();
+    a.setProjection({ kind: "proj4", code: "EPSG:3995", def: "+proj=stere" });
+    a.setProjection({ kind: "proj4", code: "EPSG:3995", def: "+proj=stere" });
+    expect(warn).toHaveBeenCalledTimes(1); // warn-once
+    warn.mockRestore();
+    a.destroy();
+  });
+
+  it("viewArea unwraps an antimeridian bbox into one [[s,w],[n,e]] span", () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    const fit = vi.spyOn(map, "fitBounds");
+    a.viewArea([110, -10, -110, 72], { padding: 16 }); // area M
+    expect(fit).toHaveBeenCalledOnce();
+    const [bounds] = fit.mock.calls[0]!;
+    expect(bounds).toEqual([[-10, 110], [72, 250]]); // [[s,w],[n,e]] with east −110 → 250
+    a.destroy();
+  });
+
+  it("highlightArea draws a non-interactive frame in a dedicated pane; null clears it", () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    a.highlightArea([-90, 0, 30, 90], { color: "#f00", width: 2 });
+    const pane = map.getPane("dap-highlight")!;
+    expect(pane.style.zIndex).toBe("350");
+    expect(pane.style.pointerEvents).toBe("none");
+    expect(pane.querySelector("path")).toBeTruthy(); // the polygon rendered
+    a.highlightArea(null);
+    expect(pane.querySelector("path")).toBeFalsy(); // removed
+    a.destroy();
+  });
+});

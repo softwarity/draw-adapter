@@ -2,6 +2,26 @@
 
 ## NEXT RELEASE
 
+- **Add (camera):** **`setProjection` + `viewArea` + `highlightArea`** — frame a fixed chart area,
+  switch the live projection, and outline the area with a dashed frame, on all three engines.
+  - `setProjection("mercator" | "globe" | { kind: "proj4", code, def })`. **Only OpenLayers
+    reprojects:** a `proj4` spec registers the CRS (e.g. polar stereographic), rebuilds the view and
+    **re-reads the overlays into it** so handles/overlays stay aligned with the basemap. MapLibre
+    handles `mercator`/`globe` natively and ignores `proj4` (stays Mercator, warns once); Leaflet is
+    lat/lng-native and ignores any non-`mercator` spec (warns once).
+  - `viewArea([w, s, e, n], { padding?, duration? })` — `fitBounds` that is **antimeridian-aware** (a
+    `west > east` bbox frames one span, not the whole globe) and **projection-aware** (fits the
+    projected, curved area under a non-Mercator OpenLayers view).
+  - `highlightArea([w, s, e, n] | null, { color?, width?, dash?, fill? })` — a **non-interactive**
+    dashed frame above the basemap, below the drawing overlays; a densified polygon so it **curves**
+    with the projection. `null` clears it.
+- **`proj4` is a new OPTIONAL peer dependency** (`>=2.8`), loaded lazily by the OpenLayers adapter only
+  when a `{ kind: "proj4" }` projection is used — Mercator-only and MapLibre/Leaflet consumers don't
+  need it (the `./openlayers` subpath imports cleanly without it).
+- **Internal (OpenLayers):** every lon/lat ↔ map transform now follows the **view's current
+  projection** instead of a hardcoded `EPSG:3857` (so the swap above actually reprojects); data still
+  enters as EPSG:4326. No behaviour change in Mercator.
+
 - **Add (toolbar):** **`adapter.setActiveTool(id | null)` — consumer-driven active-tool highlight.** The
   consumer marks the active tool (e.g. on draw start) and clears it (commit/Escape/cancel); `id` is a
   `ToolbarItem` id (a submenu/toggle child marks its parent **bar trigger**), `null` clears. One active

@@ -57,6 +57,20 @@ describe("FakeAdapter", () => {
     expect(a.cursor).toBe("crosshair");
   });
 
+  it("records setProjection / viewArea / highlightArea", () => {
+    const a = new FakeAdapter();
+    expect(a.projection).toBe("mercator"); // default
+    a.setProjection({ kind: "proj4", code: "EPSG:3995", def: "+proj=stere" });
+    expect(a.projection).toMatchObject({ kind: "proj4", code: "EPSG:3995" });
+    a.viewArea([110, -10, -110, 72], { padding: 16 });
+    expect(a.viewedArea).toEqual({ extent: [110, -10, -110, 72], opts: { padding: 16 } });
+    a.highlightArea([-90, 0, 30, 90], { color: "#f00" });
+    expect(a.highlightedArea).toEqual([-90, 0, 30, 90]);
+    expect(a.highlightStyle).toMatchObject({ color: "#f00" });
+    a.highlightArea(null);
+    expect(a.highlightedArea).toBeNull();
+  });
+
   it("forwards held modifiers on the pointer event (default all false)", () => {
     const a = new FakeAdapter();
     const events: import("../src/index.js").PointerEvent[] = [];

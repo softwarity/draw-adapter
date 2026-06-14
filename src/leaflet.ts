@@ -19,6 +19,7 @@ import * as L from "leaflet";
 
 import type {
   AdapterOptions,
+  HighlightStyle,
   Hit,
   KeyEvent,
   LatLng,
@@ -27,6 +28,7 @@ import type {
   MapAdapter,
   MarkerWidget,
   PointerEvent,
+  ProjectionSpec,
   SymbolSprites,
   ToolbarItem,
   ToolbarOptions,
@@ -34,6 +36,7 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit } from "./index.js";
+import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
 import { WidgetLayer } from "./widget.js";
 import { num, str, rgba } from "./coerce.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
@@ -126,6 +129,9 @@ export class LeafletAdapter implements MapAdapter {
   private lastDownY = 0;
   private viewHandler: (() => void) | undefined;
   private widgets: WidgetLayer | undefined;
+  /** The non-interactive {@link highlightArea} frame + whether its dedicated pane exists. */
+  private highlightPoly: L.Polygon | undefined;
+  private highlightPaneReady = false;
 
   constructor(opts: { map: L.Map } & AdapterOptions) {
     this.map = opts.map;
@@ -267,6 +273,56 @@ export class LeafletAdapter implements MapAdapter {
   fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void {
     const p = opts?.padding ?? 0;
     this.map.fitBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]], { padding: [p, p] });
+  }
+
+  setProjection(projection: ProjectionSpec): void {
+    if (projection === "mercator") return; // Leaflet is Web-Mercator native — nothing to do
+    warnOnce("draw-adapter (Leaflet): only Web Mercator is supported; the projection request was ignored. Use the OpenLayers adapter to reproject.");
+  }
+
+  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+    const [w, s, e0, n] = extent;
+    const e = unwrapEast(w, e0); // antimeridian-crossing bbox ⇒ one continuous span
+    const p = opts?.padding ?? 0;
+    this.map.fitBounds([[s, w], [n, e]], {
+      padding: [p, p],
+      ...(opts?.duration != null ? { duration: opts.duration } : {}),
+    });
+  }
+
+  highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    if (!extent) {
+      if (this.highlightPoly) { this.highlightPoly.remove(); this.highlightPoly = undefined; }
+      return;
+    }
+    const ring = densifyBboxRing(extent, 64).map(([lon, lat]) => [lat, lon] as [number, number]);
+    const opts: L.PolylineOptions = {
+      pane: this.ensureHighlightPane(),
+      interactive: false,
+      color: style?.color ?? "#666",
+      weight: style?.width ?? 1,
+      dashArray: (style?.dash ?? [6, 4]).join(","),
+      ...(style?.fill ? { fill: true, fillColor: style.fill, fillOpacity: 1 } : { fill: false }),
+    };
+    if (this.highlightPoly) {
+      this.highlightPoly.setLatLngs(ring);
+      this.highlightPoly.setStyle(opts);
+    } else {
+      this.highlightPoly = L.polygon(ring, opts).addTo(this.map);
+    }
+  }
+
+  /** A dedicated pane for the frame, ABOVE the tiles and BELOW the drawing overlay panes
+   *  (which start at zIndex 400); pointer-events off so it never intercepts clicks. */
+  private ensureHighlightPane(): string {
+    const name = "dap-highlight";
+    if (!this.highlightPaneReady) {
+      const pane = this.map.createPane(name);
+      pane.style.zIndex = "350";
+      pane.style.pointerEvents = "none";
+      this.highlightPaneReady = true;
+    }
+    return name;
   }
 
   project(p: LatLng): [number, number] | null {
@@ -465,6 +521,9 @@ export class LeafletAdapter implements MapAdapter {
       this.map.removeLayer(g);
     }
     this.groups.clear();
+    if (this.highlightPoly) { this.highlightPoly.remove(); this.highlightPoly = undefined; }
+    this.map.getPane("dap-highlight")?.remove();
+    this.highlightPaneReady = false;
     for (const name of this.paneNames) this.map.getPane(name)?.remove();
     this.paneNames.length = 0;
     if (this.domDown) this.map.getContainer().removeEventListener("mousedown", this.domDown as EventListener, true);

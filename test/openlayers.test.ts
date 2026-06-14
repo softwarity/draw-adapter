@@ -4,6 +4,7 @@ import DragPan from "ol/interaction/DragPan.js";
 import DoubleClickZoom from "ol/interaction/DoubleClickZoom.js";
 import Overlay from "ol/Overlay.js";
 import VectorLayer from "ol/layer/Vector.js";
+import View from "ol/View.js";
 import { Circle as CircleStyle, Icon, Style } from "ol/style.js";
 
 import { OpenLayersAdapter } from "../src/openlayers.js";
@@ -28,12 +29,22 @@ class FakeOlMap {
   overlays: Overlay[] = [];
   dragPan = new DragPan();
   dblZoom = new DoubleClickZoom();
+  view = new View({ center: [0, 0], zoom: 6 }); // real View ⇒ getProjection()/calculateExtent() work
   private target = document.createElement("div");
   private viewport = document.createElement("div");
 
   getInteractions() { return { getArray: () => [this.dragPan, this.dblZoom] }; }
   addLayer(l: VectorLayer) { this.added.push(l); }
-  removeLayer() {}
+  removeLayer(l?: VectorLayer) { if (l) this.added = this.added.filter((x) => x !== l); }
+  /** Collection-like over `added` (only the members the adapter's highlight path uses). */
+  getLayers() {
+    return {
+      getArray: () => this.added,
+      getLength: () => this.added.length,
+      insertAt: (i: number, l: VectorLayer) => { this.added.splice(i, 0, l); },
+    };
+  }
+  setView(v: View) { this.view = v; }
   addOverlay(o: Overlay) { this.overlays.push(o); const el = o.getElement(); if (el) document.body.appendChild(el); }
   removeOverlay(o: Overlay) { this.overlays = this.overlays.filter((x) => x !== o); o.getElement()?.remove(); }
   on(ev: string, fn: (e: unknown) => unknown) {
@@ -42,7 +53,7 @@ class FakeOlMap {
     return { type: ev, listener: fn, target: { removeEventListener: (t: string, l: unknown) => { const a = this.handlers.get(t); if (a) this.handlers.set(t, a.filter((h) => h !== l)); } } };
   }
   emit(ev: string, payload: unknown) { for (const fn of this.handlers.get(ev) ?? []) fn(payload); }
-  getView() { return { getCenter: () => [0, 0], calculateExtent: () => [0, 0, 1, 1], getZoom: () => 6, fit: () => {} }; }
+  getView() { return this.view; }
   getSize() { return [800, 600]; }
   getTargetElement() { return this.target; }
   getViewport() {
@@ -368,5 +379,55 @@ describe("OpenLayersAdapter — setActiveTool (consumer-driven highlight)", () =
     expect(cb.style.background).toBe("rgb(219, 234, 254)"); // #dbeafe
     adapter.setActiveTool(null);
     expect(bar.querySelector("button.active")).toBeNull();
+  });
+});
+
+describe("OpenLayersAdapter — setProjection / viewArea / highlightArea", () => {
+  const FC = {
+    type: "FeatureCollection" as const,
+    features: [{ type: "Feature" as const, geometry: { type: "Point" as const, coordinates: [10, 20] }, properties: { role: "v0" } }],
+  };
+
+  it("setProjection({proj4}) rebuilds the view onto the registered CRS + re-reads overlays", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setOverlay("handles", FC);
+    expect(map.getView().getProjection().getCode()).toBe("EPSG:3857"); // starts Mercator
+    adapter.setProjection({ kind: "proj4", code: "EPSG:3995", def: "+proj=stere +lat_0=90 +lat_ts=71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs" });
+    // First proj4 use loads the optional peer asynchronously — poll until the swap lands.
+    await vi.waitFor(() => expect(map.getView().getProjection().getCode()).toBe("EPSG:3995"));
+    // Overlay was re-read into the new projection (a feature is present in the source).
+    expect(map.added.length).toBeGreaterThan(0);
+  });
+
+  it("setProjection('mercator') is a no-op when already Mercator (no view swap)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const before = map.getView();
+    adapter.setProjection("mercator");
+    expect(map.getView()).toBe(before); // same View instance — not rebuilt
+  });
+
+  it("viewArea fits the densified, projected extent (no throw, dateline-aware)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const fit = vi.spyOn(map.getView(), "fit");
+    adapter.viewArea([110, -10, -110, 72], { padding: 20 }); // area M (antimeridian)
+    expect(fit).toHaveBeenCalledOnce();
+    const ext = fit.mock.calls[0]![0] as number[];
+    expect(ext).toHaveLength(4);
+    expect(ext[2]!).toBeGreaterThan(ext[0]!); // a real, non-empty extent
+  });
+
+  it("highlightArea adds a non-hittable frame layer below the overlays; null clears it", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const overlayCount = map.added.length;
+    adapter.highlightArea([-90, 0, 30, 90], { color: "#f00", dash: [4, 4] });
+    expect(map.added.length).toBe(overlayCount + 1);
+    const hl = map.added[0]!; // inserted before the first drawing overlay
+    expect(hl.getSource()!.getFeatures().length).toBe(1);
+    adapter.highlightArea(null);
+    expect(hl.getSource()!.getFeatures().length).toBe(0); // cleared, layer kept
   });
 });

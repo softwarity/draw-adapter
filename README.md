@@ -46,10 +46,12 @@ render identically.
 | PNG `snapshot()` (basemap + overlays + widget cards⁵) | ✅ | ✅ | ❌³ |
 | anchored **marker widgets** (`setWidgets` — editable cards) | ✅ | ✅ | ✅ |
 | camera read/drive + container (`getBounds`/`getZoom`/`fitBounds`/`getContainer`) | ✅ | ✅ | ✅ |
+| area framing (`viewArea`, dateline-aware) · dashed frame (`highlightArea`) | ✅ | ✅ | ✅ |
+| live **reprojection** (`setProjection({kind:"proj4"})`) | ❌⁷ | ✅ | ❌⁷ |
 | overlay visibility (`setOverlayVisible`) · right-click (`contextmenu`) · window-blur (`onBlur`) | ✅ | ✅ | ✅ |
 | touch: tap-to-select & edit widgets | ✅ | ✅ | ✅ |
 | touch: freehand **drawing** (drag to draw) | ❌⁶ | ✅ | ❌⁶ |
-| peer dependency | `maplibre-gl >=5` | `ol >=9` | `leaflet >=1.9` |
+| peer dependency | `maplibre-gl >=5` | `ol >=9` (+ `proj4 >=2.8`, optional⁷) | `leaflet >=1.9` |
 
 ¹ data-URI icons are materialized lazily via `styleimagemissing`; sprites are tinted per `symbolColor`.
 ² MapLibre's `dragPan` is toggled directly by the controller, no capture-phase hack needed.
@@ -57,6 +59,7 @@ render identically.
 ⁴ MapLibre fakes the box with a per-feature 9-slice image (built on demand via `styleimagemissing`), so it honours `textBackground`/`textBorder`/`textBoxSize`/`textBoxRadius` per feature. OpenLayers uses its native text background — same, **except** `textBoxRadius` (its box is a rectangle).
 ⁵ The PNG composites the [marker widgets](#marker-widgets) in their static form (inputs → their value) on MapLibre/OpenLayers, with a **safe fallback** to a card-less snapshot if the `foreignObject` rasterization taints the canvas (e.g. Safari). Leaflet snapshot is unsupported, so its widgets aren't captured yet.
 ⁶ MapLibre/Leaflet pointer handlers are mouse-based: a finger **tap** still selects (a deduped native-click fallback) and **widgets are touch-capable** (Pointer Events), but **dragging to draw** a shape doesn't fire. OpenLayers uses Pointer Events, so freehand drawing works there; full touch on ML/Leaflet (unify on Pointer Events) is a planned chantier.
+⁷ Only OpenLayers reprojects (needs the optional `proj4` peer). MapLibre stays Mercator/globe and Leaflet stays lat/lng-native — a `{kind:"proj4"}` spec there is a no-op (one console warning). `viewArea`/`highlightArea` still work in Mercator on all three.
 
 ## Install
 
@@ -518,11 +521,46 @@ suppressed), carrying the hit + lon/lat — e.g. finish a polygon / delete a ver
 fires when the map's window loses focus, so the consumer can drop transient UI state (e.g. deselect
 — see [Marker widgets](#marker-widgets)).
 
+## Projection & area framing
+
+Frame the camera onto a **fixed chart area** (dateline-aware), optionally switch the live
+**projection**, and outline the area with a dashed frame:
+
+```ts
+// Switch the live projection. Only OpenLayers actually reprojects.
+adapter.setProjection({                      // a polar-stereographic CRS (WAFS polar charts)
+  kind: "proj4", code: "EPSG:3995",
+  def: "+proj=stere +lat_0=90 +lat_ts=71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+});
+adapter.viewArea([-90, 0, 30, 90]);          // frame a lon/lat bbox; padding/duration optional
+adapter.viewArea([110, -10, -110, 72]);      // antimeridian-crossing bbox (west > east) → one span
+adapter.highlightArea([110, -10, -110, 72], { color: "#666", dash: [6, 4] }); // dashed frame
+adapter.highlightArea(null);                 // clear the frame
+adapter.setProjection("mercator");           // back to Web Mercator ("globe" is a MapLibre built-in)
+```
+
+- **`setProjection(spec)`** — `"mercator"` / `"globe"` / `{ kind: "proj4", code, def }`. **Only the
+  OpenLayers adapter reprojects:** a `proj4` spec registers the CRS (needs the optional **`proj4`**
+  peer dependency), rebuilds the view in it and re-reads the overlays so handles stay aligned with the
+  basemap. MapLibre handles `mercator`/`globe` natively and ignores `proj4` (stays Mercator, warns
+  once); Leaflet is lat/lng-native and ignores any non-`mercator` spec (warns once).
+- **`viewArea(extent, { padding?, duration? })`** — like `fitBounds` but **antimeridian-aware** (a
+  `west > east` bbox is framed as one span, not the whole globe) and **projection-aware** (under a
+  non-Mercator OpenLayers view it fits the projected, curved area).
+- **`highlightArea(extent | null, style?)`** — a **non-interactive** dashed frame in a dedicated
+  overlay above the basemap and below the drawing overlays. The frame is a densified geographic
+  polygon, so under a non-Mercator OpenLayers view its edges curve to follow the projection. `null`
+  clears it; it never intercepts pointer events.
+
+> `proj4` is an **optional** peer dependency — install it only to use a `{ kind: "proj4" }` projection
+> on the OpenLayers adapter (`npm i proj4`). It is never imported otherwise, so Mercator-only and
+> MapLibre/Leaflet consumers don't need it.
+
 ## API surface
 
 `MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `setOverlayVisible`, `snapshot`,
 `setTooltip`, `addToolbar`, `setActiveTool`, `getCenter`, `getViewSpan`, `getBounds`, `getZoom`, `getContainer`,
-`fitBounds`, `project`, `unproject`, `onViewChange`, `setPanEnabled`, `setDoubleClickZoom`,
+`fitBounds`, `setProjection`, `viewArea`, `highlightArea`, `project`, `unproject`, `onViewChange`, `setPanEnabled`, `setDoubleClickZoom`,
 `setInteractive`, `setCursor`, `onPointer`, `onKey`, `onBlur`, `setWidgets`, `onWidgetEdit`,
 `onWidgetDelete`, `onWidgetAction`, `setCoordFormat`, `destroy`.
 `onKey` and marker widgets are documented above; `bindKeyListener(container, cb)` and

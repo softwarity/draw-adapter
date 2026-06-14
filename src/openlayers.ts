@@ -24,7 +24,9 @@ import VectorLayer from "ol/layer/Vector.js";
 import OlMap from "ol/Map.js";
 import Overlay from "ol/Overlay.js";
 import { unByKey } from "ol/Observable.js";
-import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
+import { fromLonLat, toLonLat, transformExtent, get as getProjection } from "ol/proj.js";
+import type Projection from "ol/proj/Projection";
+import { register as registerProj4 } from "ol/proj/proj4.js";
 import OSM from "ol/source/OSM.js";
 import VectorSource from "ol/source/Vector.js";
 import TileLayer from "ol/layer/Tile.js";
@@ -34,6 +36,7 @@ import View from "ol/View.js";
 
 import type {
   AdapterOptions,
+  HighlightStyle,
   Hit,
   KeyEvent,
   LatLng,
@@ -42,6 +45,7 @@ import type {
   MapAdapter,
   MarkerWidget,
   PointerEvent,
+  ProjectionSpec,
   SnapshotOptions,
   SymbolSprites,
   ToolbarItem,
@@ -50,6 +54,7 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit } from "./index.js";
+import { densifyBboxRing, warnOnce } from "./geo.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { boxPadding, textBoxBorderWidth } from "./textbox.js";
@@ -84,6 +89,19 @@ function ensureOLToolbarStyle(): void {
     ".ol-control.draw-adapter-toolbar button:hover{background:#f4f4f4}" +
     ".ol-control.draw-adapter-toolbar button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}";
   document.head.appendChild(style);
+}
+
+/** Minimal structural type for the `proj4` default export — it is an OPTIONAL peer dependency
+ *  (only needed for a `{kind:"proj4"}` projection), so it is never statically imported. */
+type Proj4 = { defs(name: string, projection: string): void };
+let proj4Mod: Proj4 | undefined;
+/** Lazily load the optional `proj4` peer. Resolves to the callable default export, cached so the
+ *  first custom-projection call is async (a microtask) and every later one is synchronous. */
+async function loadProj4(): Promise<Proj4> {
+  if (proj4Mod) return proj4Mod;
+  const m = (await import("proj4")) as unknown as { default?: Proj4 } & Proj4;
+  proj4Mod = m.default ?? m;
+  return proj4Mod;
 }
 
 /** Batteries-included host map (headless hosts pass their own `map` instead). */
@@ -138,6 +156,17 @@ export class OpenLayersAdapter implements MapAdapter {
   private dblOn = true;
   private widgets: WidgetLayer | undefined;
   private pointerCb: ((ev: PointerEvent) => void) | undefined;
+  /** Raw EPSG:4326 data per overlay, kept so a projection swap can re-read (reproject) it. */
+  private readonly lastData = new Map<string, FeatureCollection>();
+  /** The non-interactive frame layer (see {@link highlightArea}); its last extent + style, so a
+   *  projection swap redraws it into the new view. */
+  private highlightLayer: VectorLayer | undefined;
+  private highlightExtent: LngLatBounds | null = null;
+  private highlightStyleOpts: HighlightStyle | undefined;
+  /** Last {@link viewArea} request, re-applied once an async projection swap settles. */
+  private lastFit: { extent: LngLatBounds; opts?: { padding?: number; duration?: number } } | undefined;
+  /** True while a `{kind:"proj4"}` view swap is loading proj4 (defers `viewArea` until it lands). */
+  private projPending = false;
 
   constructor(opts: { map: OlMap } & AdapterOptions) {
     this.map = opts.map;
@@ -173,12 +202,24 @@ export class OpenLayersAdapter implements MapAdapter {
     return this.readyPromise;
   }
 
+  /** The view's CURRENT projection — the single source of truth for every lon/lat ↔ map
+   *  transform below, so a {@link setProjection} swap reprojects everything consistently. */
+  private viewProj(): Projection {
+    return this.map.getView().getProjection();
+  }
+
   setOverlay(id: string, data: FeatureCollection): void {
+    this.lastData.set(id, data); // kept so a projection swap can reproject it
+    this.loadInto(id, data);
+  }
+
+  /** Read `data` (EPSG:4326) into overlay `id`'s source, reprojected to the view's projection. */
+  private loadInto(id: string, data: FeatureCollection): void {
     const source = this.sources.get(id);
     if (!source) return;
     source.clear();
     if (data.features.length) {
-      source.addFeatures(this.format.readFeatures(data, { dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }));
+      source.addFeatures(this.format.readFeatures(data, { dataProjection: "EPSG:4326", featureProjection: this.viewProj() }));
     }
   }
 
@@ -287,19 +328,19 @@ export class OpenLayersAdapter implements MapAdapter {
   getCenter(): LatLng {
     const c = this.map.getView().getCenter();
     if (!c) return { lat: 0, lon: 0 };
-    const [lon, lat] = toLonLat(c);
+    const [lon, lat] = toLonLat(c, this.viewProj());
     return { lat: lat!, lon: lon! };
   }
 
   getViewSpan(): number {
     const size = this.map.getSize();
     if (!size) return 10;
-    const extent = transformExtent(this.map.getView().calculateExtent(size), "EPSG:3857", "EPSG:4326");
+    const extent = transformExtent(this.map.getView().calculateExtent(size), this.viewProj(), "EPSG:4326");
     return Math.max(getWidth(extent), getHeight(extent)) || 10;
   }
 
   getBounds(): LngLatBounds {
-    const ext = transformExtent(this.map.getView().calculateExtent(this.map.getSize()), "EPSG:3857", "EPSG:4326");
+    const ext = transformExtent(this.map.getView().calculateExtent(this.map.getSize()), this.viewProj(), "EPSG:4326");
     return [ext[0]!, ext[1]!, ext[2]!, ext[3]!];
   }
 
@@ -312,21 +353,131 @@ export class OpenLayersAdapter implements MapAdapter {
   }
 
   fitBounds(bbox: LngLatBounds, opts?: { padding?: number }): void {
-    const ext = transformExtent([bbox[0], bbox[1], bbox[2], bbox[3]], "EPSG:4326", "EPSG:3857");
+    const ext = transformExtent([bbox[0], bbox[1], bbox[2], bbox[3]], "EPSG:4326", this.viewProj());
     const p = opts?.padding ?? 0;
     const size = this.map.getSize();
     this.map.getView().fit(ext, { padding: [p, p, p, p], ...(size ? { size } : {}) });
   }
 
+  setProjection(projection: ProjectionSpec): void {
+    if (projection === "mercator" || projection === "globe") {
+      if (projection === "globe") warnOnce("draw-adapter (OpenLayers): 'globe' projection is not supported; staying in Web Mercator.");
+      const merc = getProjection("EPSG:3857");
+      if (merc && this.viewProj().getCode() !== merc.getCode()) this.swapProjection(merc);
+      return;
+    }
+    // { kind: "proj4" } — register the CRS and rebuild the view in it. proj4 already loaded ⇒
+    // synchronous; first use ⇒ deferred a microtask, then `viewArea`'s last request is re-applied.
+    if (proj4Mod) { this.applyProj4(proj4Mod, projection); return; }
+    this.projPending = true;
+    void loadProj4()
+      .then((p4) => {
+        this.applyProj4(p4, projection);
+        this.projPending = false;
+        if (this.lastFit) this.applyFit(this.lastFit.extent, this.lastFit.opts);
+      })
+      .catch(() => {
+        this.projPending = false;
+        warnOnce("draw-adapter (OpenLayers): a custom projection needs the optional `proj4` peer dependency, which could not be loaded. Staying in the current projection.");
+      });
+  }
+
+  /** Register a proj4 def, make it available to OL, and swap the view onto it. */
+  private applyProj4(p4: Proj4, spec: { kind: "proj4"; code: string; def: string }): void {
+    p4.defs(spec.code, spec.def);
+    registerProj4(p4 as never);
+    const projection = getProjection(spec.code);
+    if (projection) this.swapProjection(projection);
+  }
+
+  /** Rebuild the view onto `projection` (keeping the center as lon/lat + zoom), then re-read every
+   *  overlay + the highlight so their geometries reproject. */
+  private swapProjection(projection: Projection): void {
+    const view = this.map.getView();
+    const center = view.getCenter();
+    const ll = center ? toLonLat(center, view.getProjection()) : [0, 0];
+    const zoom = view.getZoom() ?? 2;
+    this.map.setView(new View({ projection, center: fromLonLat([ll[0]!, ll[1]!], projection), zoom }));
+    for (const [id, data] of this.lastData) this.loadInto(id, data);
+    if (this.highlightExtent) this.drawHighlight(this.highlightExtent, this.highlightStyleOpts);
+  }
+
+  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+    this.lastFit = opts ? { extent, opts } : { extent };
+    if (this.projPending) return; // view is mid-swap; applyFit runs when setProjection settles
+    this.applyFit(extent, opts);
+  }
+
+  /** Project the (densified, dateline-aware) area ring into the view projection and fit its bounding
+   *  box — so the framing follows the projection's curvature and never zooms out across the dateline. */
+  private applyFit(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+    const proj = this.viewProj();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [lon, lat] of densifyBboxRing(extent, 16)) {
+      const c = fromLonLat([lon, lat], proj);
+      const x = c[0]!, y = c[1]!;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    if (!isFinite(minX)) return;
+    const p = opts?.padding ?? 0;
+    const size = this.map.getSize();
+    this.map.getView().fit([minX, minY, maxX, maxY], {
+      padding: [p, p, p, p],
+      ...(size ? { size } : {}),
+      ...(opts?.duration != null ? { duration: opts.duration } : {}),
+    });
+  }
+
+  highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    this.highlightExtent = extent;
+    this.highlightStyleOpts = style;
+    if (!extent) { this.highlightLayer?.getSource()?.clear(); return; }
+    this.drawHighlight(extent, style);
+  }
+
+  /** (Re)draw the frame polygon (densified, reprojected to the view) into the highlight layer. */
+  private drawHighlight(extent: LngLatBounds, style?: HighlightStyle): void {
+    const layer = this.ensureHighlightLayer();
+    const source = layer.getSource();
+    if (!source) return;
+    source.clear();
+    const ring = densifyBboxRing(extent, 64);
+    const feature = this.format.readFeature(
+      { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } },
+      { dataProjection: "EPSG:4326", featureProjection: this.viewProj() },
+    );
+    source.addFeature(feature as never);
+    layer.setStyle(new Style({
+      stroke: new Stroke({ color: style?.color ?? "#666", width: style?.width ?? 1, lineDash: style?.dash ?? [6, 4] }),
+      ...(style?.fill ? { fill: new Fill({ color: style.fill }) } : {}),
+    }));
+  }
+
+  /** The frame's own VectorLayer, inserted directly BELOW the first drawing overlay (so it sits
+   *  above the basemap, below the overlays). Non-hittable: it is absent from `layerOverlay`. */
+  private ensureHighlightLayer(): VectorLayer {
+    if (this.highlightLayer) return this.highlightLayer;
+    const layer = new VectorLayer({ source: new VectorSource() });
+    const layers = this.map.getLayers();
+    const firstOverlay = this.layers.values().next().value as BaseLayer | undefined;
+    const idx = firstOverlay ? layers.getArray().indexOf(firstOverlay) : layers.getLength();
+    layers.insertAt(Math.max(0, idx), layer);
+    this.highlightLayer = layer;
+    return layer;
+  }
+
   project(p: LatLng): [number, number] | null {
-    const px = this.map.getPixelFromCoordinate(fromLonLat([p.lon, p.lat]));
+    const px = this.map.getPixelFromCoordinate(fromLonLat([p.lon, p.lat], this.viewProj()));
     return px ? [px[0]!, px[1]!] : null;
   }
 
   unproject(px: [number, number]): LatLng | null {
     const coord = this.map.getCoordinateFromPixel(px);
     if (!coord) return null;
-    const [lon, lat] = toLonLat(coord);
+    const [lon, lat] = toLonLat(coord, this.viewProj());
     return { lat: lat!, lon: lon! };
   }
 
@@ -378,7 +529,7 @@ export class OpenLayersAdapter implements MapAdapter {
     } else if (style) {
       applyTooltipStyle(this.tooltipEl, style);
     }
-    const px = this.map.getPixelFromCoordinate(fromLonLat([at.lon, at.lat]));
+    const px = this.map.getPixelFromCoordinate(fromLonLat([at.lon, at.lat], this.viewProj()));
     if (!px) return;
     this.tooltipEl.textContent = text;
     this.tooltipEl.style.display = "block";
@@ -399,7 +550,7 @@ export class OpenLayersAdapter implements MapAdapter {
       const coord = this.map.getEventCoordinate(e);
       if (!coord) return;
       this.dragging = true;
-      const [lon, lat] = toLonLat(coord);
+      const [lon, lat] = toLonLat(coord, this.viewProj());
       const hit = this.hitAt(this.map.getEventPixel(e));
       this.pressHit = hit;
       this.pressLngLat = { lat: lat!, lon: lon! };
@@ -416,7 +567,7 @@ export class OpenLayersAdapter implements MapAdapter {
       const moved = !this.pressDown || Math.abs(e.clientX - this.pressX) > 3 || Math.abs(e.clientY - this.pressY) > 3;
       this.dragging = false;
       const upCoord = this.map.getEventCoordinate(e); // real lon/lat when the event has one (#2)
-      const upLL = upCoord ? toLonLat(upCoord) : null;
+      const upLL = upCoord ? toLonLat(upCoord, this.viewProj()) : null;
       cb({ type: "up", lngLat: upLL ? { lat: upLL[1]!, lon: upLL[0]! } : { lat: 0, lon: 0 }, ...modifiers(e) });
       // Emit the click NOW (a `down`+`up` at one spot) instead of waiting for OL's debounced
       // `singleclick` — so a single click selects/deselects instantly, like MapLibre/Leaflet.
@@ -440,7 +591,7 @@ export class OpenLayersAdapter implements MapAdapter {
     this.viewportDblclick = (e: globalThis.MouseEvent): void => {
       const coord = this.map.getEventCoordinate(e);
       if (!coord) return;
-      const [lon, lat] = toLonLat(coord);
+      const [lon, lat] = toLonLat(coord, this.viewProj());
       const hit = this.hitAt(this.map.getEventPixel(e));
       cb({ type: "dblclick", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
@@ -450,7 +601,7 @@ export class OpenLayersAdapter implements MapAdapter {
       e.preventDefault();
       const coord = this.map.getEventCoordinate(e);
       if (!coord) return;
-      const [lon, lat] = toLonLat(coord);
+      const [lon, lat] = toLonLat(coord, this.viewProj());
       const hit = this.hitAt(this.map.getEventPixel(e));
       cb({ type: "contextmenu", lngLat: { lat: lat!, lon: lon! }, ...modifiers(e), ...(hit ? { hit } : {}) });
     };
@@ -458,7 +609,7 @@ export class OpenLayersAdapter implements MapAdapter {
 
     this.olKeys.push(
       this.map.on("pointermove", (evt) => {
-        const [lon, lat] = toLonLat(evt.coordinate);
+        const [lon, lat] = toLonLat(evt.coordinate, this.viewProj());
         const mods = modifiers(evt.originalEvent as MouseEvent);
         // Recover a swallowed `up`: a move with NO button held means the press already ended
         // (e.g. the pointerup was eaten by a window-focusing gesture). Finalise so nothing sticks.
@@ -501,7 +652,7 @@ export class OpenLayersAdapter implements MapAdapter {
           const el = document.createElement("div");
           const overlay = new Overlay({
             element: el,
-            position: fromLonLat([anchor.lon, anchor.lat]),
+            position: fromLonLat([anchor.lon, anchor.lat], this.viewProj()),
             positioning: "top-left",
             stopEvent: true,
             className: "draw-adapter-widget-ov",
@@ -509,7 +660,7 @@ export class OpenLayersAdapter implements MapAdapter {
           map.addOverlay(overlay);
           return {
             el,
-            setAnchor: (a) => overlay.setPosition(fromLonLat([a.lon, a.lat])),
+            setAnchor: (a) => overlay.setPosition(fromLonLat([a.lon, a.lat], this.viewProj())),
             remove: () => map.removeOverlay(overlay),
           };
         },
@@ -519,7 +670,7 @@ export class OpenLayersAdapter implements MapAdapter {
           const r = target.getBoundingClientRect();
           const coord = map.getCoordinateFromPixel([cx - r.left, cy - r.top]);
           if (!coord) return null;
-          const [lon, lat] = toLonLat(coord);
+          const [lon, lat] = toLonLat(coord, this.viewProj());
           return { lat: lat!, lon: lon! };
         },
         emit: (ev) => this.pointerCb?.(ev),
@@ -541,6 +692,12 @@ export class OpenLayersAdapter implements MapAdapter {
     this.layers.clear();
     this.sources.clear();
     this.iconCache.clear();
+    if (this.highlightLayer) { this.map.removeLayer(this.highlightLayer); this.highlightLayer = undefined; }
+    this.highlightExtent = null;
+    this.highlightStyleOpts = undefined;
+    this.lastData.clear();
+    this.lastFit = undefined;
+    this.projPending = false;
     unByKey(this.olKeys);
     this.olKeys = [];
     if (this.viewKey) { unByKey(this.viewKey); this.viewKey = undefined; }
