@@ -412,6 +412,9 @@ export interface ToolbarOptions {
   /** Add a "lock map" toggle at the **end** of the bar — freezes pan/zoom/rotate so the
    *  map can't move while drawing. Default `true`; set `false` to hide it. */
   lock?: boolean;
+  /** Appearance of the **active** tool button (driven by {@link MapAdapter.setActiveTool}). Defaults
+   *  to `{ background: "#dbeafe" }`; any field you set overrides it. Same result on all 3 engines. */
+  activeStyle?: { background?: string; color?: string; outline?: string; boxShadow?: string };
 }
 
 /** Snapshot output size: a pixel-ratio preset (see `snapshotScale`). */
@@ -511,6 +514,11 @@ export interface MapAdapter {
 
   /** Native toolbar (shared DOM); returns the container for live mutation. */
   addToolbar(items: ToolbarItem[], options?: ToolbarOptions): HTMLElement;
+
+  /** Highlight the **active** tool button — **consumer-driven** (the click no longer sets it). Pass a
+   *  `ToolbarItem` id to mark its bar button active (a submenu/toggle child marks its parent bar
+   *  trigger); pass `null` to clear. One button active at a time; idempotent; no toolbar ⇒ no-op. */
+  setActiveTool(id: string | null): void;
 
   getCenter(): LatLng;
   /** Rough lon/lat span of the current view, for sizing dropped default geometry. */

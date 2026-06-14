@@ -11,6 +11,49 @@ import { CHROME_SURFACE, CHROME_BORDER, CHROME_SHADOW, CHROME_HOVER, CHROME_INK,
 
 const STYLE_ID = "draw-adapter-toolbar-style";
 const TOOLBAR_CLASS = "draw-adapter-toolbar";
+/** Engine-stable hook class added to every toolbar container (so shared CSS + `setToolbarActive`
+ *  target one selector across MapLibre/OpenLayers/Leaflet). */
+const SHARED_CLASS = "dap-toolbar";
+/** Default highlight for the active tool button (the former per-engine `#dbeafe`). */
+const DEFAULT_ACTIVE_BG = "#dbeafe";
+
+/** Per-container registry: maps every item id (incl. submenu descendants) to its **bar** button, plus
+ *  the consumer's `activeStyle`. Lets {@link setToolbarActive} drive the highlight by id. */
+const toolbarReg = new WeakMap<HTMLElement, { byId: Map<string, HTMLButtonElement>; activeStyle: ToolbarOptions["activeStyle"] }>();
+
+/** Inline props {@link setToolbarActive} writes for the active state (cleared on deactivate). */
+function applyActiveStyle(btn: HTMLElement, s: ToolbarOptions["activeStyle"]): void {
+  btn.style.background = s?.background ?? DEFAULT_ACTIVE_BG;
+  if (s?.color) btn.style.color = s.color;
+  if (s?.outline) btn.style.outline = s.outline;
+  if (s?.boxShadow) btn.style.boxShadow = s.boxShadow;
+}
+function clearActiveStyle(btn: HTMLElement): void {
+  btn.style.background = ""; btn.style.color = ""; btn.style.outline = ""; btn.style.boxShadow = "";
+}
+
+/**
+ * Set (or clear) the **active** tool highlight on a toolbar built by {@link populateToolbar}.
+ * Consumer-driven: `id` = a `ToolbarItem` id → its bar button (a submenu/toggle descendant id marks
+ * its parent bar trigger); `null` → clear. One active at a time; idempotent. The highlight is applied
+ * inline (default `#dbeafe`, overridable via `ToolbarOptions.activeStyle`) so it wins uniformly on all
+ * three engines regardless of their own button CSS. No-op if `el` isn't a known toolbar.
+ */
+export function setToolbarActive(el: HTMLElement, id: string | null): void {
+  const reg = toolbarReg.get(el);
+  el.querySelectorAll<HTMLElement>("button.active").forEach((b) => { b.classList.remove("active"); clearActiveStyle(b); });
+  if (id == null) return;
+  const btn = reg?.byId.get(id);
+  if (!btn) return;
+  btn.classList.add("active");
+  applyActiveStyle(btn, reg?.activeStyle);
+}
+
+/** Collect an item's id + all its (recursive) submenu descendant ids — all map to the same bar button. */
+function collectIds(item: ToolbarItem, acc: string[]): void {
+  acc.push(item.id);
+  for (const c of item.children ?? []) collectIds(c, acc);
+}
 
 /** Neutral placeholder icon used when a {@link ToolbarItem} provides no `svg`. */
 const FALLBACK_ICON =
@@ -43,6 +86,10 @@ function ensureToolbarStyle(): void {
     `.${TOOLBAR_CLASS} button svg{display:block;margin:auto}` +
     `.${TOOLBAR_CLASS} button{color:${CHROME_INK}}` +
     `.${TOOLBAR_CLASS} button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}` +
+    // A mouse click leaves the button focused; drop the focus ring then (it reads as "selected"),
+    // but KEEP it for keyboard focus (`:focus-visible`) for accessibility. The active-tool highlight
+    // is the `.active` class, applied by `setToolbarActive` (consumer-driven), not by focus.
+    `.${SHARED_CLASS} button:focus:not(:focus-visible){outline:none}` +
     // Submenu: the trigger is a plain bar button (no wrapper → native first/last-child
     // styling intact). The flyout is appended to <body> and `position:fixed`, JS-placed
     // next to the trigger via getBoundingClientRect — so it's never clipped (Leaflet's
@@ -109,7 +156,7 @@ function createButton(item: ToolbarItem): HTMLButtonElement {
 }
 
 export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?: ToolbarOptions, refocus?: () => void): void {
-  el.classList.add(TOOLBAR_CLASS);
+  el.classList.add(TOOLBAR_CLASS, SHARED_CLASS);
   ensureToolbarStyle();
   applyToolbarLayout(el, options);
 
@@ -123,10 +170,6 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
   // Flyouts (at every nesting depth) live in <body>, not in `el`, so we track them all here
   // for hierarchical open/close and for teardown.
   const menus: HTMLElement[] = [];
-  const setActive = (btn: HTMLButtonElement): void => {
-    el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-  };
   // Open `node` (and its ancestors) while collapsing every *other* branch — so a cascade
   // shows exactly one path. Ancestors are placed first (a nested flyout anchors to its
   // trigger, which lives inside the parent flyout, so the parent must be positioned already).
@@ -145,17 +188,22 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
     registerMenu: (m) => menus.push(m),
     closeAll: () => { for (const m of menus) m.classList.remove("open"); },
     openOnly,
-    setActive,
     ...(refocus ? { refocus } : {}),
   };
 
+  // Index every id (incl. submenu descendants) → its bar button, so `setToolbarActive(id)` can
+  // highlight the right bar element (a child id marks its parent trigger).
+  const byId = new Map<string, HTMLButtonElement>();
   for (const item of shown) {
-    if (item.children?.length) {
-      el.appendChild(buildSubmenu(item, side, ctx).trigger);
-    } else {
-      el.appendChild(buildButton(item, el, setActive, ctx.closeAll, refocus));
-    }
+    const barBtn = item.children?.length
+      ? buildSubmenu(item, side, ctx).trigger
+      : buildButton(item, ctx.closeAll, refocus);
+    el.appendChild(barBtn);
+    const ids: string[] = [];
+    collectIds(item, ids);
+    for (const id of ids) byId.set(id, barBtn);
   }
+  toolbarReg.set(el, { byId, activeStyle: options?.activeStyle });
 
   // Close any open flyout on a press outside the toolbar AND outside the flyouts (e.g. on
   // the map). One capture-phase listener for the toolbar's life; once `el` is detached
@@ -175,11 +223,10 @@ export function populateToolbar(el: HTMLElement, items: ToolbarItem[], options?:
   }
 }
 
-/** A leaf (non-submenu) tool button, fully wired. */
+/** A leaf (non-submenu) tool button, fully wired. The active highlight is **not** set here — it's
+ *  consumer-driven via {@link setToolbarActive} (so a click never leaves a sticky `.active`). */
 function buildButton(
   item: ToolbarItem,
-  el: HTMLElement,
-  setActive: (btn: HTMLButtonElement) => void,
   closeSubmenus: () => void,
   refocus?: () => void,
 ): HTMLButtonElement {
@@ -189,8 +236,6 @@ function buildButton(
       e.preventDefault();
       closeSubmenus();
       item.onClick?.(e); // pass the MouseEvent so handlers can read modifier keys
-      if (item.toggle) setActive(button);
-      else if (!item.standalone) el.querySelectorAll("button.active").forEach((b) => b.classList.remove("active"));
       refocus?.(); // the click left focus on <body> — give it back to the map so onKey/Escape works
     });
   }
@@ -217,8 +262,6 @@ interface MenuCtx {
   closeAll(): void;
   /** Open this branch, collapsing the others. */
   openOnly(node: SubmenuNode): void;
-  /** Highlight a bar button as the active tool. */
-  setActive(btn: HTMLButtonElement): void;
   refocus?: () => void;
 }
 
@@ -304,7 +347,7 @@ function buildSubmenu(
         cb.addEventListener("click", (e) => {
           e.preventDefault();
           child.onClick?.(e);
-          if (isToggle) { selected = child; reflect(); ctx.setActive(barBtn); } // parent adopts the pick
+          if (isToggle) { selected = child; reflect(); } // parent adopts the pick's icon (highlight is consumer-driven)
           ctx.closeAll(); // pick a leaf ⇒ collapse the whole cascade
           ctx.refocus?.();
         });
@@ -331,7 +374,7 @@ function buildSubmenu(
     cancelChainClose();
     if (!menu.classList.contains("open")) { ctx.openOnly(node); return; } // closed (touch) ⇒ just open
     // Already open (hovered): a click runs the parent action.
-    if (isToggle) { selected?.onClick?.(e); ctx.setActive(barBtn); }
+    if (isToggle) selected?.onClick?.(e);
     else item.onClick?.(e); // click-mode parent: only acts if given an onClick
     ctx.refocus?.();
   });

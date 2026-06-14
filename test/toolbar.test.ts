@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { applyToolbarLayout, populateToolbar } from "../src/toolbar.js";
+import { applyToolbarLayout, populateToolbar, setToolbarActive } from "../src/toolbar.js";
 import type { ToolbarItem, ToolbarOptions } from "../src/index.js";
 
 const layout = (position: ToolbarOptions["position"]): CSSStyleDeclaration => {
@@ -82,15 +82,14 @@ describe("populateToolbar", () => {
     expect(ids).toEqual(["polygon", "circle"]);
   });
 
-  it("fires onClick and toggles the active class for toggle tools", () => {
+  it("fires onClick but does NOT set a sticky `.active` (highlight is consumer-driven now)", () => {
     const el = document.createElement("div");
     const items = mkItems();
     populateToolbar(el, items);
     const [circleBtn, , clearBtn] = [...el.querySelectorAll("button")] as HTMLButtonElement[];
     circleBtn!.click();
     expect(items[0]!.onClick).toHaveBeenCalledOnce();
-    expect(circleBtn!.classList.contains("active")).toBe(true);
-    // A non-toggle tool clears the active state.
+    expect(circleBtn!.classList.contains("active")).toBe(false); // no auto-highlight on click
     clearBtn!.click();
     expect(items[2]!.onClick).toHaveBeenCalledOnce();
     expect(el.querySelector("button.active")).toBeNull();
@@ -199,13 +198,14 @@ describe("populateToolbar — submenus (flyout)", () => {
     // parent shows the FIRST child by default
     expect(trigger.dataset["tool"]).toBe("one");
     expect(trigger.innerHTML).toContain('data-k="one"');
-    // open (hover) + pick the second child ⇒ its onClick fires, parent adopts it + active
+    // open (hover) + pick the second child ⇒ its onClick fires, parent adopts its ICON (highlight is
+    // consumer-driven, so the trigger does NOT auto-gain `.active`)
     trigger.dispatchEvent(new MouseEvent("mouseenter"));
     menu().querySelector<HTMLButtonElement>('button[data-tool="two"]')!.click();
     expect(item.children![1]!.onClick).toHaveBeenCalledOnce();
     expect(trigger.dataset["tool"]).toBe("two");
     expect(trigger.innerHTML).toContain('data-k="two"');
-    expect(trigger.classList.contains("active")).toBe(true);
+    expect(trigger.classList.contains("active")).toBe(false); // icon mirror ✓, but no auto-highlight
     // clicking the (open) parent re-runs the SELECTED child's action
     trigger.dispatchEvent(new MouseEvent("mouseenter"));
     trigger.click();
@@ -372,6 +372,70 @@ describe("populateToolbar — nested submenus (sub-sub-menu, alternating directi
     // two flyouts now carry the "down" side class (level 1 and level 3); the deepest is open
     expect([...document.querySelectorAll(".dap-submenu-down.open")].length).toBeGreaterThanOrEqual(2);
     expect(deepest).not.toBeNull();
+  });
+});
+
+describe("setToolbarActive — consumer-driven active-tool highlight", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+  const items: ToolbarItem[] = [
+    { id: "circle", title: "Circle", svg: "<svg/>", onClick: vi.fn() },
+    { id: "shapes", title: "Shapes", svg: "<svg/>", children: [
+      { id: "rect", title: "Rect", svg: "<svg/>", onClick: vi.fn() },
+      { id: "poly", title: "Poly", svg: "<svg/>", onClick: vi.fn() },
+    ] },
+  ];
+  const barBtn = (el: HTMLElement, tool: string): HTMLButtonElement | null =>
+    [...el.querySelectorAll("button")].find((b) => (b as HTMLButtonElement).dataset["tool"] === tool) as HTMLButtonElement ?? null;
+
+  it("highlights a leaf tool by id (class + default #dbeafe background), and clears with null", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items);
+    setToolbarActive(el, "circle");
+    const b = barBtn(el, "circle")!;
+    expect(b.classList.contains("active")).toBe(true);
+    expect(b.style.background).toBe("rgb(219, 234, 254)"); // #dbeafe, applied inline ⇒ wins on every engine
+    setToolbarActive(el, null);
+    expect(el.querySelector("button.active")).toBeNull();
+    expect(b.style.background).toBe(""); // inline highlight removed
+  });
+
+  it("only one button is active at a time", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items);
+    setToolbarActive(el, "circle");
+    setToolbarActive(el, "shapes");
+    expect(el.querySelectorAll("button.active")).toHaveLength(1);
+    expect(barBtn(el, "circle")!.classList.contains("active")).toBe(false);
+  });
+
+  it("a submenu child id highlights its parent BAR trigger", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items);
+    setToolbarActive(el, "poly"); // a child of the "shapes" submenu
+    const trigger = el.querySelector<HTMLButtonElement>("button.dap-submenu-trigger")!;
+    expect(trigger.classList.contains("active")).toBe(true); // the bar trigger, not a flyout button
+  });
+
+  it("ToolbarOptions.activeStyle overrides the default appearance", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items, { activeStyle: { background: "#ffedd5", outline: "2px solid #e8731a" } });
+    setToolbarActive(el, "circle");
+    const b = barBtn(el, "circle")!;
+    expect(b.style.background).toBe("rgb(255, 237, 213)"); // #ffedd5
+    expect(b.style.outline).toBe("2px solid #e8731a");
+  });
+
+  it("a click does NOT set active (it's consumer-driven)", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items);
+    barBtn(el, "circle")!.click();
+    expect(el.querySelector("button.active")).toBeNull();
+  });
+
+  it("the container carries the engine-stable `dap-toolbar` hook class", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, items);
+    expect(el.classList.contains("dap-toolbar")).toBe(true);
   });
 });
 

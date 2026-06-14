@@ -498,3 +498,22 @@ describe("LeafletAdapter — text label hit (call-out is clickable when hittable
     a.destroy();
   });
 });
+
+describe("LeafletAdapter — setActiveTool (consumer-driven highlight)", () => {
+  let map: L.Map; let el: HTMLElement;
+  beforeEach(() => { el = sizedContainer(); map = L.map(el, { center: [10, 10], zoom: 4 }); });
+  afterEach(() => { try { map.remove(); } catch { /* ignore */ } document.body.innerHTML = ""; });
+
+  it("highlights the bar button by id and clears with null", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const bar = a.addToolbar([{ id: "cb", title: "CB", svg: "<svg/>", onClick: () => {} }], { lock: false, snapshot: "none" });
+    const cb = bar.querySelector('button[data-tool="cb"]') as HTMLElement;
+    a.setActiveTool("cb");
+    expect(cb.classList.contains("active")).toBe(true);
+    expect(cb.style.background).toBe("rgb(219, 234, 254)"); // #dbeafe
+    a.setActiveTool(null);
+    expect(bar.querySelector("button.active")).toBeNull();
+    a.destroy();
+  });
+});

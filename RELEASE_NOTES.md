@@ -2,6 +2,19 @@
 
 ## NEXT RELEASE
 
+- **Add (toolbar):** **`adapter.setActiveTool(id | null)` — consumer-driven active-tool highlight.** The
+  consumer marks the active tool (e.g. on draw start) and clears it (commit/Escape/cancel); `id` is a
+  `ToolbarItem` id (a submenu/toggle child marks its parent **bar trigger**), `null` clears. One active
+  at a time, idempotent. **Behaviour change:** a click **no longer** sets a sticky `.active` itself — so
+  utility buttons (clear/snapshot) don't stay highlighted, and a draw-mode highlight follows the
+  consumer's lifecycle. (A split-button still mirrors its picked child's icon — that's separate.)
+- **Consolidated + configurable:** the active style is now one source applied inline by the shared
+  layer (default `#dbeafe`, identical on **all 3 engines** incl. MapLibre, which had none), overridable
+  via `ToolbarOptions.activeStyle` (`background`/`color`/`outline`/`boxShadow`). The per-engine
+  `button.active` CSS rules (OpenLayers/Leaflet) are removed; the container gets a stable `dap-toolbar`
+  hook class. A mouse click no longer leaves a focus ring (`:focus:not(:focus-visible)`), while keyboard
+  focus stays visible.
+
 ---
 
 ## 0.4.0

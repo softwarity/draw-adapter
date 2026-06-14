@@ -56,7 +56,7 @@ import { boxPadding, textBoxBorderWidth } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
 import { colorizeSprite, svgToDataUrl } from "./symbols.js";
 import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
-import { populateToolbar } from "./toolbar.js";
+import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
@@ -82,7 +82,6 @@ function ensureOLToolbarStyle(): void {
     ".ol-control.draw-adapter-toolbar button{width:30px;height:30px;margin:0;padding:0;border:0;border-radius:0;" +
     "background:#fff;color:#24292f;font-size:inherit;cursor:pointer}" +
     ".ol-control.draw-adapter-toolbar button:hover{background:#f4f4f4}" +
-    ".ol-control.draw-adapter-toolbar button.active{background:#dbeafe}" +
     ".ol-control.draw-adapter-toolbar button:disabled{opacity:.28;filter:grayscale(1);cursor:not-allowed}";
   document.head.appendChild(style);
 }
@@ -203,6 +202,10 @@ export class OpenLayersAdapter implements MapAdapter {
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  setActiveTool(id: string | null): void {
+    if (this.toolbarEl) setToolbarActive(this.toolbarEl, id);
   }
 
   /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). The

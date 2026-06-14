@@ -207,8 +207,23 @@ adapter.addToolbar(
 ```
 
 A `ToolbarItem` is `{ id, title, svg?, toggle?, standalone?, disabled?, onClick?, children?, onRender? }`
-(a missing `svg` falls back to a neutral icon; `toggle` keeps the button `active`;
-`standalone` marks a utility button whose click doesn't change the tool selection).
+(a missing `svg` falls back to a neutral icon; `toggle` makes a split-button that mirrors its picked
+child's icon; `standalone` marks a utility button).
+
+### Active-tool highlight (consumer-driven)
+
+The bar **doesn't** highlight a tool on click. The consumer drives it: call `adapter.setActiveTool(id)`
+when a tool's mode starts and `adapter.setActiveTool(null)` when it ends (commit / Escape / cancel) —
+so utility buttons (clear / snapshot) never stay lit and the highlight tracks your drawing lifecycle.
+`id` is a `ToolbarItem` id (a submenu/toggle child highlights its parent **bar trigger**); one tool is
+active at a time. Identical on all three engines. Style it via `ToolbarOptions.activeStyle`
+(`{ background?, color?, outline?, boxShadow? }`, default `{ background: "#dbeafe" }`):
+
+```ts
+adapter.addToolbar(tools, { activeStyle: { background: "#ffedd5", outline: "2px solid #e8731a" } });
+adapter.setActiveTool("cb");   // CB button lit
+adapter.setActiveTool(null);   // cleared
+```
 
 ### Built-in buttons
 
@@ -506,7 +521,7 @@ fires when the map's window loses focus, so the consumer can drop transient UI s
 ## API surface
 
 `MapAdapter` — `ready`, `registerSymbols`, `setOverlay`, `setOverlayVisible`, `snapshot`,
-`setTooltip`, `addToolbar`, `getCenter`, `getViewSpan`, `getBounds`, `getZoom`, `getContainer`,
+`setTooltip`, `addToolbar`, `setActiveTool`, `getCenter`, `getViewSpan`, `getBounds`, `getZoom`, `getContainer`,
 `fitBounds`, `project`, `unproject`, `onViewChange`, `setPanEnabled`, `setDoubleClickZoom`,
 `setInteractive`, `setCursor`, `onPointer`, `onKey`, `onBlur`, `setWidgets`, `onWidgetEdit`,
 `onWidgetDelete`, `onWidgetAction`, `setCoordFormat`, `destroy`.

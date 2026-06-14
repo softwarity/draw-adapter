@@ -39,7 +39,7 @@ import { num, str, rgba } from "./coerce.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
 import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
-import { populateToolbar } from "./toolbar.js";
+import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
@@ -82,8 +82,7 @@ function ensureLeafletToolbarStyle(): void {
   style.textContent =
     ".draw-adapter-leaflet-toolbar{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 1px 5px rgba(0,0,0,.4)}" +
     ".draw-adapter-leaflet-toolbar button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:#fff;cursor:pointer;padding:0}" +
-    ".draw-adapter-leaflet-toolbar button:hover{background:#f4f4f4}" +
-    ".draw-adapter-leaflet-toolbar button.active{background:#dbeafe}";
+    ".draw-adapter-leaflet-toolbar button:hover{background:#f4f4f4}";
   document.head.appendChild(style);
 }
 
@@ -236,6 +235,10 @@ export class LeafletAdapter implements MapAdapter {
     L.DomEvent.disableScrollPropagation(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  setActiveTool(id: string | null): void {
+    if (this.toolbarEl) setToolbarActive(this.toolbarEl, id);
   }
 
   getCenter(): LatLng {

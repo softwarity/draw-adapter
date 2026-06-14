@@ -42,6 +42,9 @@ export class FakeAdapter implements MapAdapter {
   addToolbar(_items: ToolbarItem[], _options?: ToolbarOptions): HTMLElement {
     return (globalThis.document?.createElement("div") ?? ({} as HTMLElement));
   }
+  /** Last `setActiveTool` argument (records the consumer-driven active-tool calls). */
+  activeTool: string | null = null;
+  setActiveTool(id: string | null): void { this.activeTool = id; }
   getCenter(): LatLng { return this.centre; }
   getViewSpan(): number { return 10; }
   getBounds(): LngLatBounds { return [-1, -1, 1, 1]; }

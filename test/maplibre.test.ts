@@ -317,3 +317,16 @@ describe("MapLibreAdapter — onViewChange single-slot (no listener leak on re-c
     expect(map.handlers.get("moveend")).toHaveLength(1); // no leaked listener
   });
 });
+
+describe("MapLibreAdapter — setActiveTool (consumer-driven highlight)", () => {
+  it("highlights the bar button by id and clears with null", () => {
+    const { adapter } = build();
+    const bar = adapter.addToolbar([{ id: "cb", title: "CB", svg: "<svg/>", onClick: vi.fn() }], { lock: false, snapshot: "none" });
+    const cb = bar.querySelector('button[data-tool="cb"]') as HTMLElement;
+    adapter.setActiveTool("cb");
+    expect(cb.classList.contains("active")).toBe(true);
+    expect(cb.style.background).toBe("rgb(219, 234, 254)"); // #dbeafe — MapLibre now highlights too
+    adapter.setActiveTool(null);
+    expect(bar.querySelector("button.active")).toBeNull();
+  });
+});

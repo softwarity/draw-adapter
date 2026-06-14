@@ -47,7 +47,7 @@ import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { colorizeSprite, loadSpriteImage } from "./symbols.js";
 import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
-import { populateToolbar } from "./toolbar.js";
+import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
@@ -323,6 +323,10 @@ export class MapLibreAdapter implements MapAdapter {
     this.map.getContainer().appendChild(el);
     this.toolbarEl = el;
     return el;
+  }
+
+  setActiveTool(id: string | null): void {
+    if (this.toolbarEl) setToolbarActive(this.toolbarEl, id);
   }
 
   /** Capture the map as PNG, then apply `opts.target` (download/clipboard/none). The
