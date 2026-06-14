@@ -52,7 +52,7 @@ import type {
 import { cursorForHit } from "./index.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
-import { boxPadding } from "./textbox.js";
+import { boxPadding, textBoxBorderWidth } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
 import { colorizeSprite, svgToDataUrl, SPRITE_PX } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
@@ -682,7 +682,7 @@ export class OpenLayersAdapter implements MapAdapter {
               stroke: new Stroke({ color: str(f.get("textHalo"), "#fff"), width: 3 }),
               ...(box ? { padding: [pv, ph, pv, ph] as [number, number, number, number] } : {}),
               ...(bg ? { backgroundFill: new Fill({ color: bg }) } : {}),
-              ...(border ? { backgroundStroke: new Stroke({ color: border, width: 1 }) } : {}),
+              ...(border ? { backgroundStroke: new Stroke({ color: border, width: textBoxBorderWidth(f.get("textBorderWidth")) }) } : {}),
             }),
           });
         };

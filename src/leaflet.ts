@@ -36,7 +36,7 @@ import type {
 import { cursorForHit } from "./index.js";
 import { WidgetLayer } from "./widget.js";
 import { num, str, rgba } from "./coerce.js";
-import { boxPadding, boxRadius } from "./textbox.js";
+import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
 import { populateToolbar } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
@@ -621,7 +621,7 @@ export class LeafletAdapter implements MapAdapter {
       `color:${color}`,
       `text-shadow:-1px -1px 0 ${halo},1px -1px 0 ${halo},-1px 1px 0 ${halo},1px 1px 0 ${halo}`,
       bg ? `background:${rgba(bg, 1)}` : "",
-      border ? `border:1px solid ${border}` : "",
+      border ? `border:${textBoxBorderWidth(p["textBorderWidth"])}px solid ${border}` : "",
       bg || border ? `padding:${pv}px ${ph}px;border-radius:${radius}px` : "",
       // Centre the label on its anchor (like MapLibre's centred text-anchor).
       `transform:translate(-50%,-50%)${rot ? ` rotate(${rot}deg)` : ""}`,

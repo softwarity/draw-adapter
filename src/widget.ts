@@ -25,7 +25,7 @@ import type {
   WidgetOrigin,
   WidgetPickerOption,
 } from "./index.js";
-import { boxPadding, boxRadius } from "./textbox.js";
+import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
 
 /** A handle to one engine-anchored card mount. The card DOM lives inside `el`. */
@@ -247,6 +247,7 @@ function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): 
 type PickerMode = "carousel" | "flower" | "grid";
 const LINEAR_MAX = 5;   // ≤ this many options ⇒ a linear carousel
 const FLOWER_MAX = 10;  // ≤ this many options ⇒ a radial flower; beyond ⇒ a grid
+const PICKER_GLYPH_PX = 22; // default trigger glyph box (px) when `size` is unset — never the svg's intrinsic size
 
 const pickerState = new WeakMap<HTMLElement, { options: WidgetPickerOption[]; value: string; name: string | undefined; mode: PickerMode; color: string | undefined }>();
 
@@ -296,9 +297,21 @@ function animateCarousel(el: HTMLElement, dir: number): void {
 
 /** Sync a picker element to the model — re-paints the value only when it changed, so it never
  *  clobbers an in-flight cycle animation. `color` is the accent the flower/grid inherit too. */
-function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined): void {
+function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined, size: number | undefined): void {
   const opt = options.find((o) => optValue(o) === value) ?? options[0];
   el.title = opt ? optTitle(opt) : ""; // the trigger's tooltip follows the current value
+  // Size the trigger box. A GLYPH option needs a DEFINED px box — the inline svg is `width:100%`, so
+  // without a box it falls back to its intrinsic size (e.g. 128px). A TEXT option uses `fontSize`.
+  if (opt && typeof opt !== "string" && opt.svg) {
+    const px = size != null ? size : PICKER_GLYPH_PX;
+    el.style.width = `${px}px`;
+    el.style.height = `${px}px`;
+    el.style.fontSize = "";
+  } else {
+    el.style.width = "";
+    el.style.height = "";
+    el.style.fontSize = size != null ? `${size}px` : "";
+  }
   const st = pickerState.get(el);
   if (!st) {
     pickerState.set(el, { options, value, name, mode, color });
@@ -896,6 +909,41 @@ function wireDialDrag(root: HTMLElement, target: SVGCircleElement, card: Card): 
   target.addEventListener("pointercancel", end);
 }
 
+// ── card frame shapes (non-rectangular SVG outlines) ──────────────────────────
+// Normalized polygons: [0,0] = top-left, [1,1] = bottom-right of the content+padding box. The presets
+// keep their point INSIDE [0,1] (so it carries a text line — a "H" in the hat). A *custom* polygon may
+// put points outside [0,1] to form a hollow cap/point; the card then grows to reserve that overshoot.
+const BOX_SHAPES: Record<string, number[][]> = {
+  rect: [[0, 0], [1, 0], [1, 1], [0, 1]],
+  "pentagon-up": [[0, 0.4], [0.5, 0], [1, 0.4], [1, 1], [0, 1]],
+  "pentagon-down": [[0, 0], [1, 0], [1, 0.6], [0.5, 1], [0, 0.6]],
+};
+/** Resolve a `boxShape` to its normalized polygon, or `null` for the plain rectangle (the CSS box). */
+export function resolveBoxShape(shape: MarkerWidget["boxShape"]): number[][] | null {
+  if (shape == null || shape === "rect") return null;
+  if (typeof shape === "string") return BOX_SHAPES[shape] ?? null; // unknown preset ⇒ plain box
+  return shape.length >= 3 ? shape : null; // a custom outline needs ≥ 3 points
+}
+
+export interface ShapeLayout { over: { t: number; r: number; b: number; l: number }; svgW: number; svgH: number; inset: number; points: string; }
+/** Geometry for a shaped frame from the measured content+padding box `W×H` and border width `bw`:
+ *  the overshoot margins (px) that grow the card, the svg size, and the polygon `points` string.
+ *  Pure (DOM-free) so it's unit-testable. */
+export function boxShapeLayout(points: number[][], W: number, H: number, bw: number): ShapeLayout {
+  let minX = 0, minY = 0, maxX = 1, maxY = 1; // always include the [0,1] content box
+  for (const pt of points) {
+    const x = pt[0]!, y = pt[1]!;
+    if (x < minX) minX = x; if (y < minY) minY = y;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+  }
+  const l = Math.max(0, -minX) * W, r = Math.max(0, maxX - 1) * W;
+  const t = Math.max(0, -minY) * H, b = Math.max(0, maxY - 1) * H;
+  const inset = bw / 2 + 1; // breathing room so the stroke isn't clipped at the svg edge
+  const svgW = l + W + r + 2 * inset, svgH = t + H + b + 2 * inset;
+  const pts = points.map((pt) => `${(inset + l + pt[0]! * W).toFixed(2)},${(inset + t + pt[1]! * H).toFixed(2)}`).join(" ");
+  return { over: { t, r, b, l }, svgW, svgH, inset, points: pts };
+}
+
 class Card {
   readonly mount: WidgetMount;
   id = "";
@@ -914,6 +962,8 @@ class Card {
   private delBtn: HTMLButtonElement | undefined;
   private actionBtns: HTMLElement[] = [];
   private actionSig = "";
+  /** The SVG frame for a non-rect `boxShape` (lazily created); absent for the plain CSS box. */
+  private shapeSvg: SVGSVGElement | undefined;
   private dragging = false;
   private downX = 0;
   private downY = 0;
@@ -965,7 +1015,7 @@ class Card {
     this.root.dataset["oy"] = `${oy}`;
     const framed = !!(w.bg || w.border);
     s.background = w.bg ?? "transparent";
-    s.border = w.border ? `1px solid ${w.border}` : ""; // "" clears it (no frame border)
+    s.border = w.border ? `${boxBorderWidth(w.borderWidth)}px solid ${w.border}` : ""; // "" clears it (no frame border)
     s.borderRadius = `${boxRadius(w.radius)}px`;
     // Padding is decoupled from the frame: apply it when the card is framed (default `medium`) OR an
     // explicit `padding` is given — so a BARE call-out (no bg/border) can still space its content
@@ -980,6 +1030,7 @@ class Card {
     s.color = w.font?.color ?? "";
     s.fontSize = w.font?.size != null ? `${w.font.size}px` : "";
     s.fontFamily = w.font?.family ?? "";
+    s.lineHeight = w.font?.lineHeight != null ? String(w.font.lineHeight) : "1.2"; // unitless; default 1.2
     // A lone-dial card (the break-point speed satellite, centred ON its anchor) is a RING: opt the
     // WHOLE card out of pointer events — `pointer-events` inherits, so the content/box/svg all go
     // transparent and a press in the dial's hole falls through to the handle/map beneath. Only the
@@ -988,9 +1039,57 @@ class Card {
     s.pointerEvents = isLoneDial(w.child) ? "none" : "auto";
     this.coordEls.length = 0;
     reconcile(this.content, [w.child], this);
+    this.applyShape(w); // a non-rect boxShape draws an SVG frame and reserves its overshoot
     const del = w.deletable;
     this.ensureDeleteButton(!!del, framed, typeof del === "object" ? del.title : undefined);
     this.ensureActionButtons(w.buttons);
+  }
+
+  /**
+   * Draw a non-rect {@link BoxShape} as an SVG frame behind the content (so the border follows the
+   * contour, which a CSS border + clip-path can't). The CSS box steps aside (transparent/no border);
+   * padding moves onto the content; the content's measured size feeds {@link boxShapeLayout}, whose
+   * overshoot becomes content **margins** so the inline-block card grows to reserve the cap/point. The
+   * SVG is `pointer-events:none`, so drag/clicks still land on the card body. For `"rect"`/absent the
+   * SVG is removed and the content reset — the CSS box (set in `update`) is left intact.
+   */
+  private applyShape(w: MarkerWidget): void {
+    const poly = resolveBoxShape(w.boxShape);
+    const cs = this.content.style;
+    if (!poly) {
+      if (this.shapeSvg) { this.shapeSvg.remove(); this.shapeSvg = undefined; }
+      cs.padding = ""; cs.margin = ""; cs.position = "";
+      return;
+    }
+    const rs = this.root.style;
+    rs.background = "transparent"; rs.border = ""; rs.borderRadius = "0"; rs.padding = "0"; rs.overflow = "visible";
+    const [pv, ph] = boxPadding(w.padding);
+    cs.padding = `${pv}px ${ph}px`;
+    cs.position = "relative"; // paint above the SVG
+    cs.margin = "0"; // reset before measuring the content+padding box
+    const rect = this.content.getBoundingClientRect();
+    const bw = w.border ? boxBorderWidth(w.borderWidth) : 0;
+    const lay = boxShapeLayout(poly, rect.width, rect.height, bw);
+    cs.margin = `${lay.over.t}px ${lay.over.r}px ${lay.over.b}px ${lay.over.l}px`; // reserve overshoot ⇒ card grows
+    let svg = this.shapeSvg;
+    if (!svg) {
+      svg = document.createElementNS(SVGNS, "svg");
+      svg.setAttribute("class", "draw-adapter-widget-shape");
+      const ss = svg.style; ss.position = "absolute"; ss.pointerEvents = "none"; ss.overflow = "visible";
+      svg.appendChild(document.createElementNS(SVGNS, "polygon"));
+      this.root.insertBefore(svg, this.root.firstChild); // behind the content
+      this.shapeSvg = svg;
+    }
+    svg.setAttribute("width", String(lay.svgW));
+    svg.setAttribute("height", String(lay.svgH));
+    svg.setAttribute("viewBox", `0 0 ${lay.svgW} ${lay.svgH}`);
+    svg.style.left = `${-lay.inset}px`;
+    svg.style.top = `${-lay.inset}px`;
+    const p = svg.firstElementChild as SVGPolygonElement;
+    p.setAttribute("points", lay.points);
+    p.setAttribute("fill", w.bg ?? "none");
+    if (w.border) { p.setAttribute("stroke", w.border); p.setAttribute("stroke-width", String(bw)); p.setAttribute("stroke-linejoin", "round"); }
+    else { p.setAttribute("stroke", "none"); p.removeAttribute("stroke-width"); }
   }
 
   emitAction(event: string): void {
@@ -1003,8 +1102,9 @@ class Card {
     this.host.focus();
   }
 
-  /** Drive the card's drag pipeline from a control acting as a drag handle (the carousel). */
+  /** Drive the card's drag pipeline from a control acting as a drag handle (the carousel/picker). */
   forwardDrag(type: PointerEvent["type"], e: globalThis.PointerEvent): void {
+    if (type === "down") closePicker(); // a card drag starts (even from the picker trigger) ⇒ collapse any open popup
     this.send(type, e);
   }
 
@@ -1252,9 +1352,8 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
   if (node.kind === "dial") { updateDial(el, node, card); return; }
   // text
   if (node.control === "picker") {
-    updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color);
+    updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color, node.size);
     el.style.color = node.color ?? "";
-    el.style.fontSize = node.size != null ? `${node.size}px` : "";
     return;
   }
   if (node.editable) {
@@ -1270,6 +1369,8 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
     autosize(input);
   } else {
     el.textContent = node.value;
+    el.style.whiteSpace = "pre-line"; // honour `\n` in a static label (like the picker), not one line
+    el.style.textAlign = "center"; // centre multi-line labels so a short line (H/L) sits under the FL
     el.style.textTransform = node.uppercase ? "uppercase" : "";
     el.style.color = node.color ?? "";
     el.style.fontSize = node.size != null ? `${node.size}px` : "";

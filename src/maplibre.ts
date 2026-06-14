@@ -45,7 +45,7 @@ import type {
 import { cursorForHit, EMPTY_FC } from "./index.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { colorizeSprite, loadSpriteImage, SPRITE_PX } from "./symbols.js";
-import { boxPadding, boxRadius } from "./textbox.js";
+import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { populateToolbar } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
@@ -217,7 +217,7 @@ export class MapLibreAdapter implements MapAdapter {
 
   /**
    * `icon-image` expression for a `text` layer: a per-feature label-box id
-   * `__box|<bg>|<border>|<size>|<radius>` when the feature carries a `textBackground`
+   * `__box|<bg>|<border>|<size>|<radius>|<borderWidth>` when the feature carries a `textBackground`
    * and/or `textBorder`, else `""` (no box). Materialized lazily by
    * {@link materializeCalloutBox} via `styleimagemissing`.
    */
@@ -231,7 +231,8 @@ export class MapLibreAdapter implements MapAdapter {
         ["coalesce", ["get", "textBackground"], ""], "|",
         ["coalesce", ["get", "textBorder"], ""], "|",
         ["coalesce", ["get", "textBoxSize"], "medium"], "|",
-        ["coalesce", ["get", "textBoxRadius"], "none"]],
+        ["coalesce", ["get", "textBoxRadius"], "none"], "|",
+        ["coalesce", ["get", "textBorderWidth"], "medium"]],
       "",
     ];
   }
@@ -245,10 +246,10 @@ export class MapLibreAdapter implements MapAdapter {
    */
   private materializeCalloutBox(id: string): void {
     if (typeof document === "undefined") return;
-    const [, bg, border, size, radius] = id.split("|");
+    const [, bg, border, size, radius, borderWidth] = id.split("|");
     const [pv, ph] = boxPadding(size);
     const R = boxRadius(radius);
-    const bw = border ? 1.4 : 0; // border width (css px)
+    const bw = border ? textBoxBorderWidth(borderWidth) : 0; // border width (css px), preset (default 1.4)
     const insetX = Math.max(ph + bw, R, 2);
     const insetY = Math.max(pv + bw, R, 2);
     const Scss = 2 * Math.max(insetX, insetY) + 8; // square; +middle so there's a stretch band

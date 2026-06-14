@@ -407,9 +407,12 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   full current set each render. Cards are created / updated **in place** / removed — a focused
   input **keeps its focus and caret** across re-`setWidgets`, so it's safe to re-push every render.
 - **Container** (`MarkerWidget`) only *positions* (`anchor` + `origin` — which point of the card
-  pins to the anchor, named or a `{x,y}` fraction) and *frames* (`bg`, `border`, `radius`,
-  `padding`, `font`). It holds exactly one root **box**; `radius`/`padding` reuse the label-box
-  `TextBoxRadius`/`TextBoxSize` presets, so widgets and label boxes look consistent.
+  pins to the anchor, named or a `{x,y}` fraction) and *frames* (`bg`, `border`, `borderWidth`,
+  `radius`, `padding`, `font`). It holds exactly one root **box**; `radius`/`padding`/`borderWidth`
+  reuse the label-box presets so widgets and label boxes look consistent. **`boxShape`** turns the
+  rectangular frame into a contour-following **SVG** outline — `"pentagon-up"`/`"pentagon-down"`
+  ("house" shapes) or a custom normalized `number[][]` polygon (points outside `[0,1]` form a
+  cap/point and the card grows to reserve it); `"rect"`/absent is the plain CSS box.
 - **Boxes** (`{ dir: "v"|"h", align?, gap?, color?, size?, items }`) do layout (vbox/hbox) and may
   set `color`/`size` that **cascade** to descendant text/coord (plain CSS inheritance).
 - **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label; an inline

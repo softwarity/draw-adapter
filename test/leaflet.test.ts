@@ -296,6 +296,20 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  it("label box: border width is a preset (textBorderWidth), default ~1.4px", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    const labelHtml = (props: Record<string, unknown>): string => {
+      a.setOverlay("label", { type: "FeatureCollection",
+        features: [{ type: "Feature", geometry: { type: "Point", coordinates: [10, 10] }, properties: { text: "X", textBorder: "#111", ...props } }] });
+      return (el.querySelector(".leaflet-dap-label-pane .leaflet-marker-icon") as HTMLElement).innerHTML;
+    };
+    expect(labelHtml({})).toContain("border:1.4px solid");            // default ⇒ medium ⇒ 1.4px (no regression)
+    expect(labelHtml({ textBorderWidth: "small" })).toContain("border:0.8px solid");
+    expect(labelHtml({ textBorderWidth: "large" })).toContain("border:2.2px solid");
+    a.destroy();
+  });
+
   it("forwards the live modifier state on the pointer event (read off originalEvent), default false", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS });
     await a.ready();

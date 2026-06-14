@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 
-import { WidgetLayer } from "../src/widget.js";
+import { WidgetLayer, boxShapeLayout, resolveBoxShape } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
 import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit } from "../src/index.js";
 
@@ -75,6 +75,21 @@ describe("WidgetLayer — builds the card tree", () => {
     expect(card.querySelector('[data-wtag="coord"]')?.textContent).toBe("46.00°N 3.00°E");
   });
 
+  it("border width is a preset (small/medium/large); default medium = 1px (unchanged)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const card = (bw?: "small" | "medium" | "large"): string => {
+      layer.setWidgets([{ id: "b", anchor: { lon: 0, lat: 0 }, border: "#1f2328",
+        ...(bw ? { borderWidth: bw } : {}),
+        child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>", size: 20 }] } }]);
+      return cardEl(host).style.border;
+    };
+    expect(card()).toContain("1px solid");     // default ⇒ medium ⇒ 1px (former look)
+    expect(card("small")).toContain("0.5px solid");
+    expect(card("medium")).toContain("1px solid");
+    expect(card("large")).toContain("2px solid");
+  });
+
   it("a widget with no bg/border renders just the glyph — no frame, no padding", () => {
     const host = new FakeHost();
     new WidgetLayer(host).setWidgets([{
@@ -109,6 +124,25 @@ describe("WidgetLayer — builds the card tree", () => {
     const card = cardEl(host);
     expect(card.querySelector("input")).toBeNull();
     expect(card.querySelector('[data-wtag="text:label"]')?.textContent).toBe("NN");
+  });
+
+  it("a static text leaf honours \\n (white-space: pre-line), like the picker", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "t", anchor: { lon: 0, lat: 0 },
+      child: { dir: "v", items: [{ kind: "text", value: "H\n460" }] } }]);
+    const label = cardEl(host).querySelector('[data-wtag="text:label"]') as HTMLElement;
+    expect(label.style.whiteSpace).toBe("pre-line");
+    expect(label.style.textAlign).toBe("center"); // a short line (H) sits centred under the FL
+    expect(label.textContent).toBe("H\n460"); // both lines kept (not collapsed to one)
+  });
+
+  it("font.lineHeight sets the card's line-height (default 1.2)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([{ id: "l", anchor: { lon: 0, lat: 0 }, child: { dir: "v", items: [{ kind: "text", value: "X" }] } }]);
+    expect(cardEl(host).style.lineHeight).toBe("1.2");
+    layer.setWidgets([{ id: "l", anchor: { lon: 0, lat: 0 }, font: { lineHeight: 1 }, child: { dir: "v", items: [{ kind: "text", value: "X" }] } }]);
+    expect(cardEl(host).style.lineHeight).toBe("1");
   });
 
   it("auto-sizes the editable input — an empty input gets an explicit (≈1 char) centered width, not the browser default", () => {
@@ -172,6 +206,74 @@ describe("WidgetLayer — diff by id (in place)", () => {
     expect(cardEl(host).querySelector("input")).not.toBeNull();
     layer.setWidgets([make(false)]);
     expect(cardEl(host).querySelector("input")).toBeNull();
+  });
+});
+
+describe("box frame shapes (boxShape)", () => {
+  it("resolveBoxShape: rect/absent ⇒ null; presets ⇒ polygons; custom passes through; <3 pts ⇒ null", () => {
+    expect(resolveBoxShape(undefined)).toBeNull();
+    expect(resolveBoxShape("rect")).toBeNull();
+    expect(resolveBoxShape("bogus" as never)).toBeNull();
+    expect(resolveBoxShape("pentagon-up")).toHaveLength(5);
+    expect(resolveBoxShape("pentagon-down")).toHaveLength(5);
+    const custom = [[0, 0], [1, 0], [0.5, 1.2]];
+    expect(resolveBoxShape(custom)).toBe(custom);
+    expect(resolveBoxShape([[0, 0], [1, 1]])).toBeNull(); // degenerate
+  });
+
+  it("boxShapeLayout: a custom point OUTSIDE [0,1] reserves overshoot, scales, leaves room for the stroke", () => {
+    const lay = boxShapeLayout([[0, 0], [0.5, -0.45], [1, 0], [1, 1], [0, 1]], 100, 40, 1); // W=100 H=40 bw=1 ⇒ inset=1.5
+    expect(lay.over.t).toBeCloseTo(18); // 0.45 × 40 reserved above
+    expect(lay.over.b).toBe(0);
+    expect(lay.svgW).toBeCloseTo(103); // 100 + 2×1.5
+    expect(lay.svgH).toBeCloseTo(61);  // 18 + 40 + 2×1.5
+    expect(lay.points.split(" ")).toHaveLength(5);
+    expect(lay.points.split(" ")[1]).toBe("51.50,1.50"); // the apex: centred X, at the top
+  });
+
+  it("boxShapeLayout: the presets keep their point INSIDE [0,1] (no overshoot — it carries a text line)", () => {
+    const up = boxShapeLayout(resolveBoxShape("pentagon-up")!, 100, 40, 0); // bw=0 ⇒ inset=1
+    expect(up.over).toEqual({ t: 0, r: 0, b: 0, l: 0 });
+    expect(up.points.split(" ")).toHaveLength(5);
+    expect(up.points.split(" ")[1]).toBe("51.00,1.00"); // apex [0.5,0] = top-centre (in the hat)
+    const down = boxShapeLayout(resolveBoxShape("pentagon-down")!, 80, 20, 0);
+    expect(down.over).toEqual({ t: 0, r: 0, b: 0, l: 0 });
+    expect(down.points.split(" ")[3]).toBe("41.00,21.00"); // apex [0.5,1] = bottom-centre
+  });
+
+  it("a non-rect card draws an SVG frame (bg=fill, border=stroke) and steps the CSS box aside", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "h", anchor: { lon: 0, lat: 0 },
+      bg: "#fff", border: "#1f2328", borderWidth: "large", boxShape: "pentagon-up",
+      child: { dir: "h", items: [{ kind: "text", value: "TROPO" }] } }]);
+    const card = cardEl(host);
+    const svg = card.querySelector(".draw-adapter-widget-shape") as SVGSVGElement;
+    expect(svg).not.toBeNull();
+    const poly = svg.querySelector("polygon")!;
+    expect(poly.getAttribute("points")!.split(" ")).toHaveLength(5);
+    expect(poly.getAttribute("fill")).toBe("#fff");
+    expect(poly.getAttribute("stroke")).toBe("#1f2328");
+    expect(poly.getAttribute("stroke-width")).toBe("2"); // borderWidth "large"
+    expect(card.style.background).toBe("transparent"); // CSS box stepped aside
+    expect(card.style.border).toBe("");
+    expect(svg.style.pointerEvents).toBe("none"); // drag still lands on the card body
+  });
+
+  it("rect/absent ⇒ no SVG frame, the CSS box is unchanged (no regression)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([{ id: "r", anchor: { lon: 0, lat: 0 }, bg: "#fff", border: "#1f2328",
+      child: { dir: "h", items: [{ kind: "text", value: "X" }] } }]);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-shape")).toBeNull();
+    expect(cardEl(host).style.border).toContain("1px solid");
+    // switching a card to a shape and back removes the SVG
+    layer.setWidgets([{ id: "r", anchor: { lon: 0, lat: 0 }, bg: "#fff", border: "#1f2328", boxShape: "pentagon-down",
+      child: { dir: "h", items: [{ kind: "text", value: "X" }] } }]);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-shape")).not.toBeNull();
+    layer.setWidgets([{ id: "r", anchor: { lon: 0, lat: 0 }, bg: "#fff", border: "#1f2328",
+      child: { dir: "h", items: [{ kind: "text", value: "X" }] } }]);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-shape")).toBeNull();
+    expect(cardEl(host).style.border).toContain("1px solid"); // CSS box restored
   });
 });
 
@@ -670,6 +772,21 @@ describe("WidgetLayer — picker flower / grid modes", () => {
     expect(cel(host).title).toBe(""); // plain options ⇒ no tooltip
   });
 
+  it("dragging the card FROM an open picker trigger closes the popup as the drag starts", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([picker(7)]);
+    const t = cel(host);
+    tap(t); // open the flower
+    expect(flower()).not.toBeNull();
+    // press the trigger and move past the threshold ⇒ a card drag begins ⇒ the popup collapses
+    t.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    t.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
+    expect(flower()).toBeNull(); // no orphan popup left on the card
+    expect(host.emits.map((e) => e.type)).toContain("move"); // the card drag proceeded
+    t.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 40, clientY: 40 }));
+  });
+
   it("a drag on a flower-mode picker moves the card and does NOT open a popup", () => {
     const host = new FakeHost();
     const layer = new WidgetLayer(host);
@@ -711,6 +828,37 @@ describe("WidgetLayer — picker is bold (interactive affordance)", () => {
       child: { dir: "h", items: [{ kind: "text", value: "FL120" }] } }]);
     const label = cardEl(host).querySelector('[data-wtag="text:label"]') as HTMLElement;
     expect(label.style.fontWeight).toBe("");
+  });
+
+  it("a GLYPH trigger gets a defined px box from node.size (not the svg's intrinsic size)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "x", size: 20,
+        options: [{ value: "x", svg: "<svg viewBox='-28 -28 55 55'></svg>" }] }] } }]);
+    const t = trig(host);
+    expect(t.style.width).toBe("20px");
+    expect(t.style.height).toBe("20px");
+    expect(t.style.fontSize).toBe(""); // glyph ⇒ sized by the box, not fontSize
+  });
+
+  it("a GLYPH trigger with no size falls back to a sober default box (≤ 24px)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "x",
+        options: [{ value: "x", svg: "<svg viewBox='0 0 128 128'></svg>" }] }] } }]);
+    const t = trig(host);
+    expect(parseInt(t.style.width, 10)).toBeLessThanOrEqual(24);
+    expect(t.style.width).toBe(t.style.height);
+  });
+
+  it("a TEXT picker keeps fontSize sizing (no fixed box)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "ISOL", size: 20,
+        options: ["ISOL", "OCNL"] }] } }]);
+    const t = trig(host);
+    expect(t.style.fontSize).toBe("20px");
+    expect(t.style.width).toBe(""); // text ⇒ auto width, no fixed box
   });
 });
 

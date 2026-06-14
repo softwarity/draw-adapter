@@ -24,9 +24,32 @@ const RADIUS: Record<TextBoxRadius, number> = {
   round: 14,
 };
 
+/** Border width preset (px) for the **widget card**, keyed by size — `"medium"` is the classic 1px
+ *  hairline (the default). */
+const BORDER_WIDTH: Record<TextBoxSize, number> = {
+  small: 0.5,
+  medium: 1,
+  large: 2,
+};
+/** Border width preset (px) for the **overlay text box** (call-out label liseré) — a heavier scale
+ *  than the card; `"medium"` (1.4px) is the default that preserves the former MapLibre look. */
+const TEXT_BORDER_WIDTH: Record<TextBoxSize, number> = {
+  small: 0.8,
+  medium: 1.4,
+  large: 2.2,
+};
+
 /** Resolve `textBoxSize` (default `"medium"`) to `[vertical, horizontal]` px padding. */
 export function boxPadding(size: unknown): [number, number] {
   return PADDING[size as TextBoxSize] ?? PADDING.medium;
+}
+/** Resolve a widget-card border-width preset (default `"medium"` ⇒ 1px) to a px width. */
+export function boxBorderWidth(size: unknown): number {
+  return BORDER_WIDTH[size as TextBoxSize] ?? BORDER_WIDTH.medium;
+}
+/** Resolve an overlay text-box border-width preset (default `"medium"` ⇒ 1.4px) to a px width. */
+export function textBoxBorderWidth(size: unknown): number {
+  return TEXT_BORDER_WIDTH[size as TextBoxSize] ?? TEXT_BORDER_WIDTH.medium;
 }
 /** Resolve `textBoxRadius` (default `"none"`) to a corner radius in px. */
 export function boxRadius(radius: unknown): number {

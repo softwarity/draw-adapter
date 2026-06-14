@@ -37,9 +37,47 @@
   and the selected/keyboard-focused marker uses the accent for **both** an accent ring **and** a light
   background tint (`color-mix` of the accent into white) instead of a fixed blue.
 
+- **Add (widgets):** cards can take a **non-rectangular frame** via `boxShape` — `"rect"` (default),
+  `"pentagon-up"`/`"pentagon-down"` ("house" shapes, point up/down, e.g. the tropopause label), or a
+  custom **normalized polygon** (`number[][]`; `[0,0]`–`[1,1]` = content+padding box). A non-rect shape
+  draws an **SVG frame** that follows the contour (`fill` = `bg`, `stroke` = `border` at `borderWidth`)
+  — a CSS border can't bevel. The presets keep their point **inside** `[0,1]` (so it carries a text
+  line — a "H" in the hat); a custom polygon may put points **outside** `[0,1]` to form a hollow
+  cap/point, and the card then **grows to reserve** that overshoot so it's never clipped.
+  `padding`/`font`/`origin`/drag/buttons are unchanged, and the SVG is `pointer-events:none` so it
+  never blocks the card. `"rect"`/absent is the former CSS box (no regression).
+
+- **Fix (widgets):** a **static `text` leaf now honours `\n`** (`white-space: pre-line`, like the
+  picker) instead of collapsing to a single line, and **centres** its lines (`text-align: center`) so a
+  short line (a `H`/`L`) sits under the FL rather than flush-left.
+
+- **Add (widgets):** **`font.lineHeight`** (unitless, default `1.2`) on a card — lower it (≈1) to
+  tighten multi-line labels.
+
+- **Add (widgets):** a card's **border width is now a preset** (`borderWidth: "small" | "medium" |
+  "large"`, reusing `TextBoxSize`) instead of a fixed 1px — no px exposed, consistent with
+  `padding`/`radius`. `small` = 0.5px, `medium` = 1px (default, the former look), `large` = 2px. Applies
+  only when `border` (colour) is set.
+
+- **Add (overlays):** the **text-box (call-out label) border width is now a preset too** —
+  `textBorderWidth: "small" | "medium" | "large"` on a `text` feature, honoured by **all three
+  engines**. Resolves to 0.8 / 1.4 / 2.2px (a heavier scale than the card); **default `medium` = 1.4px**,
+  matching the former MapLibre look — which also **unifies** the engines (OpenLayers/Leaflet were a thin
+  1px before). MapLibre encodes it in the 9-slice box id (`__box|…|<borderWidth>`). `textBoxSize` /
+  `textBoxRadius` unchanged.
+
+- **Fix (widgets):** a **glyph picker trigger now honours `size`.** When the current option is a glyph
+  (`svg`), the trigger gets a defined `size`-px box (default ~22px) instead of letting the inline svg
+  fall back to its intrinsic size (e.g. 128px) — so a placed marker shown in picker mode is no longer
+  oversized. Text-option pickers keep `fontSize` sizing; flower/grid popups are unchanged.
+
 - **Add (widgets):** a picker option can carry a **`title`** used as its **tooltip** in the
   flower/grid and on the trigger — so a terse glyph value (`"CI"`) can hover as `"Cirrus"`. No `title`
   ⇒ **no tooltip** (no fallback to the label/value).
+
+- **Fix (widgets):** **starting a card drag closes an open picker flower/grid.** A press elsewhere
+  already closed it, but dragging the card *from the picker trigger* (which doubles as the drag handle)
+  left the popup open/orphaned — now the drag start (`forwardDrag("down")`) collapses it first.
 
 - **Add (widgets):** the picker **flower/grid are keyboard-navigable**. While open, the **arrow keys**
   browse the choices, **Enter**/**Space** picks the highlighted one, **Escape** closes — and the event

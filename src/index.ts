@@ -21,7 +21,7 @@
  * | `fill`   | `fillColor`, `fillOpacity`, `stroke?`, `strokeWidth?`, `strokeOpacity?` |
  * | `line`   | `stroke`, `strokeWidth`, `dash?` (number[]), `strokeOpacity?` |
  * | `symbol` | `symbol` (sprite id), `size?` (×spritePx), `rotation?` (deg, cw), `symbolColor?` |
- * | `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
+ * | `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBorderWidth?` (`small`/`medium`/`large`, default `medium`≈1.4px), `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
  * | `circle` | `role?`, `control?`, `collinear?`, `fill?`, `stroke?`, `radius?`, `strokeWidth?`, `icon?` (data-URI), `symbol?` (sprite id), `iconRotate?` (deg, cw), `symbolColor?` |
  *
  * Cross-cutting conventions:
@@ -303,6 +303,13 @@ export interface WidgetButton {
   title?: string;
 }
 
+/** Frame outline of a card. `"rect"` (default) is the plain CSS box. The others draw an **SVG** frame
+ *  (so the border follows the contour) from a **normalized polygon** — `[0,0]` = top-left, `[1,1]` =
+ *  bottom-right of the content+padding box; points outside `[0,1]` form a cap/point and the card grows
+ *  to reserve the room. `"pentagon-up"`/`"pentagon-down"` are "house" shapes (point up/down, e.g. the
+ *  tropopause label). Pass your own `number[][]` for a custom outline. */
+export type BoxShape = "rect" | "pentagon-up" | "pentagon-down" | number[][];
+
 /** An anchored marker widget (a DOM card). Positions + frames only; layout lives in the
  *  single root {@link WidgetBox}. `padding`/`radius` reuse the label-box presets so widgets
  *  and label boxes look consistent. */
@@ -314,17 +321,29 @@ export interface MarkerWidget {
   origin?: WidgetOrigin;
   /** Card fill; omit ⇒ transparent. */
   bg?: string;
-  /** Border colour; omit ⇒ no border (width fixed, 1px, like the label box). */
+  /** Border colour; omit ⇒ no border. Its **width** is set by `borderWidth` (preset). */
   border?: string;
-  /** Corner radius preset (reuses {@link TextBoxRadius}). Default `"none"`. */
+  /** Border width preset (reuses {@link TextBoxSize}: `small`/`medium`/`large`), applied when
+   *  `border` is set. Default `"medium"` (1px, the classic hairline) — so omitting it keeps the
+   *  former look. */
+  borderWidth?: TextBoxSize;
+  /** Corner radius preset (reuses {@link TextBoxRadius}). Default `"none"`. (Ignored for a non-`rect`
+   *  `boxShape`, whose corners come from its polygon.) */
   radius?: TextBoxRadius;
+  /** Frame outline (see {@link BoxShape}). Omit/`"rect"` ⇒ the plain CSS box (unchanged). A non-rect
+   *  shape draws an SVG frame following the contour (`fill` = `bg`, `stroke` = `border` at
+   *  `borderWidth`) and the card grows to reserve any cap/point overshoot; `padding`/`font`/`origin`/
+   *  drag/buttons are unaffected. */
+  boxShape?: BoxShape;
   /** Inner padding preset (reuses {@link TextBoxSize}). Decoupled from the frame: a **framed** card
    *  is padded (default `"medium"`); a **bare** card (no `bg`/`border`) is padded only when `padding`
    *  is given explicitly — so a call-out can space its content (e.g. keep edge buttons off the text)
    *  without forcing a frame. Absent + unframed ⇒ no padding. */
   padding?: TextBoxSize;
-  /** Root text style; cascades to ALL descendants (a box or item may override its subtree). */
-  font?: { color?: string; size?: number; family?: string };
+  /** Root text style; cascades to ALL descendants (a box or item may override its subtree).
+   *  `lineHeight` is unitless (scales with font-size); default `1.2` — lower it (≈1) to tighten
+   *  multi-line labels. */
+  font?: { color?: string; size?: number; family?: string; lineHeight?: number };
   /** Show a small **delete** button in the card's top-right corner. Clicking it fires
    *  {@link MapAdapter.onWidgetDelete} with this `id` — the lib does NOT remove the card,
    *  the consumer drops the `id` from its next `setWidgets`. Pass `{ title }` for a native
