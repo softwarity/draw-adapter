@@ -115,7 +115,7 @@ the features** in your controller (resolving your domain style) — there is no
 | `fill`   | `fillColor`, `fillOpacity`, `stroke?`, `strokeWidth?`, `strokeOpacity?` |
 | `line`   | `stroke`, `strokeWidth`, `dash?` (`number[]`), `strokeOpacity?` |
 | `symbol` | `symbol` (sprite id), `size?` (×spritePx), `rotation?` (deg, cw), `symbolColor?` |
-| `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
+| `text`   | `text`, `textColor`, `textSize`, `textHalo?`, `textBackground?`, `textBorder?`, `textBorderWidth?`, `textBoxSize?`, `textBoxRadius?`, `maxWidth?`, `rotation?` |
 | `circle` | `role?`, `control?`, `collinear?`, `fill?`, `stroke?`, `radius?`, `strokeWidth?`, `icon?` (data-URI), `symbol?` (sprite id), `iconRotate?` (deg, cw), `symbolColor?` |
 
 Cross-cutting conventions:
@@ -139,9 +139,10 @@ Cross-cutting conventions:
   `styleimagemissing`; sprites are tinted per `symbolColor`.
 - A **label box** is drawn behind a `text` feature **only** when it carries
   `textBackground` (fill) and/or `textBorder` (outline). `textBoxSize`
-  (`small`/`medium`/`large`, default `medium`) tunes its padding and `textBoxRadius`
+  (`small`/`medium`/`large`, default `medium`) tunes its padding, `textBorderWidth`
+  (`small`/`medium`/`large`, default `medium` ≈ 1.4px) the **border width**, and `textBoxRadius`
   (`none`(default)/`small`/`medium`/`round`) its corners; the box rotates with the text.
-  Leaflet (CSS) and MapLibre (a per-feature 9-slice image) honour all four; OpenLayers
+  Leaflet (CSS) and MapLibre (a per-feature 9-slice image) honour all of them; OpenLayers
   honours them too **except** `textBoxRadius` (its native text background is a rectangle).
 
 ## Sprites
@@ -412,7 +413,8 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   reuse the label-box presets so widgets and label boxes look consistent. **`boxShape`** turns the
   rectangular frame into a contour-following **SVG** outline — `"pentagon-up"`/`"pentagon-down"`
   ("house" shapes) or a custom normalized `number[][]` polygon (points outside `[0,1]` form a
-  cap/point and the card grows to reserve it); `"rect"`/absent is the plain CSS box.
+  cap/point and the card grows to reserve it); `"rect"`/absent is the plain CSS box. `font.lineHeight`
+  (unitless, default `1.2`) tightens multi-line labels.
 - **Boxes** (`{ dir: "v"|"h", align?, gap?, color?, size?, items }`) do layout (vbox/hbox) and may
   set `color`/`size` that **cascade** to descendant text/coord (plain CSS inheritance).
 - **Items:** `glyph` (inline SVG, `currentColor`-tintable) · `text` (a static label; an inline
@@ -456,7 +458,9 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   so a card with several editable controls knows which one changed. A picker renders **bold** so it
   reads as interactive (vs a static label) without adding width that would shift the value off the
   anchor; give it an **accent `color`** (like the gauge/dial controls) so all editable elements share
-  one cue.
+  one cue. Each option may carry a **`title`** (its tooltip in the flower/grid + on the trigger; no
+  `title` ⇒ no tooltip). An open flower/grid is **keyboard-navigable** — arrows browse, Enter/Space
+  picks, Escape closes (the keys never pan the map) — and **closes** when you start dragging the card.
 - **Gauge / dial value-editors:** two **node kinds** (not text controls) for on-map value editing.
   `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a linear slider (the vertical
   FL gauge): **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
