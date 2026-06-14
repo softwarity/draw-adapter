@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.5.0
+
 - **Add (camera):** **`setProjection` + `viewArea` + `highlightArea`** — frame a fixed chart area,
   switch the live projection, and outline the area with a dashed frame, on all three engines.
   - `setProjection("mercator" | "globe" | { kind: "proj4", code, def })`. **Only OpenLayers
