@@ -24,6 +24,7 @@ import type {
   WidgetNode,
   WidgetOrigin,
   WidgetPickerOption,
+  WidgetStack,
 } from "./index.js";
 import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
 import { defaultCoordFormat } from "./coerce.js";
@@ -956,6 +957,220 @@ function wireDialDrag(root: HTMLElement, target: SVGCircleElement, card: Card): 
   target.addEventListener("pointercancel", end);
 }
 
+// ── stack widget (ordered layer pile, one active + peeked previews) ──────────
+
+const STACK_STYLE_ID = "draw-adapter-stack-style";
+const STACK_ACTIVE_BG = "rgba(59,130,246,.12)";
+const STACK_ACTIVE_BORDER = "1.5px solid rgba(59,130,246,.55)";
+
+function ensureStackStyle(): void {
+  if (typeof document === "undefined" || document.getElementById(STACK_STYLE_ID)) return;
+  const st = document.createElement("style");
+  st.id = STACK_STYLE_ID;
+  st.textContent =
+    `.dap-stack{display:flex;flex-direction:column;align-items:stretch;gap:4px}` +
+    `.dap-stack-editor{position:relative;background:${STACK_ACTIVE_BG};border:${STACK_ACTIVE_BORDER};` +
+    `border-radius:4px;padding:4px;box-sizing:border-box}` +
+    `.dap-stack-strip{display:flex;flex-direction:column;align-items:stretch;gap:2px}` +
+    `.dap-stack-item{position:relative;padding:4px;border-radius:4px;` +
+    `border:${CHROME_BORDER};background:${CHROME_SURFACE};box-sizing:border-box;overflow:hidden}` +
+    `.dap-stack-item.dap-stack-clickable{cursor:pointer}` +
+    `.dap-stack-item.dap-stack-clickable:hover{background:${CHROME_HOVER}}` +
+    `.dap-stack-item.dap-stack-twin{background:${STACK_ACTIVE_BG};border:${STACK_ACTIVE_BORDER}}` +
+    `.dap-stack-item.dap-stack-disabled{opacity:.55;pointer-events:none}` +
+    `.dap-stack-remove-btn,.dap-stack-add-btn{position:absolute;z-index:2;` +
+    `width:18px;height:18px;display:flex;align-items:center;justify-content:center;` +
+    `border-radius:50%;border:${CHROME_BORDER};background:${CHROME_SURFACE};` +
+    `color:${CHROME_INK};font-size:14px;font-weight:bold;line-height:1;cursor:pointer;padding:0;` +
+    `box-shadow:${CHROME_SHADOW}}` +
+    `.dap-stack-remove-btn{top:-9px;right:-9px}` +
+    `.dap-stack-add-btn{bottom:-9px;right:-9px}` +
+    `.dap-stack-remove-btn:hover,.dap-stack-add-btn:hover{background:${CHROME_HOVER}}`;
+  document.head.appendChild(st);
+}
+
+interface StackItemDom {
+  el: HTMLElement;
+  previewEl: HTMLElement;
+  bodyEl: HTMLElement;
+}
+
+interface StackState {
+  editorEl: HTMLElement | undefined;
+  stripEl: HTMLElement;
+  items: Map<string, StackItemDom>;
+  addBtn: HTMLButtonElement | undefined;
+  removeBtn: HTMLButtonElement | undefined;
+  btnContainer: HTMLElement | undefined;
+  activeId: string | undefined;
+}
+
+const stackState = new WeakMap<HTMLElement, StackState>();
+
+function createStack(_card: Card): HTMLElement {
+  ensureStackStyle();
+  const root = document.createElement("div");
+  root.className = "dap-stack";
+  preventCardDrag(root);
+  const stripEl = document.createElement("div");
+  stripEl.className = "dap-stack-strip";
+  root.appendChild(stripEl);
+  stackState.set(root, {
+    editorEl: undefined,
+    stripEl,
+    items: new Map(),
+    addBtn: undefined,
+    removeBtn: undefined,
+    btnContainer: undefined,
+    activeId: undefined,
+  });
+  // Tell Card.wirePointer the stack handles its own presses (don't start a card drag).
+  // We add the sentinel class so the card's exclusion selector can detect it.
+  root.classList.add("draw-adapter-widget-stack");
+  return root;
+}
+
+function updateStack(root: HTMLElement, node: WidgetStack, card: Card): void {
+  const st = stackState.get(root)!;
+  const { items, min, max, editorPlacement } = node;
+  const canAdd = items.length < max;
+  const canRemove = items.length > min;
+  const activeItem = items.find((i) => i.active);
+  st.activeId = activeItem?.id;
+
+  // ── Pinned editor ─────────────────────────────────────────────────────────
+  let newBtnContainer: HTMLElement | undefined;
+
+  if (editorPlacement === "pinned") {
+    if (!st.editorEl) {
+      const el = document.createElement("div");
+      el.className = "dap-stack-editor";
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "dap-stack-editor-body";
+      el.appendChild(bodyEl);
+      root.insertBefore(el, st.stripEl);
+      st.editorEl = el;
+    }
+    const editorBody = st.editorEl.querySelector(":scope > .dap-stack-editor-body") as HTMLElement;
+    if (activeItem) reconcile(editorBody, [activeItem.body], card);
+    newBtnContainer = st.editorEl;
+  } else {
+    if (st.editorEl) { st.editorEl.remove(); st.editorEl = undefined; }
+  }
+
+  // ── Strip items ───────────────────────────────────────────────────────────
+  const { stripEl } = st;
+  const seen = new Set<string>();
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx]!;
+    seen.add(item.id);
+    let dom = st.items.get(item.id);
+
+    if (!dom) {
+      const el = document.createElement("div");
+      el.className = "dap-stack-item";
+      const previewEl = document.createElement("div");
+      previewEl.className = "dap-stack-item-preview";
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "dap-stack-item-body";
+      bodyEl.style.display = "none";
+      el.append(previewEl, bodyEl);
+      dom = { el, previewEl, bodyEl };
+      st.items.set(item.id, dom);
+      // Wire tap once — reads clickability from dataset at call time.
+      wireTapButton(el, () => {
+        if (el.dataset["stackClickable"] === "1") {
+          card.emitAction(`selectLayer:${el.dataset["stackId"] ?? ""}`);
+          card.focusHost();
+        }
+      });
+    }
+
+    const { el, previewEl, bodyEl } = dom;
+
+    // Ensure position in strip.
+    const cur = stripEl.children[idx];
+    if (cur !== el) {
+      if (cur) stripEl.insertBefore(el, cur);
+      else stripEl.appendChild(el);
+    }
+
+    const isInlineActive = editorPlacement === "inline" && item.active;
+    const isTwin = editorPlacement === "pinned" && item.active;
+    const isClickable = !item.disabled && !item.active;
+
+    el.className =
+      "dap-stack-item" +
+      (isClickable ? " dap-stack-clickable" : "") +
+      (isTwin ? " dap-stack-twin" : "") +
+      (item.disabled && !isInlineActive ? " dap-stack-disabled" : "");
+    el.dataset["stackId"] = item.id;
+    el.dataset["stackClickable"] = isClickable ? "1" : "";
+
+    if (isInlineActive) {
+      previewEl.style.display = "none";
+      bodyEl.style.display = "";
+      reconcile(bodyEl, [item.body], card);
+      newBtnContainer = el;
+    } else {
+      previewEl.style.display = "";
+      bodyEl.style.display = "none";
+      if (typeof item.preview === "string") {
+        previewEl.textContent = item.preview;
+      } else {
+        reconcile(previewEl, [item.preview], card);
+      }
+    }
+  }
+
+  // Remove strip items no longer in the list.
+  for (const [id, dom] of st.items) {
+    if (!seen.has(id)) { dom.el.remove(); st.items.delete(id); }
+  }
+  while (stripEl.children.length > items.length) {
+    stripEl.removeChild(stripEl.lastElementChild!);
+  }
+
+  // ── Add / Remove buttons ───────────────────────────────────────────────────
+  if (st.btnContainer !== newBtnContainer) {
+    st.addBtn?.remove(); st.addBtn = undefined;
+    st.removeBtn?.remove(); st.removeBtn = undefined;
+    st.btnContainer = newBtnContainer;
+  }
+
+  if (newBtnContainer) {
+    if (canRemove && !st.removeBtn) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dap-stack-remove-btn";
+      btn.textContent = "×";
+      btn.setAttribute("aria-label", "Remove layer");
+      newBtnContainer.appendChild(btn);
+      wireTapButton(btn, () => {
+        if (st.activeId) card.emitAction(`removeLayer:${st.activeId}`);
+        card.focusHost();
+      });
+      st.removeBtn = btn;
+    } else if (!canRemove && st.removeBtn) {
+      st.removeBtn.remove(); st.removeBtn = undefined;
+    }
+
+    if (canAdd && !st.addBtn) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dap-stack-add-btn";
+      btn.textContent = "+";
+      btn.setAttribute("aria-label", "Add layer");
+      newBtnContainer.appendChild(btn);
+      wireTapButton(btn, () => { card.emitAction("addLayer"); card.focusHost(); });
+      st.addBtn = btn;
+    } else if (!canAdd && st.addBtn) {
+      st.addBtn.remove(); st.addBtn = undefined;
+    }
+  }
+}
+
 // ── card frame shapes (non-rectangular SVG outlines) ──────────────────────────
 // Normalized polygons: [0,0] = top-left, [1,1] = bottom-right of the content+padding box. The presets
 // keep their point INSIDE [0,1] (so it carries a text line — a "H" in the hat). A *custom* polygon may
@@ -1249,7 +1464,7 @@ class Card {
     root.addEventListener("pointerdown", (e) => {
       const t = e.target as HTMLElement | null;
       // editing or the delete button handle their own press — don't start a drag/select
-      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl, .draw-adapter-widget-gauge, .draw-adapter-widget-dial")) return;
+      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl, .draw-adapter-widget-gauge, .draw-adapter-widget-dial, .draw-adapter-widget-stack")) return;
       e.preventDefault();   // no text selection while dragging the card
       e.stopPropagation();  // don't let the map navigate (bubble phase)
       this.dragging = true;
@@ -1310,6 +1525,8 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     el = createGauge();
   } else if (node.kind === "dial") {
     el = createDial(card);
+  } else if (node.kind === "stack") {
+    el = createStack(card);
   } else if (node.control === "picker") {
     const span = document.createElement("span");
     span.className = "draw-adapter-widget-ctrl";
@@ -1407,6 +1624,7 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
   }
   if (node.kind === "gauge") { updateGauge(el, node, card); return; }
   if (node.kind === "dial") { updateDial(el, node, card); return; }
+  if (node.kind === "stack") { updateStack(el, node as WidgetStack, card); return; }
   // text
   if (node.control === "picker") {
     updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color, node.size);

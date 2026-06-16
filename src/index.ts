@@ -303,7 +303,52 @@ export interface WidgetBox {
   items: WidgetNode[];
 }
 
-export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord | WidgetGauge | WidgetDial;
+/** One item in a {@link WidgetStack} — a card that may be collapsed to its peek preview. */
+export interface WidgetStackItem {
+  /** Item identifier; echoed back in `selectLayer`/`removeLayer` action events. */
+  id: string;
+  /**
+   * Compact content shown for collapsed items ("peek" band). A plain `string` renders as text;
+   * a {@link WidgetNode} is reconciled via the normal tree (picker / gauge / glyph, etc.).
+   */
+  preview: WidgetNode | string;
+  /** Full editor content shown when this item is active/expanded. */
+  body: WidgetNode;
+  /** Whether this is the currently active (selected) item. */
+  active: boolean;
+  /** Whether this item is non-selectable (the active item should be disabled). */
+  disabled: boolean;
+}
+
+/**
+ * An ordered layer-stack widget — one item active/editable at a time, others collapsed to their
+ * peek preview. Generic: works for any repeated list (cloud layers, jet break-points, …).
+ *
+ * **Events** (emitted via {@link MapAdapter.onWidgetAction} as `{ id: widgetId, event }`):
+ * - `selectLayer:<itemId>` — user clicked a collapsed preview to activate it;
+ * - `addLayer` — user clicked the `+` button;
+ * - `removeLayer:<itemId>` — user clicked the `×` button (visible only when count > min).
+ *
+ * **Field edits** inside `body` flow through the normal {@link MapAdapter.onWidgetEdit}
+ * stream, with list-scoped `name`s (e.g. `layers.0.cloudBase`) set by the lib.
+ */
+export interface WidgetStack {
+  kind: "stack";
+  /** Items pre-sorted by the lib; the adapter does **not** reorder. */
+  items: WidgetStackItem[];
+  /** Minimum item count. The remove button (×) is hidden when `items.length <= min`. */
+  min: number;
+  /** Maximum item count. The add button (+) is hidden when `items.length >= max`. */
+  max: number;
+  /**
+   * - `"pinned"`: the active item's body is shown in a fixed editor **above** the preview strip;
+   *   a read-only twin (same visual tint) marks its position in the strip.
+   * - `"inline"`: the active item unfolds at its position in the strip (no separate editor).
+   */
+  editorPlacement: "pinned" | "inline";
+}
+
+export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord | WidgetGauge | WidgetDial | WidgetStack;
 
 /** Where a widget action button sits — a single edge/corner point, or a **group** that expands to
  *  a set of points. Pass an **array** to combine groups; the points are unioned (deduped). E.g.
