@@ -960,24 +960,26 @@ function wireDialDrag(root: HTMLElement, target: SVGCircleElement, card: Card): 
 // ── stack widget (ordered layer pile, one active + peeked previews) ──────────
 
 const STACK_STYLE_ID = "draw-adapter-stack-style";
-const STACK_ACTIVE_BG = "rgba(59,130,246,.12)";
-const STACK_ACTIVE_BORDER = "1.5px solid rgba(59,130,246,.55)";
 
 function ensureStackStyle(): void {
   if (typeof document === "undefined" || document.getElementById(STACK_STYLE_ID)) return;
   const st = document.createElement("style");
   st.id = STACK_STYLE_ID;
   st.textContent =
+    // Outer container — tight vertical flow, no chrome of its own.
     `.dap-stack{display:flex;flex-direction:column;align-items:stretch;gap:4px}` +
-    `.dap-stack-editor{position:relative;background:${STACK_ACTIVE_BG};border:${STACK_ACTIVE_BORDER};` +
-    `border-radius:4px;padding:4px;box-sizing:border-box}` +
-    `.dap-stack-strip{display:flex;flex-direction:column;align-items:stretch;gap:2px}` +
-    `.dap-stack-item{position:relative;padding:4px;border-radius:4px;` +
-    `border:${CHROME_BORDER};background:${CHROME_SURFACE};box-sizing:border-box;overflow:hidden}` +
+    // Pinned editor — frameless: no background, no border, no radius.
+    `.dap-stack-editor{position:relative;padding:4px;box-sizing:border-box}` +
+    `.dap-stack-strip{display:flex;flex-direction:column;align-items:stretch;gap:0}` +
+    // Preview items — "link" style: no box, no border, no radius, minimal vertical padding.
+    `.dap-stack-item{position:relative;padding:2px 0}` +
     `.dap-stack-item.dap-stack-clickable{cursor:pointer}` +
-    `.dap-stack-item.dap-stack-clickable:hover{background:${CHROME_HOVER}}` +
-    `.dap-stack-item.dap-stack-twin{background:${STACK_ACTIVE_BG};border:${STACK_ACTIVE_BORDER}}` +
-    `.dap-stack-item.dap-stack-disabled{opacity:.55;pointer-events:none}` +
+    `.dap-stack-item.dap-stack-clickable:hover{text-decoration:underline}` +
+    // Active slot (twin in pinned) — bold only, no gray.
+    `.dap-stack-item.dap-stack-twin{font-weight:bold}` +
+    // Disabled (active slot): non-selectable only, no gray.
+    `.dap-stack-item.dap-stack-disabled{pointer-events:none}` +
+    // Add / remove buttons — unchanged.
     `.dap-stack-remove-btn,.dap-stack-add-btn{position:absolute;z-index:2;` +
     `width:18px;height:18px;display:flex;align-items:center;justify-content:center;` +
     `border-radius:50%;border:${CHROME_BORDER};background:${CHROME_SURFACE};` +
