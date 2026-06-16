@@ -2,6 +2,35 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **`WidgetStack` — ordered layer-pile widget** (`kind: "stack"`). A new
+  `WidgetNode` that renders an ordered stack of cards: one item **active/editable** at a time,
+  the others collapsed to a compact **peek preview**. Generic and reusable for any repeated list
+  (cloud layers, jet break-points, …).
+
+  - **Preview strip:** all items are shown as peek cards (rendered from each item's `preview` —
+    a plain `string` or any `WidgetNode`). The active item's slot is visually highlighted
+    (`disabled`, same blue tint as the editor) so it reads as "already selected".
+  - **`editorPlacement: "pinned"`** — the active item's full `body` is shown in a **fixed editor
+    above the strip** (for stable UX while the active item can change position in the list); the
+    active slot in the strip shows a **read-only twin** linked visually (matching blue
+    background/border). **`editorPlacement: "inline"`** — the active item **unfolds at its
+    position** in the strip (no separate editor, no twin).
+  - **`+` / `×` buttons** on the active context (pinned editor or inline active slot).
+    `+` (bottom-right) fires `addLayer`; `×` (top-right) fires `removeLayer:<activeId>` — hidden
+    when `items.length <= min`; `+` hidden when `items.length >= max`.
+  - **Events** via `onWidgetAction({ id, event })`:
+    - `selectLayer:<itemId>` — user clicked a non-disabled preview to activate it;
+    - `addLayer` — user clicked `+`;
+    - `removeLayer:<itemId>` — user clicked `×` (only visible when `count > min`).
+  - Field edits inside `body` flow through the normal `onWidgetEdit` stream with list-scoped
+    `name`s (e.g. `layers.0.cloudBase`) — set by the lib, consumed by the controller.
+  - Reconciled **in place** across re-`setWidgets`: the order, active item and `min`/`max` can
+    all change between renders without recreating the DOM. Focused inputs and gauge drags are
+    preserved across a re-render.
+  - Works on **all three engines** (MapLibre / OpenLayers / Leaflet) — engine-agnostic DOM, like
+    every other widget node kind.
+  - New types: `WidgetStack`, `WidgetStackItem`; `WidgetNode` union extended.
+
 ---
 
 ## 0.5.0
