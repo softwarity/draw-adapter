@@ -4,6 +4,10 @@
 
 ---
 
+## 0.6.1
+
+---
+
 ## 0.6.0
 
 - **Remove (widgets):** **`WidgetStack` retired.** `sigwx-draw` no longer emits `kind:"stack"`;
