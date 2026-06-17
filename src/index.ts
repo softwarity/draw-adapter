@@ -223,15 +223,39 @@ export interface WidgetCursor {
   label?: string;
 }
 
-/** A linear slider value-editor — vertical by default (the SIGWX FL gauge). 1–3 cursors that may
- *  **not cross** (array order is the invariant; dragging one is clamped by its neighbours). Dragging
- *  a knob streams {@link MapAdapter.onWidgetEdit} (`{ id, name: cursor.name, value }`) per move. */
+/** One range (= one layer) on the shared axis of a {@link WidgetGauge} in multi-range mode.
+ *  Ranges can overlap freely; only base ≤ top within a single range is enforced. */
+export interface WidgetRange {
+  /** Identifier used for z-order tie-break (the `active` range is rendered on top). */
+  id?: string;
+  /** Lower bound cursor (`name` is what {@link MapAdapter.onWidgetEdit} receives). */
+  base: WidgetCursor;
+  /** Upper bound cursor. */
+  top: WidgetCursor;
+  /** Fill colour for the band and both knobs. Must be distinct per range so overlaps read as a blend. */
+  color: string;
+}
+
+/** A linear slider value-editor — vertical by default (the SIGWX FL gauge). Two exclusive modes:
+ *
+ * - **cursors** (default): 1–3 cursors that **cannot cross** (array order is the invariant). Dragging
+ *   a knob streams {@link MapAdapter.onWidgetEdit} (`{ id, name: cursor.name, value }`) per move.
+ * - **ranges**: N independent `[base, top]` intervals on ONE shared axis. Intervals can overlap freely;
+ *   only `base ≤ top` within each interval is enforced. Drag a knob to move one bound; drag the band
+ *   (between the two knobs) to translate both bounds together (width preserved, clamped in [min, max]).
+ *
+ * `cursors` and `ranges` are **mutually exclusive**. */
 export interface WidgetGauge {
   kind: "gauge";
   min: number;
   max: number;
-  /** 1..3 cursors, in ascending value order. */
-  cursors: WidgetCursor[];
+  /** Mode mono-cursor (1..3, non-crossing). Mutually exclusive with `ranges`. */
+  cursors?: WidgetCursor[];
+  /** Mode multi-range (N overlapping bands on one axis). Mutually exclusive with `cursors`. */
+  ranges?: WidgetRange[];
+  /** `id` (or array index) of the active range: rendered on top when knobs coincide, and drawn with
+   *  slightly stronger opacity. Only meaningful in `ranges` mode. */
+  active?: number | string;
   /** Allow dragging one notch PAST a bound (the consumer's off-chart "XXX"): the emitted value is
    *  then `min - step` / `max + step`. Default `false` (hard clamp). */
   beyond?: { below?: boolean; above?: boolean };
@@ -352,12 +376,17 @@ export type WidgetNode = WidgetBox | WidgetGlyph | WidgetText | WidgetCoord | Wi
 
 /** Where a widget action button sits — a single edge/corner point, or a **group** that expands to
  *  a set of points. Pass an **array** to combine groups; the points are unioned (deduped). E.g.
- *  `["left-corners","top-corners"]` ⇒ 3 corners (top-left, top-right, bottom-left). */
+ *  `["left-corners","top-corners"]` ⇒ 3 corners (top-left, top-right, bottom-left).
+ *
+ *  `"axis-top"` / `"axis-bottom"` place the button on the **gauge track's cross-axis centre** (the
+ *  knob centre x on a vertical gauge) at the track's top/bottom end — label-width-robust. Only
+ *  meaningful when the card contains a vertical {@link WidgetGauge}; ignored otherwise. */
 export type WidgetButtonPlace =
   | "top" | "bottom" | "left" | "right"
   | "top-left" | "top-right" | "bottom-left" | "bottom-right"
   | "edges" | "h-edges" | "v-edges"
-  | "corners" | "top-corners" | "bottom-corners" | "left-corners" | "right-corners";
+  | "corners" | "top-corners" | "bottom-corners" | "left-corners" | "right-corners"
+  | "axis-top" | "axis-bottom";
 
 /** A small action button rendered straddling the card's edge/corner(s). **Domain-free**: it just
  *  carries the `event` string echoed back via {@link MapAdapter.onWidgetAction} — the consumer
@@ -373,6 +402,11 @@ export interface WidgetButton {
   bordered?: boolean;
   /** Native tooltip (the `title` attribute) shown on hover. */
   title?: string;
+  /** Extra px pushing the button **outward** from its placement point (default `0`). For
+   *  `"axis-top"` / `"axis-bottom"` the button centre sits `gap` px clear of the track end —
+   *  large enough that a maxed-out band's knob never reaches it. Also honoured for normal edge/
+   *  corner placements: `"top"` + `gap:6` lifts the centre 6 px above the card's top edge. */
+  gap?: number;
 }
 
 /** Frame outline of a card. `"rect"` (default) is the plain CSS box. The others draw an **SVG** frame

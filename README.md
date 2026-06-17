@@ -450,12 +450,19 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   fires `onWidgetDelete({ id })` — the lib doesn't remove the card, the consumer drops the `id`
   from its next `setWidgets`. It's a **separate element** from the input (so an input-only card
   stays deletable) and isn't drawn into snapshots.
-- **Action buttons:** `buttons: [{ event, place?, svg?, bordered?, title? }]` renders small buttons (a `+`,
-  a pen, …) straddling the card's edges/corners; clicking one fires `onWidgetAction({ id, event })`.
-  `place` is an enum (`top`/`bottom`/`left`/`right` · the four corners · `edges`/`h-edges`/`v-edges`
-  · `corners`/`top-corners`/`bottom-corners`/`left-corners`/`right-corners`) **or an array** unioned
-  & deduped (`["left-corners","top-corners"]` ⇒ 3 corners). Domain-free: you name the `event` and
-  decide what it does (e.g. "draw another area attached to this panel"). `FakeAdapter.actionWidget`.
+- **Action buttons:** `buttons: [{ event, place?, svg?, bordered?, title?, gap? }]` renders small
+  buttons (a `+`, a pen, …) straddling the card's edges/corners; clicking one fires
+  `onWidgetAction({ id, event })`.
+  `place` is an enum or an array (unioned & deduped):
+  - Edge/corner keywords: `top`/`bottom`/`left`/`right` · `top-left`/`top-right`/`bottom-left`/`bottom-right`
+    · `edges`/`h-edges`/`v-edges` · `corners`/`top-corners`/`bottom-corners`/`left-corners`/`right-corners`
+  - **`"axis-top"` / `"axis-bottom"`** — centres the button on the **gauge track axis** (not the card
+    midpoint) and places it at the track's top or bottom end. Robust to label-column width. Intended
+    for `+` buttons above/below a vertical `ranges` gauge.
+  - **`gap?: number`** (px, default `0`) — pushes the button outward from its reference point. Use
+    with `axis-top`/`axis-bottom` to lift the button clear of a maxed-out knob.
+
+  Domain-free: you name the `event` and decide what it does. `FakeAdapter.actionWidget`.
 - **Deselect on window blur:** wire `adapter.onBlur(() => deselect())` if you want a marker to stop
   looking editable once the user switches to another window/app. The lib is domain-free — it emits
   the focus-lost **signal**, the consumer owns the selection and decides whether to drop it.
@@ -480,9 +487,42 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   `title` ⇒ no tooltip). An open flower/grid is **keyboard-navigable** — arrows browse, Enter/Space
   picks, Escape closes (the keys never pan the map) — and **closes** when you start dragging the card.
 - **Gauge / dial value-editors:** two **node kinds** (not text controls) for on-map value editing.
-  `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a linear slider (the vertical
-  FL gauge): **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
+
+  **Cursor mode** (default): `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a
+  linear slider: **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
   (off-chart "XXX" ⇒ emits `min - step` / `max + step`), a filled span + per-cursor labels.
+
+  **Multi-range mode** (new): `{ kind: "gauge", min, max, ranges: [...] }` renders **N independent
+  `[base, top]` intervals on ONE shared axis**. Intended for multicouche SIGWX/TEMSI (one FL gauge
+  per cloud layer → N ranges per gauge). Each range carries its own `color` for knobs and the
+  semi-transparent filled band; ranges overlap freely — the blend of semi-transparencies signals the
+  common zone. Within a range, `base ≤ top` is enforced; between ranges, no clamping. Dragging a knob
+  emits `onWidgetEdit({ id, name, value })` per move; dragging the **band** (between the two knobs)
+  translates both bounds together (width preserved). The `active` field (range `id` or index) puts
+  that range on top (z-index) for tie-break when knobs coincide.
+
+  ```ts
+  adapter.setWidgets([{
+    id: "temsi-layers", anchor: { lon: 10, lat: 48 },
+    child: { dir: "v", items: [{
+      kind: "gauge", min: 0, max: 450, step: 10, length: 120,
+      active: 1,   // render range 1 on top
+      ranges: [
+        { id: "0", color: "#d1242f",
+          base: { name: "layers.0.baseFL", value: 50,  label: "FL050" },
+          top:  { name: "layers.0.topFL",  value: 250, label: "FL250" } },
+        { id: "1", color: "#0969da",
+          base: { name: "layers.1.baseFL", value: 200, label: "FL200" },
+          top:  { name: "layers.1.topFL",  value: 400, label: "FL400" } },
+      ],
+    }] },
+  }]);
+  adapter.onWidgetEdit(({ id, name, value }) => {
+    // name is list-scoped: "layers.0.baseFL", "layers.1.topFL", …
+    controller.updateLayer(id, name, Number(value));
+  });
+  ```
+
   `{ kind: "dial", name, min, max, value }` is a radial sweep (jet speed; speedometer angle) whose
   **label is a readout that follows the knob** outside the ring (never rotated). It is a **true ring:
   its centre is transparent to pointer events**, so a handle/feature drawn *at* the dial's centre stays

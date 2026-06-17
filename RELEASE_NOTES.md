@@ -2,7 +2,92 @@
 
 ## NEXT RELEASE
 
-- **Add (widgets):** **`WidgetStack` — ordered layer-pile widget** (`kind: "stack"`). A new
+- **Add (widgets):** **`WidgetGauge` — multi-range mode** (`ranges?: WidgetRange[]`). Extends the
+  existing linear gauge with N independent `[base, top]` intervals rendered on **one shared axis**.
+  Intended for multicouche TEMSI / SIGWX: each range = one cloud layer, shown in its own colour.
+
+  - **Single axis** `[min, max]` shared by all ranges; the axis guide spans the full length (not
+    cursor-hugging as in cursor mode).
+  - **Overlapping freely**: no cross-range clamping. Layer A FL100–250 and layer B FL200–400 produce
+    overlapping semi-transparent bands (opacity ≈ 0.30, active ≈ 0.45) — the blend signals the
+    common zone visually.
+  - **Within-range clamping**: `base ≤ top` is enforced for each range independently (same as
+    cursor-mode neighbour clamping).
+  - **Knob drag** — each of the 2N knobs is independent: dragging emits
+    `onWidgetEdit({ id, name: cursor.name, value })` per move, snapped to `step`.
+    A `pointerdown` on any knob emits once so the consumer can identify the touched range.
+  - **Band drag** — pressing between the two knobs (on the coloured band) translates both bounds
+    by the same delta, preserving the interval width, clamped to `[min, max]`. Emits both
+    `base.name` and `top.name` per move.
+  - **`active?: number | string`** — the active range (by `id` or index) is rendered on top
+    (z-index) for tie-break when knobs coincide; its band is slightly more opaque.
+  - **`beyond`** applies to each range individually (one-step off-chart notch).
+  - **Reconciliation in-place**: adding/removing ranges adjusts the DOM without recreating the
+    gauge element. A `setWidgets` during a drag does not interrupt the gesture.
+  - **Keyboard**: arrow keys on any range knob step the value by `step`, within-range clamped.
+  - **Mode switch**: switching from `ranges` to `cursors` on the same gauge removes range DOM and
+    restores cursor knobs; switching the other way tears down cursor knobs.
+  - New types: `WidgetRange`; `WidgetGauge.cursors` is now optional (mutually exclusive with
+    `ranges`); `WidgetGauge.active` added.
+
+- **Add (widgets):** **`WidgetButton` — axis-aligned placement + outward gap.**
+  Two new `place` keywords and one new field for action buttons on cards that carry a vertical
+  `ranges` gauge:
+
+  - **`"axis-top"` / `"axis-bottom"`** — centre the button on the gauge track's **cross-axis
+    position** (KNOB/2 from the gauge element's left edge) rather than the card box's midpoint.
+    Computed via DOM measurement after layout, so it is robust to label-column width (`maxChars`)
+    — the button center lands on the slider axis regardless of how wide the label text is.
+    In jsdom (no layout engine) the measurement is a no-op; position falls back to the
+    placeholder percentages set at creation time.
+  - **`WidgetButton.gap?: number`** (px, default `0`) — pushes the button **outward** from its
+    reference point. For `"axis-top"` the button is lifted `gap` px above the track's top end;
+    for `"axis-bottom"` it is dropped `gap` px below the bottom end — so a maxed-out band's knob
+    can never reach the button. For standard edge/corner places, `gap` shifts the button
+    outward along that edge (left edge → negative x, top edge → negative y, etc.).
+  - No behaviour change for the existing place keywords (no `gap`, no axis places) —
+    byte-for-byte identical output.
+  - New `WidgetButtonPlace` members: `"axis-top"`, `"axis-bottom"`.
+
+- **Add (widgets):** **Drag a range band to a trash icon to delete it.**
+  On a **vertical** `ranges` gauge, a lateral drag on a range's coloured band (halo) reveals a
+  **trash-bin icon** on the drag side of the card. Releasing over the icon fires `removeRange`.
+
+  - **Direction detection:** `|dx| > 8 px` with `|dx| > |dy|` triggers the gesture and shows
+    the trash icon (`draw-adapter-range-trash`) just past the card edge in the drag direction
+    (left or right). Vertical-dominant drags (`|dy| > 3 px`) lock into the normal FL-edit path
+    and never reveal the trash.
+  - **Visual feedback while dragging:** the band follows the cursor horizontally; the trash icon
+    gains a solid red background when the cursor has crossed the commit threshold.
+  - **Commit threshold:** `|dx| ≥ 50 px` on `pointerup` commits the delete. The trash icon is
+    positioned to visually represent this distance — drag until it lights up, release to confirm.
+  - **Committed delete:** fires
+    `onWidgetAction({ id, event: "removeRange:${idx}:${rangeId}" })` — the event string encodes
+    both the range's **position in `ranges[]`** and its `id` (omitted when absent) for
+    unambiguous identification even when bands overlap. Consistent with the existing
+    `selectLayer:<id>` / `removeLayer:<id>` convention — no new `WidgetAction` fields.
+  - **Snap-back:** releasing below the commit threshold restores the band and hides the trash —
+    no event emitted.
+  - **Horizontal gauges unaffected:** the gesture is disabled on `orientation: "horizontal"`
+    gauges (horizontal axis is the FL axis there).
+  - No adapter-side model mutation — the lib removes the layer and re-renders (min-1 guarded).
+
+- **Fix (widgets):** **`WidgetGauge` cursors mode — coincident knobs and overlapping labels.**
+  When two or more cursor knobs land on the same pixel (e.g. `fl` and `top` both clamped to the
+  gauge ceiling), the adapter now fixes both the grab problem and the label readability.
+
+  - **Z-index stacking:** the central cursor (middle by index) is given the highest `z-index` so
+    it is always on top when knobs overlap. For 3 cursors `[base, fl, top]`, `fl` (index 1)
+    renders above the others and receives pointer events first — it can be grabbed and dragged to
+    separate itself from the coincident neighbour. The dots stay at their exact value positions;
+    no visual fan-out that could mislead the forecaster.
+  - **Label anti-overlap:** when any two cursor labels would overlap vertically (label centers
+    closer than 16 px), they are nudged apart along the axis independently of their knob dots.
+    Applied symmetrically (sort + forward + backward sweep) so coincidence at the ceiling and at
+    the floor are handled the same way.
+  - Only `cursors` mode is affected; `ranges` mode is unchanged.
+
+- **Add (widgets):** **`WidgetStack` — ordered layer-pile widget** — ordered layer-pile widget** (`kind: "stack"`). A new
   `WidgetNode` that renders an ordered stack of cards: one item **active/editable** at a time,
   the others collapsed to a compact **peek preview**. Generic and reusable for any repeated list
   (cloud layers, jet break-points, …).

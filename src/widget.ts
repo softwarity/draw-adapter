@@ -24,6 +24,7 @@ import type {
   WidgetNode,
   WidgetOrigin,
   WidgetPickerOption,
+  WidgetRange,
   WidgetStack,
 } from "./index.js";
 import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
@@ -122,7 +123,9 @@ function autosize(input: HTMLInputElement): void {
 
 // ── action buttons (edge/corner, domain-free) ────────────────────────────────
 
-/** Each place value → the set of `[fx, fy]` fractional points it covers on the card box. */
+/** Each place value → the set of `[fx, fy]` fractional points it covers on the card box.
+ *  `"axis-top"` / `"axis-bottom"` are handled separately in `ensureActionButtons` via DOM
+ *  measurement; they only appear here to satisfy the `Record<WidgetButtonPlace, …>` type. */
 const PLACE_POINTS: Record<WidgetButtonPlace, [number, number][]> = {
   top: [[0.5, 0]], bottom: [[0.5, 1]], left: [[0, 0.5]], right: [[1, 0.5]],
   "top-left": [[0, 0]], "top-right": [[1, 0]], "bottom-left": [[0, 1]], "bottom-right": [[1, 1]],
@@ -134,21 +137,11 @@ const PLACE_POINTS: Record<WidgetButtonPlace, [number, number][]> = {
   "bottom-corners": [[0, 1], [1, 1]],
   "left-corners": [[0, 0], [0, 1]],
   "right-corners": [[1, 0], [1, 1]],
+  "axis-top": [[0.5, 0]],   // placeholder — actual position set by repositionAxisButtons()
+  "axis-bottom": [[0.5, 1]], // placeholder
 };
 
-/** Expand a `place` (a value or an array of groups) into a deduped list of `[fx, fy]` points. */
-function expandPlaces(place: WidgetButton["place"]): [number, number][] {
-  const list: WidgetButtonPlace[] = Array.isArray(place) ? place : place != null ? [place] : ["right"];
-  const seen = new Set<string>();
-  const pts: [number, number][] = [];
-  for (const p of list) {
-    for (const [fx, fy] of PLACE_POINTS[p] ?? PLACE_POINTS.right) {
-      const k = `${fx},${fy}`;
-      if (!seen.has(k)) { seen.add(k); pts.push([fx!, fy!]); }
-    }
-  }
-  return pts;
-}
+
 
 /**
  * Wire a chrome button (delete `×` / action) to emit on a **local pointerup tap** rather than the
@@ -182,7 +175,9 @@ function wireTapButton(el: HTMLElement, onTap: (e: globalThis.PointerEvent) => v
   el.addEventListener("mousedown", (e) => { e.stopPropagation(); }); // keep the compat event off the Marker
 }
 
-/** One action button (bare glyph, or a small bordered circle), straddling its edge/corner point. */
+/** One action button (bare glyph, or a small bordered circle), straddling its edge/corner point.
+ *  For `"axis-top"` / `"axis-bottom"` the initial `left`/`top` are placeholders — they are
+ *  overwritten by `repositionAxisButtons()` after the card is laid out. */
 function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): HTMLButtonElement {
   const el = document.createElement("button");
   el.type = "button";
@@ -191,8 +186,12 @@ function makeActionButton(b: WidgetButton, fx: number, fy: number, card: Card): 
   if (b.title) el.title = b.title; // native tooltip on hover
   const s = el.style;
   s.position = "absolute";
-  s.left = `${(fx * 100).toFixed(4)}%`;
-  s.top = `${(fy * 100).toFixed(4)}%`;
+  // Apply optional outward gap: shift the reference point away from the box edge.
+  const gap = b.gap ?? 0;
+  const xGap = gap && (fx === 0 ? -gap : fx === 1 ? gap : 0);
+  const yGap = gap && (fy === 0 ? -gap : fy === 1 ? gap : 0);
+  s.left = xGap ? `calc(${(fx * 100).toFixed(4)}% + ${xGap}px)` : `${(fx * 100).toFixed(4)}%`;
+  s.top  = yGap ? `calc(${(fy * 100).toFixed(4)}% + ${yGap}px)` : `${(fy * 100).toFixed(4)}%`;
   s.transform = "translate(-50%, -50%)"; // straddle the edge/corner point
   s.zIndex = "1";
   s.boxSizing = "border-box";
@@ -585,6 +584,7 @@ const GUIDE_OPACITY = "0.9";
 const SELECT_W = 9;
 const SELECT_OPACITY = "0.4";
 const GAUGE_MARGIN = 12; // px the gauge guide line extends past the outer cursors
+const CURSOR_LABEL_H = 16; // min px between cursor label centers to prevent text overlap
 const GAUGE_LEN = 120;      // default gauge track length
 const DIAL_R = 52;          // default dial radius
 const DIAL_SWEEP = 240;     // default dial sweep (deg)
@@ -611,8 +611,9 @@ export function gaugeBounds(g: WidgetGauge): { lo: number; hi: number } {
 export function clampCursor(raw: number, index: number, g: WidgetGauge): number {
   const { lo, hi } = gaugeBounds(g);
   let v = snapStep(Math.min(hi, Math.max(lo, raw)), g.step);
-  const prev = g.cursors[index - 1];
-  const next = g.cursors[index + 1];
+  const cursors = g.cursors ?? [];
+  const prev = cursors[index - 1];
+  const next = cursors[index + 1];
   if (prev) v = Math.max(v, prev.value);
   if (next) v = Math.min(v, next.value);
   return v;
@@ -647,8 +648,36 @@ function dialArcPath(R: number, ar: number, fromDeg: number, toDeg: number): str
   return `M ${x0} ${y0} A ${ar} ${ar} 0 ${sweep > 180 ? 1 : 0} 1 ${x1} ${y1}`;
 }
 
+const RANGE_BAND_W = KNOB + 4; // colored band width (px), centred on the axis
+const FLING_SHOW_DX   = 8;   // px: lateral dx to detect direction and reveal the trash icon
+const FLING_COMMIT_DX = 50;  // px: commit threshold on pointerup (trash is positioned to match)
+// Minimal trash-bin icon (SVG)
+const TRASH_BIN_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/><path d="M9 6V4h6v2"/></svg>`;
+
 interface GaugeKnob { dot: HTMLElement; label: HTMLElement; }
-interface GaugeState { trackHalo: HTMLElement; track: HTMLElement; knobs: GaugeKnob[]; gauge: WidgetGauge; dragging: number | null; live: number[]; }
+interface RangeDomState {
+  halo: HTMLElement;
+  base: GaugeKnob;
+  top: GaugeKnob;
+  live: { base: number; top: number };
+  dragging: "base" | "top" | "band" | null;
+  bandDownAlong: number;   // along-axis (Y for vertical) screen position at band drag start
+  liveBandBase: number;    // base value captured at band drag start
+  liveBandTop: number;     // top value captured at band drag start
+  haloOpacity: string;     // opacity set by last updateGaugeRanges (snap-back restore)
+  bandDownX: number;       // clientX at band pointerdown (horizontal fling detection)
+  bandDownY: number;       // clientY at band pointerdown
+  bandGesture: "pending" | "vertical" | "fling"; // gesture direction resolved on first significant move
+}
+interface GaugeState {
+  trackHalo: HTMLElement;
+  track: HTMLElement;
+  knobs: GaugeKnob[];
+  gauge: WidgetGauge;
+  dragging: number | null;
+  live: number[];
+  rangeStates: RangeDomState[];
+}
 const gaugeState = new WeakMap<HTMLElement, GaugeState>();
 
 function createGauge(): HTMLElement {
@@ -664,7 +693,7 @@ function createGauge(): HTMLElement {
   track.style.position = "absolute"; track.style.borderRadius = `${GUIDE_W / 2}px`;
   track.style.background = "currentColor"; track.style.opacity = GUIDE_OPACITY;
   root.append(trackHalo, track); // wide glow behind, thin guide on top
-  gaugeState.set(root, { trackHalo, track, knobs: [], gauge: { kind: "gauge", min: 0, max: 1, cursors: [] }, dragging: null, live: [] });
+  gaugeState.set(root, { trackHalo, track, knobs: [], gauge: { kind: "gauge", min: 0, max: 1, cursors: [] }, dragging: null, live: [], rangeStates: [] });
   return root;
 }
 
@@ -678,6 +707,28 @@ function placeKnob(k: GaugeKnob, along: number, horizontal: boolean): void {
   const ls = k.label.style;
   if (horizontal) { ls.left = `${along + KNOB / 2}px`; ls.top = `${KNOB + 1}px`; ls.transform = "translateX(-50%)"; }
   else { ls.top = `${along + KNOB / 2}px`; ls.left = `${KNOB + 4}px`; ls.transform = "translateY(-50%)"; }
+}
+function placeLabelCenter(k: GaugeKnob, center: number, horizontal: boolean): void {
+  const ls = k.label.style;
+  if (horizontal) { ls.left = `${center}px`; ls.top = `${KNOB + 1}px`; ls.transform = "translateX(-50%)"; }
+  else { ls.top = `${center}px`; ls.left = `${KNOB + 4}px`; ls.transform = "translateY(-50%)"; }
+}
+/** Spread positions so no adjacent pair (in sorted order) is closer than minGap; clamps to [0, max]. */
+function spreadAlongs(naturals: number[], minGap: number, max: number): number[] {
+  const n = naturals.length;
+  if (n <= 1) return [...naturals];
+  const order = [...naturals.keys()].sort((a, b) => naturals[a]! - naturals[b]!);
+  const out = [...naturals];
+  for (let k = 1; k < n; k++) {
+    const prev = order[k - 1]!, cur = order[k]!;
+    if (out[cur]! < out[prev]! + minGap) out[cur] = out[prev]! + minGap;
+  }
+  for (const i of order) out[i] = Math.min(out[i]!, max);
+  for (let k = n - 2; k >= 0; k--) {
+    const prev = order[k]!, cur = order[k + 1]!;
+    if (out[prev]! > out[cur]! - minGap) out[prev] = Math.max(0, out[cur]! - minGap);
+  }
+  return out;
 }
 /** Position an absolute bar of thickness `barW` from `lo`→`hi` along the track (px, along-space). */
 function placeBar(el: HTMLElement, lo: number, hi: number, barW: number, horizontal: boolean): void {
@@ -708,19 +759,44 @@ function updateGauge(root: HTMLElement, g: WidgetGauge, card: Card): void {
   const st = gaugeState.get(root)!;
   st.gauge = g;
   if (g.color) root.style.color = g.color;
+
+  if (g.ranges?.length) {
+    // tear down any cursor-mode knobs left over from a possible mode switch
+    for (const k of st.knobs) { k.dot.remove(); k.label.remove(); }
+    st.knobs = []; st.dragging = null;
+    st.trackHalo.style.display = "none";
+    updateGaugeRanges(root, g, card);
+    return;
+  }
+
+  // cursor mode — tear down range DOM when switching from ranges to cursors
+  if (st.rangeStates.length) {
+    for (const rng of st.rangeStates) {
+      rng.halo.remove();
+      rng.base.dot.remove(); rng.base.label.remove();
+      rng.top.dot.remove(); rng.top.label.remove();
+    }
+    st.rangeStates = [];
+    st.trackHalo.style.display = "block";
+  }
+
+  const cursors = g.cursors ?? [];
   const len = g.length ?? GAUGE_LEN;
   const horizontal = g.orientation === "horizontal";
-  const maxChars = g.cursors.reduce((m, c) => Math.max(m, (c.label ?? "").length), 0);
+  const maxChars = cursors.reduce((m, c) => Math.max(m, (c.label ?? "").length), 0);
   const rs = root.style;
   if (horizontal) { rs.width = `${len + KNOB}px`; rs.height = `${KNOB + (maxChars ? 14 : 0)}px`; }
   else { rs.height = `${len + KNOB}px`; rs.width = maxChars ? `calc(${KNOB + 4}px + ${maxChars}ch)` : `${KNOB}px`; }
-  while (st.knobs.length < g.cursors.length) addKnob(root, st, card);
-  while (st.knobs.length > g.cursors.length) { const k = st.knobs.pop()!; k.dot.remove(); k.label.remove(); }
+  while (st.knobs.length < cursors.length) addKnob(root, st, card);
+  while (st.knobs.length > cursors.length) { const k = st.knobs.pop()!; k.dot.remove(); k.label.remove(); }
   // keep the dragged cursor under the pointer; take the others from the model
-  st.live = g.cursors.map((c, i) => (st.dragging === i ? (st.live[i] ?? c.value) : c.value));
-  for (let i = 0; i < g.cursors.length; i++) {
+  st.live = cursors.map((c, i) => (st.dragging === i ? (st.live[i] ?? c.value) : c.value));
+  // Pre-compute natural along positions then fan coincident dots / spread overlapping labels.
+  const naturalAlongs = st.live.map((v) => gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal));
+  const labelCenters = spreadAlongs(naturalAlongs.map((a) => a + KNOB / 2), CURSOR_LABEL_H, len + KNOB / 2);
+  for (let i = 0; i < cursors.length; i++) {
     const k = st.knobs[i]!;
-    k.label.textContent = g.cursors[i]!.label ?? "";
+    k.label.textContent = cursors[i]!.label ?? "";
     applyLabelStyle(k.label, g.labelColor, g.labelHalo);
     k.dot.style.background = g.knobFill ?? "currentColor";
     const gStroke = g.knobStroke ?? "white"; // default white border; pass "" for none
@@ -729,9 +805,23 @@ function updateGauge(root: HTMLElement, g: WidgetGauge, card: Card): void {
     k.dot.setAttribute("aria-valuemax", String(g.max));
     k.dot.setAttribute("aria-valuenow", String(st.live[i]!));
     k.dot.setAttribute("aria-orientation", horizontal ? "horizontal" : "vertical");
-    const clabel = g.cursors[i]!.label || g.cursors[i]!.name;
+    const clabel = cursors[i]!.label || cursors[i]!.name;
     if (clabel) k.dot.setAttribute("aria-label", clabel);
-    if (st.dragging !== i) placeKnob(k, gaugeAlong(valueFraction(st.live[i]!, g.min, g.max), len, horizontal), horizontal);
+    if (st.dragging !== i) { placeKnob(k, naturalAlongs[i]!, horizontal); placeLabelCenter(k, labelCenters[i]!, horizontal); }
+  }
+  // Central cursor (middle index) gets highest z-index so it stays grabable when coincident.
+  // For N=2 the formula ties — break it so lower index wins (lo can be dragged down at ceiling).
+  const n = cursors.length;
+  const zValues: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const z = n > 1 ? (n === 2 ? n - i : n + 1 - Math.abs(2 * i - (n - 1))) : 0;
+    st.knobs[i]!.dot.style.zIndex = z > 0 ? String(z) : "";
+    zValues.push(z);
+  }
+  // When two cursors share the same value, hide the label of the one underneath — it's redundant.
+  for (let i = 0; i < n; i++) {
+    const dominated = zValues.some((zj, j) => j !== i && st.live[j] === st.live[i] && zj > zValues[i]!);
+    st.knobs[i]!.label.style.visibility = dominated ? "hidden" : "";
   }
   placeGaugeGuide(st, len, horizontal);
 }
@@ -758,13 +848,13 @@ function addKnob(root: HTMLElement, st: GaugeState, card: Card): void {
     e.preventDefault(); e.stopPropagation();
     const g = s.gauge, len = g.length ?? GAUGE_LEN, horizontal = g.orientation === "horizontal";
     const step = g.step ?? (g.max - g.min) / 100;
-    const cur = s.live[index] ?? g.cursors[index]?.value ?? g.min;
+    const cur = s.live[index] ?? (g.cursors ?? [])[index]?.value ?? g.min;
     const v = clampCursor(cur + dir * step, index, g);
     s.live[index] = v;
     placeKnob(s.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
     placeGaugeGuide(s, len, horizontal);
     dot.setAttribute("aria-valuenow", String(v));
-    card.emitEdit(String(v), g.cursors[index]?.name);
+    card.emitEdit(String(v), (g.cursors ?? [])[index]?.name);
   });
 }
 
@@ -789,7 +879,7 @@ function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: 
     st.live[index] = v;
     placeKnob(st.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
     placeGaugeGuide(st, len, horizontal);
-    card.emitEdit(String(v), g.cursors[index]?.name);
+    card.emitEdit(String(v), (g.cursors ?? [])[index]?.name);
   });
   const end = (e: globalThis.PointerEvent): void => {
     const st = gaugeState.get(root); if (!st || st.dragging !== index) return;
@@ -798,6 +888,338 @@ function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: 
   };
   dot.addEventListener("pointerup", end);
   dot.addEventListener("pointercancel", end);
+}
+
+// ── multi-range gauge ────────────────────────────────────────────────────────
+
+function createRangeDom(root: HTMLElement, idx: number, st: GaugeState, card: Card): RangeDomState {
+  const halo = document.createElement("div");
+  halo.style.position = "absolute";
+  halo.style.borderRadius = `${RANGE_BAND_W / 2}px`;
+  halo.style.cursor = "grab";
+  halo.style.touchAction = "none";
+  root.appendChild(halo);
+
+  const makeKnob = (): GaugeKnob => {
+    const dot = document.createElement("div");
+    dot.className = "draw-adapter-widget-knob";
+    const ds = dot.style;
+    ds.position = "absolute"; ds.width = ds.height = `${KNOB}px`; ds.boxSizing = "border-box";
+    ds.borderRadius = "50%"; ds.cursor = "pointer"; ds.touchAction = "none";
+    ds.border = "1.5px solid white";
+    dot.setAttribute("role", "slider"); dot.tabIndex = 0;
+    const label = document.createElement("span");
+    const ls = label.style;
+    ls.position = "absolute"; ls.whiteSpace = "nowrap"; ls.pointerEvents = "none";
+    root.append(dot, label);
+    return { dot, label };
+  };
+  const base = makeKnob();
+  const top = makeKnob();
+
+  const rng: RangeDomState = { halo, base, top, live: { base: 0, top: 0 }, dragging: null, bandDownAlong: 0, liveBandBase: 0, liveBandTop: 0, haloOpacity: "0.30", bandDownX: 0, bandDownY: 0, bandGesture: "pending" };
+  wireRangeKnobDrag(root, base.dot, "base", idx, st, card);
+  wireRangeKnobDrag(root, top.dot, "top", idx, st, card);
+  wireRangeBandDrag(root, halo, idx, st, card);
+  return rng;
+}
+
+function wireRangeKnobDrag(root: HTMLElement, dot: HTMLElement, which: "base" | "top", idx: number, st: GaugeState, card: Card): void {
+  dot.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const rng = st.rangeStates[idx]; if (!rng) return;
+    rng.dragging = which;
+    try { dot.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+    // emit on pointerdown so the consumer can identify which range was touched
+    const range = st.gauge.ranges?.[idx]; if (!range) return;
+    card.emitEdit(String(rng.live[which]), (which === "base" ? range.base : range.top).name);
+  });
+  dot.addEventListener("pointermove", (e) => {
+    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== which) return;
+    const g = st.gauge;
+    const range = g.ranges?.[idx]; if (!range) return;
+    const len = g.length ?? GAUGE_LEN;
+    const horizontal = g.orientation === "horizontal";
+    const rect = root.getBoundingClientRect();
+    const frac = horizontal
+      ? (e.clientX - rect.left - KNOB / 2) / len
+      : 1 - (e.clientY - rect.top - KNOB / 2) / len;
+    const { lo, hi } = gaugeBounds(g);
+    let v = snapStep(Math.min(hi, Math.max(lo, g.min + frac * (g.max - g.min))), g.step);
+    if (which === "base") v = Math.min(v, rng.live.top);
+    else                  v = Math.max(v, rng.live.base);
+    rng.live[which] = v;
+    placeKnob(rng[which], gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+    const bA = gaugeAlong(valueFraction(rng.live.base, g.min, g.max), len, horizontal);
+    const tA = gaugeAlong(valueFraction(rng.live.top,  g.min, g.max), len, horizontal);
+    placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
+    dot.setAttribute("aria-valuenow", String(v));
+    card.emitEdit(String(v), (which === "base" ? range.base : range.top).name);
+  });
+  const end = (e: globalThis.PointerEvent): void => {
+    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== which) return;
+    rng.dragging = null;
+    try { dot.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  dot.addEventListener("pointerup", end);
+  dot.addEventListener("pointercancel", end);
+  dot.addEventListener("keydown", (e) => {
+    const rng = st.rangeStates[idx]; if (!rng) return;
+    const dir = e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault(); e.stopPropagation();
+    const g = st.gauge;
+    const range = g.ranges?.[idx]; if (!range) return;
+    const len = g.length ?? GAUGE_LEN;
+    const horizontal = g.orientation === "horizontal";
+    const step = g.step ?? (g.max - g.min) / 100;
+    const { lo, hi } = gaugeBounds(g);
+    let v = snapStep(Math.min(hi, Math.max(lo, rng.live[which] + dir * step)), g.step);
+    if (which === "base") v = Math.min(v, rng.live.top);
+    else                  v = Math.max(v, rng.live.base);
+    rng.live[which] = v;
+    placeKnob(rng[which], gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+    dot.setAttribute("aria-valuenow", String(v));
+    card.emitEdit(String(v), (which === "base" ? range.base : range.top).name);
+  });
+}
+
+function wireRangeBandDrag(root: HTMLElement, halo: HTMLElement, idx: number, st: GaugeState, card: Card): void {
+  // Trash icon: one element per range, lazily appended to card.root, reused across drags.
+  let trashEl: HTMLElement | null = null;
+
+  const getOrCreateTrash = (): HTMLElement => {
+    if (!trashEl) {
+      const el = document.createElement("div");
+      el.className = "draw-adapter-range-trash";
+      el.setAttribute("aria-hidden", "true");
+      el.innerHTML = TRASH_BIN_SVG;
+      const s = el.style;
+      s.position = "absolute";
+      s.width = s.height = "36px";
+      s.borderRadius = "50%";
+      s.display = "none";
+      s.alignItems = "center";
+      s.justifyContent = "center";
+      s.pointerEvents = "none";
+      s.top = "50%";
+      s.transform = "translateY(-50%)";
+      s.boxSizing = "border-box";
+      s.transition = "background 0.1s, color 0.1s, border-color 0.1s";
+      card.root.appendChild(el);
+      trashEl = el;
+    }
+    return trashEl;
+  };
+
+  const showTrash = (_dir: 1 | -1, armed: boolean): void => {
+    const el = getOrCreateTrash();
+    const s = el.style;
+    // Always on the right side of the card (direction-independent — simpler and sufficient)
+    s.right = ""; s.left = "calc(100% + 6px)";
+    if (armed) {
+      s.background = "rgba(192,0,0,0.85)"; s.color = "white";
+      s.border = "2px solid #c00";
+    } else {
+      s.background = "rgba(192,0,0,0.12)"; s.color = "#c00";
+      s.border = "2px solid rgba(192,0,0,0.4)";
+    }
+    s.display = "flex";
+  };
+
+  const hideTrash = (): void => {
+    if (trashEl) trashEl.style.display = "none";
+  };
+
+  halo.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const rng = st.rangeStates[idx]; if (!rng) return;
+    const g = st.gauge;
+    const horizontal = g.orientation === "horizontal";
+    const rect = root.getBoundingClientRect();
+    rng.dragging = "band";
+    rng.bandDownAlong = horizontal ? (e.clientX - rect.left) : (e.clientY - rect.top);
+    rng.bandDownX = e.clientX;
+    rng.bandDownY = e.clientY;
+    rng.bandGesture = "pending";
+    rng.liveBandBase = rng.live.base;
+    rng.liveBandTop  = rng.live.top;
+    try { halo.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+    const range = g.ranges?.[idx]; if (!range) return;
+    card.emitEdit(String(rng.live.base), range.base.name);
+  });
+
+  halo.addEventListener("pointermove", (e) => {
+    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
+    const g = st.gauge;
+    const range = g.ranges?.[idx]; if (!range) return;
+    const horizontal = g.orientation === "horizontal";
+
+    // Lateral-drag / trash-icon path: vertical gauges only
+    if (!horizontal && rng.bandGesture !== "vertical") {
+      const dx = e.clientX - rng.bandDownX;
+      const dy = e.clientY - rng.bandDownY;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+
+      if (rng.bandGesture === "pending") {
+        const canDelete = (g.ranges?.length ?? 0) > 1; // no trash when only one range remains
+        if (adx > FLING_SHOW_DX && adx > ady && canDelete) {
+          rng.bandGesture = "fling";
+        } else if (ady > 3) {
+          rng.bandGesture = "vertical";
+        } else {
+          return; // direction undecided — wait
+        }
+      }
+
+      if (rng.bandGesture === "fling") {
+        const dir: 1 | -1 = dx > 0 ? 1 : -1;
+        const armed = adx >= FLING_COMMIT_DX;
+        showTrash(dir, armed);
+        // Band follows cursor; dims when armed
+        halo.style.transform = `translateX(${dx}px)`;
+        halo.style.opacity = armed ? "0.25" : rng.haloOpacity;
+        halo.style.background = range.color;
+        return;
+      }
+    }
+
+    // Vertical (along-axis) band drag — unchanged
+    const len = g.length ?? GAUGE_LEN;
+    const rect = root.getBoundingClientRect();
+    const currentAlong = horizontal ? (e.clientX - rect.left) : (e.clientY - rect.top);
+    const deltaAlong = currentAlong - rng.bandDownAlong;
+    const deltaVal = horizontal
+      ? deltaAlong / len * (g.max - g.min)
+      : -deltaAlong / len * (g.max - g.min);
+    const width = rng.liveBandTop - rng.liveBandBase;
+    let newBase = rng.liveBandBase + deltaVal;
+    let newTop  = rng.liveBandTop  + deltaVal;
+    const { lo, hi } = gaugeBounds(g);
+    if (newBase < lo) { newBase = lo; newTop = lo + width; }
+    if (newTop  > hi) { newTop  = hi; newBase = hi - width; }
+    newBase = snapStep(newBase, g.step);
+    newTop  = snapStep(newTop,  g.step);
+    rng.live.base = newBase;
+    rng.live.top  = newTop;
+    const bA = gaugeAlong(valueFraction(newBase, g.min, g.max), len, horizontal);
+    const tA = gaugeAlong(valueFraction(newTop,  g.min, g.max), len, horizontal);
+    placeKnob(rng.base, bA, horizontal);
+    placeKnob(rng.top,  tA, horizontal);
+    placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
+    rng.base.dot.setAttribute("aria-valuenow", String(newBase));
+    rng.top.dot.setAttribute("aria-valuenow", String(newTop));
+    card.emitEdit(String(newBase), range.base.name);
+    card.emitEdit(String(newTop),  range.top.name);
+  });
+
+  const end = (e: globalThis.PointerEvent): void => {
+    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
+    const g = st.gauge;
+    const gesture = rng.bandGesture;
+    rng.dragging = null;
+    rng.bandGesture = "pending";
+    try { halo.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+
+    if (gesture === "fling") {
+      const dx = e.clientX - rng.bandDownX;
+      if (Math.abs(dx) >= FLING_COMMIT_DX) {
+        // User dragged onto the trash zone — emit removeRange
+        const range = g.ranges?.[idx];
+        const rangeId = range?.id != null ? `:${range.id}` : "";
+        card.emitAction(`removeRange:${idx}${rangeId}`);
+      }
+      // Always snap the band back regardless of commit
+      halo.style.transform = "";
+      halo.style.opacity = rng.haloOpacity;
+      halo.style.background = g.ranges?.[idx]?.color ?? "";
+    }
+    hideTrash();
+  };
+  halo.addEventListener("pointerup", end);
+  halo.addEventListener("pointercancel", end);
+}
+
+function updateGaugeRanges(root: HTMLElement, g: WidgetGauge, card: Card): void {
+  const st = gaugeState.get(root)!;
+  const ranges = g.ranges!;
+  const n = ranges.length;
+  const len = g.length ?? GAUGE_LEN;
+  const horizontal = g.orientation === "horizontal";
+
+  // size the root
+  const maxChars = ranges.reduce((m, r) => Math.max(m, (r.base.label ?? "").length, (r.top.label ?? "").length), 0);
+  const rs = root.style;
+  if (horizontal) { rs.width = `${len + KNOB}px`; rs.height = `${KNOB + (maxChars ? 14 : 0)}px`; }
+  else { rs.height = `${len + KNOB}px`; rs.width = maxChars ? `calc(${KNOB + 4}px + ${maxChars}ch)` : `${KNOB}px`; }
+
+  // grow / shrink range DOM to match
+  while (st.rangeStates.length < n) st.rangeStates.push(createRangeDom(root, st.rangeStates.length, st, card));
+  while (st.rangeStates.length > n) {
+    const rng = st.rangeStates.pop()!;
+    rng.halo.remove();
+    rng.base.dot.remove(); rng.base.label.remove();
+    rng.top.dot.remove();  rng.top.label.remove();
+  }
+
+  // draw the full-length axis guide (not cursor-hugging — spans whole [min,max])
+  st.track.style.display = "block";
+  placeBar(st.track, 0, len, GUIDE_W, horizontal);
+
+  for (let i = 0; i < n; i++) {
+    const range = ranges[i]!;
+    const rng = st.rangeStates[i]!;
+    const isActive = g.active === range.id || g.active === i;
+
+    // z-order: active range on top; within each group halos behind knobs behind labels
+    const zHalo  = isActive ? n + 5     : i;
+    const zKnob  = isActive ? n * 2 + 15 : n + 5 + i;
+    const zLabel = zKnob + 1;
+
+    // update live values (don't clobber an in-progress drag)
+    if (rng.dragging !== "base") rng.live.base = range.base.value;
+    if (rng.dragging !== "top")  rng.live.top  = range.top.value;
+    if (rng.dragging === null) { rng.liveBandBase = range.base.value; rng.liveBandTop = range.top.value; }
+
+    const bA = gaugeAlong(valueFraction(rng.live.base, g.min, g.max), len, horizontal);
+    const tA = gaugeAlong(valueFraction(rng.live.top,  g.min, g.max), len, horizontal);
+
+    // halo (coloured band)
+    rng.halo.style.background = range.color;
+    rng.halo.style.opacity = isActive ? "0.45" : "0.30";
+    rng.haloOpacity = rng.halo.style.opacity;
+    rng.halo.style.zIndex = String(zHalo);
+    placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
+
+    // knobs
+    rng.base.dot.style.background = range.color;
+    rng.base.dot.style.zIndex = String(zKnob);
+    rng.top.dot.style.background = range.color;
+    rng.top.dot.style.zIndex = String(zKnob);
+    if (rng.dragging !== "base" && rng.dragging !== "band") placeKnob(rng.base, bA, horizontal);
+    if (rng.dragging !== "top"  && rng.dragging !== "band") placeKnob(rng.top,  tA, horizontal);
+
+    // labels
+    rng.base.label.textContent = range.base.label ?? "";
+    rng.top.label.textContent  = range.top.label  ?? "";
+    applyLabelStyle(rng.base.label, range.color, "white");
+    applyLabelStyle(rng.top.label,  range.color, "white");
+    rng.base.label.style.zIndex = String(zLabel);
+    rng.top.label.style.zIndex  = String(zLabel);
+
+    // a11y
+    for (const [dot, cursor, val] of [
+      [rng.base.dot, range.base, rng.live.base],
+      [rng.top.dot,  range.top,  rng.live.top],
+    ] as [HTMLElement, WidgetRange["base"], number][]) {
+      dot.setAttribute("aria-valuemin", String(g.min));
+      dot.setAttribute("aria-valuemax", String(g.max));
+      dot.setAttribute("aria-valuenow", String(val));
+      dot.setAttribute("aria-orientation", horizontal ? "horizontal" : "vertical");
+      const lbl = cursor.label || cursor.name;
+      if (lbl) dot.setAttribute("aria-label", lbl);
+    }
+  }
 }
 
 interface DialState { svg: SVGSVGElement; hit: SVGCircleElement; arcHalo: SVGPathElement; arc: SVGPathElement; knob: SVGCircleElement; label: HTMLElement; dial: WidgetDial; dragging: boolean; live: number; }
@@ -1226,6 +1648,7 @@ class Card {
   private delBtn: HTMLButtonElement | undefined;
   private actionBtns: HTMLElement[] = [];
   private actionSig = "";
+  private axisButtons: Array<{ el: HTMLElement; place: "axis-top" | "axis-bottom"; gap: number }> = [];
   /** The SVG frame for a non-rect `boxShape` (lazily created); absent for the plain CSS box. */
   private shapeSvg: SVGSVGElement | undefined;
   private dragging = false;
@@ -1307,6 +1730,7 @@ class Card {
     const del = w.deletable;
     this.ensureDeleteButton(!!del, framed, typeof del === "object" ? del.title : undefined);
     this.ensureActionButtons(w.buttons);
+    this.repositionAxisButtons(); // re-measure after layout changes (e.g. content or label width)
   }
 
   /**
@@ -1381,19 +1805,72 @@ class Card {
   }
 
   /** Build the action buttons (`+`/pen/…) on the card edges/corners. Rebuilt only when the
-   *  `buttons` config changes (siblings of `content`, so the reconcile never touches them). */
+   *  `buttons` config changes (siblings of `content`, so the reconcile never touches them).
+   *  Axis places (`"axis-top"` / `"axis-bottom"`) are tracked separately in `axisButtons` and
+   *  repositioned via DOM measurement in `repositionAxisButtons()`. */
   private ensureActionButtons(buttons: WidgetButton[] | undefined): void {
     const sig = JSON.stringify(buttons ?? []);
     if (sig === this.actionSig) return;
     this.actionSig = sig;
     for (const b of this.actionBtns) b.remove();
     this.actionBtns = [];
+    for (const ab of this.axisButtons) ab.el.remove();
+    this.axisButtons = [];
     for (const button of buttons ?? []) {
-      for (const [fx, fy] of expandPlaces(button.place)) {
-        const el = makeActionButton(button, fx, fy, this);
-        this.root.appendChild(el);
-        this.actionBtns.push(el);
+      const places = Array.isArray(button.place) ? button.place : (button.place != null ? [button.place] : ["right"]);
+      const seen = new Set<string>();
+      for (const p of places) {
+        if (p === "axis-top" || p === "axis-bottom") {
+          if (!seen.has(p)) {
+            seen.add(p);
+            const [fx, fy] = PLACE_POINTS[p]![0]!;
+            const el = makeActionButton(button, fx, fy, this);
+            this.root.appendChild(el);
+            this.actionBtns.push(el);
+            this.axisButtons.push({ el, place: p, gap: button.gap ?? 0 });
+          }
+        } else {
+          for (const [fx, fy] of PLACE_POINTS[p as WidgetButtonPlace] ?? PLACE_POINTS.right) {
+            const k = `${fx},${fy}`;
+            if (!seen.has(k)) {
+              seen.add(k);
+              const el = makeActionButton(button, fx, fy, this);
+              this.root.appendChild(el);
+              this.actionBtns.push(el);
+            }
+          }
+        }
       }
+    }
+    this.repositionAxisButtons();
+  }
+
+  /** Reposition `"axis-top"` / `"axis-bottom"` buttons so their centre lands on the gauge track
+   *  cross-axis position (KNOB/2 from the gauge element's left edge for a vertical gauge).
+   *  Called after DOM layout when the gauge element's bounding rect is available.
+   *  In jsdom tests `getBoundingClientRect()` returns 0 — this is a no-op (layout cannot be tested). */
+  private repositionAxisButtons(): void {
+    if (!this.axisButtons.length) return;
+    const gaugeEl = this.root.querySelector<HTMLElement>(".draw-adapter-widget-gauge");
+    if (!gaugeEl) return;
+    const rootRect = this.root.getBoundingClientRect();
+    const gaugeRect = gaugeEl.getBoundingClientRect();
+    if (!rootRect.width || !gaugeRect.width) return; // no layout (jsdom / not yet painted)
+
+    // Gauge axis x = gaugeRect.left − rootRect.left + KNOB/2 (centre of track/knob column)
+    const axisX = gaugeRect.left - rootRect.left + KNOB / 2;
+    // Track top end y (gauge top + KNOB/2) and bottom end y (gauge bottom − KNOB/2)
+    const trackTopY    = gaugeRect.top    - rootRect.top    + KNOB / 2;
+    const trackBottomY = gaugeRect.bottom - rootRect.top    - KNOB / 2;
+
+    for (const ab of this.axisButtons) {
+      const s = ab.el.style;
+      const yPx = ab.place === "axis-top"
+        ? trackTopY    - ab.gap
+        : trackBottomY + ab.gap;
+      s.left = `${axisX}px`;
+      s.top  = `${yPx}px`;
+      // transform already set to translate(-50%,-50%) by makeActionButton — no change needed
     }
   }
 

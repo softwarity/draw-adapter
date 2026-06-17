@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { WidgetLayer, boxShapeLayout, inlineStatic, resolveBoxShape, snapshotWithWidgets } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
-import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit, WidgetStack } from "../src/index.js";
+import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit, WidgetRange, WidgetStack } from "../src/index.js";
 
 /** Records mounts (as plain divs) + emitted pointer events; `unprojectClient` is the
  *  identity `(x,y) ⇒ { lon:x, lat:y }` so coordinates are easy to assert. */
@@ -1118,6 +1118,124 @@ describe("WidgetLayer — gauge control", () => {
   });
 });
 
+describe("WidgetLayer — coincident cursors (Ask 3)", () => {
+  const KNOB = 11;
+  const CURSOR_LABEL_H = 16;
+
+  const jetGauge = (cursors: { name: string; value: number; label?: string }[]): MarkerWidget => ({
+    id: "j", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 600, length: 120, cursors }] },
+  });
+
+  const dots = (host: FakeHost): HTMLElement[] =>
+    Array.from(cardEl(host).querySelectorAll(".draw-adapter-widget-gauge .draw-adapter-widget-knob")) as HTMLElement[];
+
+  const labels = (host: FakeHost): HTMLElement[] =>
+    Array.from(cardEl(host).querySelectorAll(".draw-adapter-widget-gauge span")) as HTMLElement[];
+
+  it("two distinct cursors far apart: dot and label positions are unchanged (no spread)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "fl", value: 300, label: "FL300" },
+      { name: "top", value: 500, label: "500" },
+    ])]);
+    const d = dots(host);
+    // value 300 → along = (1 - 300/600) * 120 = 60; value 500 → along = (1 - 500/600) * 120 = 20
+    expect(parseFloat(d[0]!.style.top)).toBeCloseTo(60, 0);
+    expect(parseFloat(d[1]!.style.top)).toBeCloseTo(20, 0);
+    // labels: center = along + KNOB/2
+    const lb = labels(host);
+    expect(parseFloat(lb[0]!.style.top)).toBeCloseTo(60 + KNOB / 2, 0);
+    expect(parseFloat(lb[1]!.style.top)).toBeCloseTo(20 + KNOB / 2, 0);
+  });
+
+  it("two coincident cursors (fl = top = max): dots are at the SAME position (no visual split)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "fl", value: 600, label: "FL600" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const d = dots(host);
+    // Both at value 600 → along = 0 → top:0px each (no fan-out)
+    expect(d[0]!.style.top).toBe("0px");
+    expect(d[1]!.style.top).toBe("0px");
+  });
+
+  it("two coincident cursors (fl = top = max): lower-indexed cursor has higher z-index", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "fl", value: 600, label: "FL600" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const d = dots(host);
+    expect(parseInt(d[0]!.style.zIndex)).toBeGreaterThan(parseInt(d[1]!.style.zIndex || "0"));
+  });
+
+  it("three cursors: middle cursor (fl, index 1) has the highest z-index", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "base", value: 300, label: "300" },
+      { name: "fl", value: 450, label: "FL450" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const d = dots(host);
+    const zBase = parseInt(d[0]!.style.zIndex || "0");
+    const zFl   = parseInt(d[1]!.style.zIndex || "0");
+    const zTop  = parseInt(d[2]!.style.zIndex || "0");
+    expect(zFl).toBeGreaterThan(zBase);
+    expect(zFl).toBeGreaterThan(zTop);
+  });
+
+  it("two coincident cursors (fl = top = max): top-most label visible, duplicate hidden", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "fl", value: 600, label: "FL600" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const lb = labels(host);
+    // fl (index 0, higher z) is visible; top (index 1, lower z) is hidden — same value
+    expect(lb[0]!.style.visibility).not.toBe("hidden");
+    expect(lb[1]!.style.visibility).toBe("hidden");
+  });
+
+  it("cursors with distinct values: all labels visible (no suppression)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "base", value: 0, label: "0" },
+      { name: "fl", value: 300, label: "FL300" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const lb = labels(host);
+    expect(lb[0]!.style.visibility).not.toBe("hidden");
+    expect(lb[1]!.style.visibility).not.toBe("hidden");
+    expect(lb[2]!.style.visibility).not.toBe("hidden");
+  });
+
+  it("three cursors fl=top coincident: fl label visible, top label hidden, base label visible", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "base", value: 560, label: "560" },
+      { name: "fl", value: 600, label: "FL600" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const lb = labels(host);
+    expect(lb[0]!.style.visibility).not.toBe("hidden"); // base 560 — distinct value
+    expect(lb[1]!.style.visibility).not.toBe("hidden"); // fl 600 — highest z, visible
+    expect(lb[2]!.style.visibility).toBe("hidden");     // top 600 — same value as fl, hidden
+  });
+
+  it("label text content is preserved correctly when coincident", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([jetGauge([
+      { name: "fl", value: 600, label: "FL600" },
+      { name: "top", value: 600, label: "600" },
+    ])]);
+    const lb = labels(host);
+    expect(lb[0]!.textContent).toBe("FL600");
+    expect(lb[1]!.textContent).toBe("600");
+  });
+});
+
 describe("WidgetLayer — dial control", () => {
   it("renders an SVG arc + knob + centre label", () => {
     const host = new FakeHost();
@@ -1545,5 +1663,470 @@ describe("WidgetLayer — stack widget", () => {
     expect(cardEl(host).querySelector(".dap-stack-editor")).not.toBeNull();
     layer.setWidgets([STACK_W(makeStack("inline"))]);
     expect(cardEl(host).querySelector(".dap-stack-editor")).toBeNull();
+  });
+});
+
+// ── multi-range gauge ────────────────────────────────────────────────────────
+
+const mkRange = (id: string, color: string, bv: number, tv: number, bl?: string, tl?: string): WidgetRange => ({
+  id, color,
+  base: { name: `layers.${id}.baseFL`, value: bv, ...(bl ? { label: bl } : {}) },
+  top:  { name: `layers.${id}.topFL`,  value: tv, ...(tl ? { label: tl } : {}) },
+});
+
+const rangeGaugeCard = (ranges: WidgetRange[], active?: number | string): MarkerWidget => ({
+  id: "rg", anchor: { lon: 0, lat: 0 },
+  child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100, ranges, ...(active !== undefined ? { active } : {}) }] },
+});
+
+describe("WidgetLayer — multi-range gauge", () => {
+  it("renders N colored bands and 2N knobs on a single shared axis", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([
+      mkRange("0", "#d00", 50, 250, "FL050", "FL250"),
+      mkRange("1", "#00d", 200, 400, "FL200", "FL400"),
+    ])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const knobs = gauge.querySelectorAll(".draw-adapter-widget-knob");
+    expect(knobs).toHaveLength(4); // 2 ranges × 2 knobs each
+  });
+
+  it("positions knobs by value (max at top, vertical), full-length axis guide", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("0", "#d00", 0, 450)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const knobs = gauge.querySelectorAll(".draw-adapter-widget-knob");
+    // base=0 → top of knob at (1-0/450)*100 = 100; top=450 → 0
+    expect(parseFloat((knobs[0] as HTMLElement).style.top)).toBeCloseTo(100); // base at bottom
+    expect(parseFloat((knobs[1] as HTMLElement).style.top)).toBeCloseTo(0);   // top at top
+
+    // axis guide spans the full length (not cursor-hugging)
+    const track = gauge.children[1] as HTMLElement; // track is second child (trackHalo is first but hidden)
+    expect(track.style.display).not.toBe("none");
+    expect(parseFloat(track.style.height)).toBeCloseTo(100); // full length
+  });
+
+  it("trackHalo (cursor-mode glow) is hidden in range mode", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const trackHalo = gauge.children[0] as HTMLElement;
+    expect(trackHalo.style.display).toBe("none");
+  });
+
+  it("each knob has role=slider + aria-value* attributes", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300, "FL100", "FL300")])]);
+    const knobs = cardEl(host).querySelectorAll(".draw-adapter-widget-knob");
+    const base = knobs[0] as HTMLElement;
+    const top  = knobs[1] as HTMLElement;
+    expect(base.getAttribute("role")).toBe("slider");
+    expect(base.getAttribute("aria-valuemin")).toBe("0");
+    expect(base.getAttribute("aria-valuemax")).toBe("450");
+    expect(base.getAttribute("aria-valuenow")).toBe("100");
+    expect(base.getAttribute("aria-label")).toBe("FL100");
+    expect(top.getAttribute("aria-valuenow")).toBe("300");
+    expect(top.getAttribute("aria-label")).toBe("FL300");
+  });
+
+  it("a pointerdown on a knob emits onWidgetEdit and does not start a card drag", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    pointer(knob, "pointerdown", 5, 5);
+    expect(host.emits).toHaveLength(0); // no card drag
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.name).toBe("layers.0.baseFL");
+  });
+
+  it("dragging base knob emits onWidgetEdit with the correct list-scoped name", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 50, 300)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const baseKnob = gauge.querySelectorAll(".draw-adapter-widget-knob")[0] as HTMLElement;
+    pointer(baseKnob, "pointerdown", 5, 5);
+    pointer(baseKnob, "pointermove", 5, 80); // move toward bottom (lower FL value)
+    expect(edits.at(-1)!.name).toBe("layers.0.baseFL");
+    expect(edits.at(-1)!.id).toBe("rg");
+  });
+
+  it("within-range clamping: base cannot exceed top during drag", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const baseKnob = gauge.querySelectorAll(".draw-adapter-widget-knob")[0] as HTMLElement;
+    // drag base far above top (toward y=0 = max)
+    pointer(baseKnob, "pointerdown", 5, 5);
+    pointer(baseKnob, "pointermove", 5, 0);
+    const emittedBase = parseFloat(edits.at(-1)!.value);
+    expect(emittedBase).toBeLessThanOrEqual(300); // clamped to ≤ top value
+  });
+
+  it("band drag (pointerdown on halo) emits both base and top names per move", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    // halo is the first div after the track/trackHalo, with style.cursor=grab
+    const halo = Array.from(gauge.children).find(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement;
+    expect(halo).toBeTruthy();
+    pointer(halo, "pointerdown", 5, 50); // start band drag
+    pointer(halo, "pointermove", 5, 40); // move up (toward higher FL)
+    const names = edits.map((e) => e.name);
+    expect(names).toContain("layers.0.baseFL");
+    expect(names).toContain("layers.0.topFL");
+  });
+
+  it("band drag preserves width and clamps to [min, max]", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    // range spans 200 FL units (100→300), total axis 450
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halo = Array.from(gauge.children).find((el) => (el as HTMLElement).style.cursor === "grab") as HTMLElement;
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5, 200); // drag far downward (toward min)
+    const lastBase = parseFloat(edits.find((e) => e.name === "layers.0.baseFL" && edits.indexOf(e) === edits.map(x => x.name).lastIndexOf("layers.0.baseFL"))?.value ?? "0");
+    const lastTop  = parseFloat(edits.find((e) => e.name === "layers.0.topFL"  && edits.indexOf(e) === edits.map(x => x.name).lastIndexOf("layers.0.topFL"))?.value ?? "0");
+    expect(lastBase).toBeGreaterThanOrEqual(0);   // clamped to min
+    expect(lastTop - lastBase).toBeCloseTo(200, 0); // width preserved
+  });
+
+  it("active range is rendered on top (z-index > non-active range)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([
+      mkRange("0", "#d00", 50, 250),
+      mkRange("1", "#00d", 200, 400),
+    ], "1")]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halos = Array.from(gauge.children).filter((el) => (el as HTMLElement).style.cursor === "grab") as HTMLElement[];
+    expect(halos).toHaveLength(2);
+    const z0 = parseInt(halos[0]!.style.zIndex);
+    const z1 = parseInt(halos[1]!.style.zIndex);
+    expect(z1).toBeGreaterThan(z0); // range "1" is active → higher z
+  });
+
+  it("reconciles range count in-place without recreating the gauge element (2 → 1 → 3)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 50, 250), mkRange("1", "#00d", 200, 400)])]);
+    const gaugeEl = cardEl(host).querySelector(".draw-adapter-widget-gauge");
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(4);
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 50, 250)])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(2);
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 50, 250), mkRange("1", "#00d", 100, 300), mkRange("2", "#0d0", 200, 400)])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(6);
+    expect(cardEl(host).querySelector(".draw-adapter-widget-gauge")).toBe(gaugeEl); // same element
+  });
+
+  it("switching from ranges to cursors removes range DOM and shows cursor knobs", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(2);
+    // switch to cursor mode
+    layer.setWidgets([{ id: "rg", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, length: 100, cursors: [{ name: "c", value: 200 }] }] } }]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-knob")).toHaveLength(1);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halo = Array.from(gauge.children).find((el) => (el as HTMLElement).style.cursor === "grab");
+    expect(halo).toBeUndefined(); // no band halos left
+  });
+
+  it("arrow-key on a range knob steps the value and emits onWidgetEdit", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    knob.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(edits.at(-1)!.name).toBe("layers.0.baseFL");
+    expect(parseFloat(edits.at(-1)!.value)).toBeLessThan(100); // stepped down
+  });
+});
+
+// ── Ask 1: axis-aligned action buttons ────────────────────────────────────────
+
+const rangeGaugeWithButton = (place: string | string[], gap = 0): MarkerWidget => ({
+  id: "rg2", anchor: { lon: 0, lat: 0 },
+  child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100, ranges: [mkRange("0", "#d00", 100, 300)] }] },
+  buttons: [{ event: "addLayer", place: place as never, ...(gap ? { gap } : {}) }],
+});
+
+describe("WidgetLayer — axis-top / axis-bottom buttons (Ask 1)", () => {
+  it("axis-top creates exactly one action button", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeWithButton("axis-top")]);
+    const btns = cardEl(host).querySelectorAll(".draw-adapter-widget-btn");
+    expect(btns.length).toBe(1);
+  });
+
+  it("axis-bottom creates exactly one action button", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeWithButton("axis-bottom")]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(1);
+  });
+
+  it("tapping an axis-top button emits the button's event", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeWithButton("axis-top")]);
+    const btn = cardEl(host).querySelector(".draw-adapter-widget-btn") as HTMLElement;
+    btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    btn.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(actions).toEqual([{ id: "rg2", event: "addLayer" }]);
+  });
+
+  it("axis-top + axis-bottom as an array creates two buttons", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeWithButton(["axis-top", "axis-bottom"])]);
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(2);
+  });
+
+  it("no regression: normal top/bottom buttons still work", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([{ id: "nb", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "glyph", svg: "<svg></svg>" }] },
+      buttons: [{ event: "do-it", place: ["top", "bottom"] }] }]);
+    const btns = cardEl(host).querySelectorAll(".draw-adapter-widget-btn");
+    expect(btns.length).toBe(2); // top + bottom
+    const b = btns[0] as HTMLElement;
+    b.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    b.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 5, clientY: 5 }));
+    expect(actions[0]!.event).toBe("do-it");
+  });
+
+  it("mixed axis + normal place on same button creates correct button count", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeWithButton(["axis-top", "bottom-right"])]);
+    // axis-top → 1 button; bottom-right → 1 button; total = 2
+    expect(cardEl(host).querySelectorAll(".draw-adapter-widget-btn").length).toBe(2);
+  });
+});
+
+// ── Ask 2: drag-to-trash gesture to delete a range ───────────────────────────
+//
+// Constants (mirror widget.ts):
+//   FLING_SHOW_DX   =  8 px  — lateral dx that reveals the trash icon
+//   FLING_COMMIT_DX = 50 px  — dx at which pointerup commits the delete
+
+const FLING_SHOW_DX   = 8;
+const FLING_COMMIT_DX = 50;
+
+describe("WidgetLayer — range drag-to-trash gesture (Ask 2)", () => {
+  const getHalo = (host: FakeHost): HTMLElement => {
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    return Array.from(gauge.children).find(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement;
+  };
+
+  it("lateral drag past FLING_SHOW_DX reveals a trash icon on the card (2 ranges)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_SHOW_DX + 2, 50); // dx=10 > FLING_SHOW_DX=8
+    const trash = cardEl(host).querySelector(".draw-adapter-range-trash") as HTMLElement | null;
+    expect(trash).not.toBeNull();
+    expect(trash!.style.display).toBe("flex"); // visible
+  });
+
+  it("trash icon is hidden before any lateral drag starts", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const trash = cardEl(host).querySelector(".draw-adapter-range-trash");
+    expect(trash).toBeNull(); // not yet created (lazy)
+  });
+
+  it("trash icon is hidden again after drag ends (2 ranges)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_SHOW_DX + 2, 50); // reveals trash
+    pointer(halo, "pointerup",   5 + FLING_SHOW_DX + 2, 50);
+    const trash = cardEl(host).querySelector(".draw-adapter-range-trash") as HTMLElement;
+    expect(trash.style.display).toBe("none"); // hidden after drag
+  });
+
+  it("drag past FLING_COMMIT_DX and release → emits removeRange with index (2 ranges)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_COMMIT_DX + 5, 50);
+    pointer(halo, "pointerup",   5 + FLING_COMMIT_DX + 5, 50);
+    expect(actions.length).toBe(1);
+    expect(actions[0]!.event).toMatch(/^removeRange:0/);
+    expect(actions[0]!.id).toBe("rg");
+  });
+
+  it("removeRange event encodes rangeId when present (2 ranges)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("myband", "#d00", 100, 300), mkRange("other", "#00d", 300, 400)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_COMMIT_DX + 5, 50);
+    pointer(halo, "pointerup",   5 + FLING_COMMIT_DX + 5, 50);
+    expect(actions[0]!.event).toBe("removeRange:0:myband");
+  });
+
+  it("second range emits removeRange:1", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([
+      mkRange("a", "#d00", 50, 200),
+      mkRange("b", "#00d", 200, 400),
+    ])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halos = Array.from(gauge.children).filter(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement[];
+    const halo1 = halos[1]!;
+    pointer(halo1, "pointerdown", 5, 50);
+    pointer(halo1, "pointermove", 5 + FLING_COMMIT_DX + 5, 50);
+    pointer(halo1, "pointerup",   5 + FLING_COMMIT_DX + 5, 50);
+    expect(actions[0]!.event).toBe("removeRange:1:b");
+  });
+
+  it("vertical drag never emits removeRange (emits onWidgetEdit only)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5, 30); // |dy|=20 > |dx|=0 → vertical
+    pointer(halo, "pointerup",   5, 30);
+    expect(actions.filter(a => a.event.startsWith("removeRange"))).toHaveLength(0);
+    expect(edits.length).toBeGreaterThan(0);
+  });
+
+  it("lateral nudge below FLING_SHOW_DX: no trash shown, no removeRange", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_SHOW_DX - 2, 50); // dx=6 < FLING_SHOW_DX=8 → pending
+    pointer(halo, "pointerup",   5 + FLING_SHOW_DX - 2, 50);
+    expect(actions).toHaveLength(0);
+    // trash should not even have been created
+    expect(cardEl(host).querySelector(".draw-adapter-range-trash")).toBeNull();
+  });
+
+  it("trash shown but released before FLING_COMMIT_DX: snap-back, no removeRange (2 ranges)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown",  5, 50);
+    pointer(halo, "pointermove", 5 + FLING_SHOW_DX + 2, 50); // reveals trash (dx=10)
+    pointer(halo, "pointerup",   5 + FLING_COMMIT_DX - 5, 50); // dx=45 < 50 → no commit
+    expect(actions).toHaveLength(0);
+    expect(halo.style.transform).toBe(""); // band snapped back
+  });
+
+  it("single remaining range: trash icon never shown even on lateral drag past commit", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    // Only one range → minimum reached, deletion is a no-op at lib level
+    layer.setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const halo = getHalo(host);
+    pointer(halo, "pointerdown", 5, 50);
+    pointer(halo, "pointermove", 5 + FLING_COMMIT_DX + 10, 50); // well past commit dx
+    pointer(halo, "pointerup",   5 + FLING_COMMIT_DX + 10, 50);
+    expect(actions).toHaveLength(0); // no removeRange
+    expect(cardEl(host).querySelector(".draw-adapter-range-trash")).toBeNull(); // trash not created
+  });
+
+  it("two ranges: trash appears and deletion works; once one is removed, trash stays disabled", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([rangeGaugeCard([mkRange("a", "#d00", 50, 200), mkRange("b", "#00d", 200, 400)])]);
+    const gauge = () => cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halos = () => Array.from(gauge().children).filter(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement[];
+    // First range: trash should appear (2 ranges → deletion allowed)
+    const halo0 = halos()[0]!;
+    pointer(halo0, "pointerdown", 5, 50);
+    pointer(halo0, "pointermove", 5 + FLING_SHOW_DX + 2, 50);
+    expect(cardEl(host).querySelector(".draw-adapter-range-trash")).not.toBeNull();
+    expect((cardEl(host).querySelector(".draw-adapter-range-trash") as HTMLElement).style.display).toBe("flex");
+    pointer(halo0, "pointerup",   5 + FLING_COMMIT_DX + 5, 50);
+    expect(actions[0]!.event).toMatch(/^removeRange:0/);
+    // Simulate lib removing the first range → only 1 range left
+    layer.setWidgets([rangeGaugeCard([mkRange("b", "#00d", 200, 400)])]);
+    const halo1 = halos()[0]!;
+    pointer(halo1, "pointerdown", 5, 50);
+    pointer(halo1, "pointermove", 5 + FLING_COMMIT_DX + 10, 50);
+    pointer(halo1, "pointerup",   5 + FLING_COMMIT_DX + 10, 50);
+    expect(actions).toHaveLength(1); // no second removeRange
+  });
+
+  it("horizontal gauge: large horizontal drag emits edit, not removeRange", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    const actions: { id: string; event: string }[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.onWidgetAction((e) => actions.push(e));
+    const hGauge: MarkerWidget = {
+      id: "hg", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100,
+        orientation: "horizontal", ranges: [mkRange("0", "#d00", 100, 300)] }] },
+    };
+    layer.setWidgets([hGauge]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    const halo = Array.from(gauge.children).find(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement;
+    pointer(halo, "pointerdown", 50, 5);
+    pointer(halo, "pointermove", 50 + FLING_COMMIT_DX + 10, 5);
+    pointer(halo, "pointerup",   50 + FLING_COMMIT_DX + 10, 5);
+    expect(actions.filter(a => a.event.startsWith("removeRange"))).toHaveLength(0);
+    expect(edits.length).toBeGreaterThan(0);
   });
 });
