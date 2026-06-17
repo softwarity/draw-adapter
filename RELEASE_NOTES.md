@@ -2,6 +2,13 @@
 
 ## NEXT RELEASE
 
+- **Remove (widgets):** **`WidgetStack` retired.** `sigwx-draw` no longer emits `kind:"stack"`;
+  the multi-range `WidgetGauge.ranges` control replaced it for all layer-pile use cases. Removed:
+  `WidgetStack`, `WidgetStackItem` types; `kind:"stack"` from the `WidgetNode` union; all stack
+  DOM/CSS from `widget.ts`. Events `selectLayer:<id>` and `removeLayer:<id>` no longer emitted by
+  the adapter (the lib's own action handlers for these are unchanged). Events `addLayer`,
+  `addLayerBelow`, and `removeRange:<i>` are unaffected.
+
 - **Add (widgets):** **`WidgetGauge` — multi-range mode** (`ranges?: WidgetRange[]`). Extends the
   existing linear gauge with N independent `[base, top]` intervals rendered on **one shared axis**.
   Intended for multicouche TEMSI / SIGWX: each range = one cloud layer, shown in its own colour.
@@ -71,6 +78,20 @@
   - **Horizontal gauges unaffected:** the gesture is disabled on `orientation: "horizontal"`
     gauges (horizontal axis is the FL axis there).
   - No adapter-side model mutation — the lib removes the layer and re-renders (min-1 guarded).
+
+- **Add (widgets):** **`WidgetRange.fill?` — decouple band fill from knob/label colour.**
+  A new optional field on `WidgetRange` lets the consumer control the coloured band independently
+  of the knob and label ink.
+
+  - **`fill?: string`** — the band's fill colour. Omit (or leave `undefined`) to keep today's
+    behaviour: the band uses `color` (CB / icing / TEMSI unchanged). Set to `""` to render the
+    band **transparent and borderless** — useful for CAT turbulence zones that follow the dashed,
+    fill-less convention — while the knobs and labels remain fully visible in `color`.
+  - **`g.knobStroke` now honoured in ranges mode.** Range knob borders previously always used a
+    hardcoded `1.5px solid white`. They now respect the gauge's `knobStroke` field the same way
+    cursor knobs do: default white, `knobStroke: ""` → no border, any other string → that colour.
+  - No breaking change: `fill` is optional; existing definitions without it are byte-for-byte
+    identical in rendering.
 
 - **Fix (widgets):** **`WidgetGauge` cursors mode — coincident knobs and overlapping labels.**
   When two or more cursor knobs land on the same pixel (e.g. `fl` and `top` both clamped to the

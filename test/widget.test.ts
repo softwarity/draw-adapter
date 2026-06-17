@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { WidgetLayer, boxShapeLayout, inlineStatic, resolveBoxShape, snapshotWithWidgets } from "../src/widget.js";
 import type { WidgetHost, WidgetMount } from "../src/widget.js";
-import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit, WidgetRange, WidgetStack } from "../src/index.js";
+import type { LatLng, MarkerWidget, PointerEvent, WidgetEdit, WidgetRange } from "../src/index.js";
 
 /** Records mounts (as plain divs) + emitted pointer events; `unprojectClient` is the
  *  identity `(x,y) ⇒ { lon:x, lat:y }` so coordinates are easy to assert. */
@@ -1468,212 +1468,13 @@ describe("WidgetLayer — gauge/dial selected-zone edges", () => {
   });
 });
 
-// ── stack widget ──────────────────────────────────────────────────────────────
-
-const STACK_W = (node: WidgetStack): MarkerWidget => ({
-  id: "s1", anchor: { lon: 0, lat: 0 },
-  child: { dir: "v", items: [node] },
-});
-
-const makeStack = (placement: "pinned" | "inline" = "inline", overrides: Partial<WidgetStack> = {}): WidgetStack => ({
-  kind: "stack",
-  editorPlacement: placement,
-  min: 1,
-  max: 4,
-  items: [
-    { id: "L1", preview: "Layer 1", body: { kind: "text", value: "Body 1" }, active: false, disabled: false },
-    { id: "L2", preview: "Layer 2", body: { kind: "text", value: "Body 2" }, active: true,  disabled: true  },
-    { id: "L3", preview: "Layer 3", body: { kind: "text", value: "Body 3" }, active: false, disabled: false },
-  ],
-  ...overrides,
-});
-
-describe("WidgetLayer — stack widget", () => {
-  it("renders a .dap-stack container with a preview strip", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack())]);
-    const stack = cardEl(host).querySelector(".dap-stack") as HTMLElement;
-    expect(stack).not.toBeNull();
-    const strip = stack.querySelector(".dap-stack-strip") as HTMLElement;
-    expect(strip).not.toBeNull();
-    expect(strip.querySelectorAll(".dap-stack-item").length).toBe(3);
-  });
-
-  it("inline mode: active item shows body, others show preview", () => {
-    const host = new FakeHost();
-    new WidgetLayer(host).setWidgets([STACK_W(makeStack("inline"))]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    expect(items.length).toBe(3);
-    // L1 and L3 show preview
-    expect((items[0]!.querySelector(".dap-stack-item-preview") as HTMLElement).style.display).not.toBe("none");
-    expect((items[0]!.querySelector(".dap-stack-item-body") as HTMLElement).style.display).toBe("none");
-    // L2 (active) shows body
-    expect((items[1]!.querySelector(".dap-stack-item-preview") as HTMLElement).style.display).toBe("none");
-    expect((items[1]!.querySelector(".dap-stack-item-body") as HTMLElement).style.display).not.toBe("none");
-    expect(items[1]!.querySelector(".dap-stack-item-body")?.textContent).toContain("Body 2");
-  });
-
-  it("pinned mode: editor appears above the strip with active body", () => {
-    const host = new FakeHost();
-    new WidgetLayer(host).setWidgets([STACK_W(makeStack("pinned"))]);
-    const stack = cardEl(host).querySelector(".dap-stack") as HTMLElement;
-    const editor = stack.querySelector(".dap-stack-editor") as HTMLElement;
-    expect(editor).not.toBeNull();
-    expect(editor.querySelector(".dap-stack-editor-body")?.textContent).toContain("Body 2");
-    // Editor precedes the strip in DOM
-    expect(stack.children[0]).toBe(editor);
-    expect(stack.children[1]).toHaveProperty("className", "dap-stack-strip");
-    // Active twin in strip
-    const twin = stack.querySelector(".dap-stack-twin");
-    expect(twin).not.toBeNull();
-  });
-
-  it("pinned mode: twin item in strip shows preview with twin class", () => {
-    const host = new FakeHost();
-    new WidgetLayer(host).setWidgets([STACK_W(makeStack("pinned"))]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    expect(items[0]!.classList.contains("dap-stack-clickable")).toBe(true);
-    expect(items[1]!.classList.contains("dap-stack-twin")).toBe(true);
-    expect(items[1]!.classList.contains("dap-stack-clickable")).toBe(false);
-    expect(items[2]!.classList.contains("dap-stack-clickable")).toBe(true);
-  });
-
-  it("string preview renders as textContent", () => {
-    const host = new FakeHost();
-    new WidgetLayer(host).setWidgets([STACK_W(makeStack("inline"))]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    expect(items[0]!.querySelector(".dap-stack-item-preview")?.textContent).toBe("Layer 1");
-  });
-
-  it("WidgetNode preview is reconciled", () => {
-    const host = new FakeHost();
-    const node = makeStack("inline");
-    node.items[0] = { ...node.items[0]!, preview: { kind: "text", value: "FL050" } };
-    new WidgetLayer(host).setWidgets([STACK_W(node)]);
-    const preview = cardEl(host)
-      .querySelectorAll(".dap-stack-item")[0]!
-      .querySelector(".dap-stack-item-preview") as HTMLElement;
-    expect(preview.textContent).toContain("FL050");
-  });
-
-  it("add button appears when count < max; absent when count >= max", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack("inline", { max: 4 }))]);
-    expect(cardEl(host).querySelector(".dap-stack-add-btn")).not.toBeNull();
-    // At max
-    const four = makeStack("inline", { max: 3 });
-    layer.setWidgets([STACK_W(four)]);
-    expect(cardEl(host).querySelector(".dap-stack-add-btn")).toBeNull();
-  });
-
-  it("remove button appears when count > min; absent when count <= min", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack("inline", { min: 1 }))]);
-    expect(cardEl(host).querySelector(".dap-stack-remove-btn")).not.toBeNull();
-    // At min
-    layer.setWidgets([STACK_W(makeStack("inline", { min: 3 }))]);
-    expect(cardEl(host).querySelector(".dap-stack-remove-btn")).toBeNull();
-  });
-
-  it("clicking a clickable preview item emits selectLayer:<id>", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    const actions: { id: string; event: string }[] = [];
-    layer.onWidgetAction((e) => actions.push(e));
-    layer.setWidgets([STACK_W(makeStack("inline"))]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    // L1 is clickable
-    pointer(items[0]!, "pointerdown");
-    pointer(items[0]!, "pointerup");
-    expect(actions.length).toBe(1);
-    expect(actions[0]!.event).toBe("selectLayer:L1");
-    expect(actions[0]!.id).toBe("s1");
-  });
-
-  it("clicking the twin / disabled item does NOT emit selectLayer", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    const actions: { id: string; event: string }[] = [];
-    layer.onWidgetAction((e) => actions.push(e));
-    layer.setWidgets([STACK_W(makeStack("inline"))]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    // L2 is active+disabled → not clickable
-    pointer(items[1]!, "pointerdown");
-    pointer(items[1]!, "pointerup");
-    expect(actions.length).toBe(0);
-  });
-
-  it("+ button emits addLayer", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    const actions: { id: string; event: string }[] = [];
-    layer.onWidgetAction((e) => actions.push(e));
-    layer.setWidgets([STACK_W(makeStack("inline", { max: 4 }))]);
-    const btn = cardEl(host).querySelector(".dap-stack-add-btn") as HTMLElement;
-    pointer(btn, "pointerdown");
-    pointer(btn, "pointerup");
-    expect(actions.length).toBe(1);
-    expect(actions[0]!.event).toBe("addLayer");
-  });
-
-  it("× button emits removeLayer:<activeId>", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    const actions: { id: string; event: string }[] = [];
-    layer.onWidgetAction((e) => actions.push(e));
-    layer.setWidgets([STACK_W(makeStack("inline", { min: 1 }))]);
-    const btn = cardEl(host).querySelector(".dap-stack-remove-btn") as HTMLElement;
-    pointer(btn, "pointerdown");
-    pointer(btn, "pointerup");
-    expect(actions.length).toBe(1);
-    expect(actions[0]!.event).toBe("removeLayer:L2");
-  });
-
-  it("reconciles in place when active item changes", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack("inline"))]);
-    // Switch active to L3
-    const updated = makeStack("inline");
-    updated.items[1] = { ...updated.items[1]!, active: false, disabled: false };
-    updated.items[2] = { ...updated.items[2]!, active: true, disabled: true };
-    layer.setWidgets([STACK_W(updated)]);
-    const items = cardEl(host).querySelectorAll(".dap-stack-item");
-    // L3 (idx 2) now shows body
-    expect((items[2]!.querySelector(".dap-stack-item-body") as HTMLElement).style.display).not.toBe("none");
-    expect(items[2]!.querySelector(".dap-stack-item-body")?.textContent).toContain("Body 3");
-  });
-
-  it("switching editorPlacement from inline to pinned adds the editor element", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack("inline"))]);
-    expect(cardEl(host).querySelector(".dap-stack-editor")).toBeNull();
-    layer.setWidgets([STACK_W(makeStack("pinned"))]);
-    expect(cardEl(host).querySelector(".dap-stack-editor")).not.toBeNull();
-  });
-
-  it("switching from pinned back to inline removes the editor element", () => {
-    const host = new FakeHost();
-    const layer = new WidgetLayer(host);
-    layer.setWidgets([STACK_W(makeStack("pinned"))]);
-    expect(cardEl(host).querySelector(".dap-stack-editor")).not.toBeNull();
-    layer.setWidgets([STACK_W(makeStack("inline"))]);
-    expect(cardEl(host).querySelector(".dap-stack-editor")).toBeNull();
-  });
-});
-
-// ── multi-range gauge ────────────────────────────────────────────────────────
+// ── multi-range gauge ─────────────────────────────────────────────────────────
 
 const mkRange = (id: string, color: string, bv: number, tv: number, bl?: string, tl?: string): WidgetRange => ({
   id, color,
   base: { name: `layers.${id}.baseFL`, value: bv, ...(bl ? { label: bl } : {}) },
   top:  { name: `layers.${id}.topFL`,  value: tv, ...(tl ? { label: tl } : {}) },
 });
-
 const rangeGaugeCard = (ranges: WidgetRange[], active?: number | string): MarkerWidget => ({
   id: "rg", anchor: { lon: 0, lat: 0 },
   child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100, ranges, ...(active !== undefined ? { active } : {}) }] },
@@ -2128,5 +1929,73 @@ describe("WidgetLayer — range drag-to-trash gesture (Ask 2)", () => {
     pointer(halo, "pointerup",   50 + FLING_COMMIT_DX + 10, 5);
     expect(actions.filter(a => a.event.startsWith("removeRange"))).toHaveLength(0);
     expect(edits.length).toBeGreaterThan(0);
+  });
+});
+
+describe("WidgetLayer — range fill decoupled from color (ADAPTER-RANGE-FILL-OPTIONAL)", () => {
+  const getHalo = (host: FakeHost): HTMLElement => {
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    return Array.from(gauge.children).find(
+      (el) => (el as HTMLElement).style.cursor === "grab",
+    ) as HTMLElement;
+  };
+
+  it("fill omitted: band background defaults to color", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    expect(getHalo(host).style.background).toBe("rgb(221, 0, 0)");
+  });
+
+  it('fill="": band background is empty (transparent), knob backgrounds use color', () => {
+    const host = new FakeHost();
+    const range: WidgetRange = { ...mkRange("0", "#d00", 100, 300), fill: "" };
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([range])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    expect(getHalo(host).style.background).toBe("");
+    const knobs = gauge.querySelectorAll(".draw-adapter-widget-knob");
+    expect((knobs[0] as HTMLElement).style.background).toBe("rgb(221, 0, 0)");
+    expect((knobs[1] as HTMLElement).style.background).toBe("rgb(221, 0, 0)");
+  });
+
+  it("fill set to a distinct color: band uses fill, knobs use color", () => {
+    const host = new FakeHost();
+    const range: WidgetRange = { ...mkRange("0", "#d00", 100, 300), fill: "#abc" };
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([range])]);
+    const gauge = cardEl(host).querySelector(".draw-adapter-widget-gauge") as HTMLElement;
+    expect(getHalo(host).style.background).toBe("rgb(170, 187, 204)");
+    const knobs = gauge.querySelectorAll(".draw-adapter-widget-knob");
+    expect((knobs[0] as HTMLElement).style.background).toBe("rgb(221, 0, 0)");
+    expect((knobs[1] as HTMLElement).style.background).toBe("rgb(221, 0, 0)");
+  });
+
+  it("range knob border defaults to white (mirrors cursor-mode default)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([rangeGaugeCard([mkRange("0", "#d00", 100, 300)])]);
+    const knobs = cardEl(host).querySelectorAll(".draw-adapter-widget-knob");
+    expect((knobs[0] as HTMLElement).style.border).toContain("white");
+    expect((knobs[1] as HTMLElement).style.border).toContain("white");
+  });
+
+  it("knobStroke on gauge controls range knob border color", () => {
+    const host = new FakeHost();
+    const card: MarkerWidget = {
+      id: "rg", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100, ranges: [mkRange("0", "#d00", 100, 300)], knobStroke: "blue" }] },
+    };
+    new WidgetLayer(host).setWidgets([card]);
+    const knobs = cardEl(host).querySelectorAll(".draw-adapter-widget-knob");
+    expect((knobs[0] as HTMLElement).style.border).toContain("blue");
+    expect((knobs[1] as HTMLElement).style.border).toContain("blue");
+  });
+
+  it('knobStroke="" on gauge: range knobs have no border', () => {
+    const host = new FakeHost();
+    const card: MarkerWidget = {
+      id: "rg", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "gauge", min: 0, max: 450, step: 10, length: 100, ranges: [mkRange("0", "#d00", 100, 300)], knobStroke: "" }] },
+    };
+    new WidgetLayer(host).setWidgets([card]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    expect(knob.style.borderStyle).toBe("none");
   });
 });

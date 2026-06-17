@@ -25,7 +25,6 @@ import type {
   WidgetOrigin,
   WidgetPickerOption,
   WidgetRange,
-  WidgetStack,
 } from "./index.js";
 import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
 import { defaultCoordFormat } from "./coerce.js";
@@ -677,6 +676,8 @@ interface GaugeState {
   dragging: number | null;
   live: number[];
   rangeStates: RangeDomState[];
+  hoverAddEl: HTMLElement | null;
+  hoverAddWired: boolean;
 }
 const gaugeState = new WeakMap<HTMLElement, GaugeState>();
 
@@ -693,7 +694,7 @@ function createGauge(): HTMLElement {
   track.style.position = "absolute"; track.style.borderRadius = `${GUIDE_W / 2}px`;
   track.style.background = "currentColor"; track.style.opacity = GUIDE_OPACITY;
   root.append(trackHalo, track); // wide glow behind, thin guide on top
-  gaugeState.set(root, { trackHalo, track, knobs: [], gauge: { kind: "gauge", min: 0, max: 1, cursors: [] }, dragging: null, live: [], rangeStates: [] });
+  gaugeState.set(root, { trackHalo, track, knobs: [], gauge: { kind: "gauge", min: 0, max: 1, cursors: [] }, dragging: null, live: [], rangeStates: [], hoverAddEl: null, hoverAddWired: false });
   return root;
 }
 
@@ -778,6 +779,7 @@ function updateGauge(root: HTMLElement, g: WidgetGauge, card: Card): void {
     }
     st.rangeStates = [];
     st.trackHalo.style.display = "block";
+    if (st.hoverAddEl) st.hoverAddEl.style.visibility = "hidden";
   }
 
   const cursors = g.cursors ?? [];
@@ -1079,7 +1081,7 @@ function wireRangeBandDrag(root: HTMLElement, halo: HTMLElement, idx: number, st
         // Band follows cursor; dims when armed
         halo.style.transform = `translateX(${dx}px)`;
         halo.style.opacity = armed ? "0.25" : rng.haloOpacity;
-        halo.style.background = range.color;
+        halo.style.background = range.fill ?? range.color;
         return;
       }
     }
@@ -1132,12 +1134,104 @@ function wireRangeBandDrag(root: HTMLElement, halo: HTMLElement, idx: number, st
       // Always snap the band back regardless of commit
       halo.style.transform = "";
       halo.style.opacity = rng.haloOpacity;
-      halo.style.background = g.ranges?.[idx]?.color ?? "";
+      halo.style.background = g.ranges?.[idx]?.fill ?? g.ranges?.[idx]?.color ?? "";
     }
     hideTrash();
   };
   halo.addEventListener("pointerup", end);
   halo.addEventListener("pointercancel", end);
+}
+
+const HOVER_ADD_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/></svg>`;
+
+/** Wire the transient hover-"+" affordance on the gauge root (ranges mode only). Called once;
+ *  subsequent calls are no-ops. The listener uses `st.gauge` (always current) to decide
+ *  whether to show and where to place the `+`. */
+function ensureGaugeHoverAdd(root: HTMLElement, st: GaugeState, card: Card): void {
+  if (st.hoverAddWired) return;
+  st.hoverAddWired = true;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.setAttribute("aria-label", "Add layer here");
+  const s = btn.style;
+  s.position = "absolute";
+  s.width = "18px"; s.height = "18px";
+  s.borderRadius = "50%";
+  s.border = "1px solid #1f2328";
+  s.background = "#fff";
+  s.padding = "3px";
+  s.display = "flex"; s.alignItems = "center"; s.justifyContent = "center";
+  s.transform = "translate(-50%, -50%)";
+  s.cursor = "pointer";
+  s.boxSizing = "border-box";
+  s.userSelect = "none";
+  s.color = "#000";
+  s.zIndex = "200";
+  s.visibility = "hidden";
+  s.setProperty("appearance", "none");
+  s.setProperty("-webkit-appearance", "none");
+  btn.innerHTML = HOVER_ADD_SVG;
+  const inner = btn.firstElementChild as HTMLElement | null;
+  if (inner) { inner.style.width = "100%"; inner.style.height = "100%"; inner.style.display = "block"; }
+  root.appendChild(btn);
+  st.hoverAddEl = btn;
+
+  // Value label shown alongside the "+" (same style as knob labels)
+  const lbl = document.createElement("span");
+  const ls = lbl.style;
+  ls.position = "absolute";
+  ls.whiteSpace = "nowrap";
+  ls.pointerEvents = "none";
+  ls.visibility = "hidden";
+  ls.zIndex = "200";
+  applyLabelStyle(lbl, undefined, undefined); // black text, white halo
+  root.appendChild(lbl);
+
+  let hoverVal: number | null = null;
+
+  const hide = (): void => {
+    btn.style.visibility = "hidden";
+    lbl.style.visibility = "hidden";
+    hoverVal = null;
+  };
+
+  wireTapButton(btn, () => {
+    if (hoverVal == null) return;
+    card.emitAction(`addLayerAt:${hoverVal}`);
+    hide();
+  });
+
+  root.addEventListener("pointermove", (e) => {
+    const g = st.gauge;
+    if (!g.ranges?.length || !g.canAdd) { hide(); return; }
+    if (st.rangeStates.some((rng) => rng.dragging !== null)) { hide(); return; }
+    const len = g.length ?? GAUGE_LEN;
+    const horizontal = g.orientation === "horizontal";
+    const rect = root.getBoundingClientRect();
+    const frac = horizontal
+      ? (e.clientX - rect.left - KNOB / 2) / len
+      : 1 - (e.clientY - rect.top - KNOB / 2) / len;
+    const raw = g.min + frac * (g.max - g.min);
+    const v = snapStep(Math.min(g.max, Math.max(g.min, raw)), g.step);
+    if (v >= g.max) { hide(); return; }
+    const inOccupied = g.ranges.some((r) => v >= Math.min(r.base.value, r.top.value) && v <= Math.max(r.base.value, r.top.value));
+    if (inOccupied) { hide(); return; }
+    const along = gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal);
+    hoverVal = v;
+    lbl.textContent = String(v);
+    if (horizontal) {
+      btn.style.left = `${KNOB / 2 + along}px`; btn.style.top = `${KNOB / 2}px`;
+      ls.left = `${KNOB / 2 + along}px`; ls.top = `${KNOB + 1}px`; ls.transform = "translateX(-50%)";
+    } else {
+      btn.style.top  = `${KNOB / 2 + along}px`; btn.style.left = `${KNOB / 2}px`;
+      ls.top = `${KNOB / 2 + along}px`; ls.left = `${KNOB + 4}px`; ls.transform = "translateY(-50%)";
+    }
+    btn.style.visibility = "visible";
+    lbl.style.visibility = "visible";
+  });
+
+  root.addEventListener("pointerleave", hide);
 }
 
 function updateGaugeRanges(root: HTMLElement, g: WidgetGauge, card: Card): void {
@@ -1185,16 +1279,19 @@ function updateGaugeRanges(root: HTMLElement, g: WidgetGauge, card: Card): void 
     const tA = gaugeAlong(valueFraction(rng.live.top,  g.min, g.max), len, horizontal);
 
     // halo (coloured band)
-    rng.halo.style.background = range.color;
+    rng.halo.style.background = range.fill ?? range.color;
     rng.halo.style.opacity = isActive ? "0.45" : "0.30";
     rng.haloOpacity = rng.halo.style.opacity;
     rng.halo.style.zIndex = String(zHalo);
     placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
 
     // knobs
+    const rStroke = g.knobStroke ?? "white";
     rng.base.dot.style.background = range.color;
+    rng.base.dot.style.border = rStroke ? `1.5px solid ${rStroke}` : "none";
     rng.base.dot.style.zIndex = String(zKnob);
     rng.top.dot.style.background = range.color;
+    rng.top.dot.style.border = rStroke ? `1.5px solid ${rStroke}` : "none";
     rng.top.dot.style.zIndex = String(zKnob);
     if (rng.dragging !== "base" && rng.dragging !== "band") placeKnob(rng.base, bA, horizontal);
     if (rng.dragging !== "top"  && rng.dragging !== "band") placeKnob(rng.top,  tA, horizontal);
@@ -1220,6 +1317,7 @@ function updateGaugeRanges(root: HTMLElement, g: WidgetGauge, card: Card): void 
       if (lbl) dot.setAttribute("aria-label", lbl);
     }
   }
+  ensureGaugeHoverAdd(root, st, card);
 }
 
 interface DialState { svg: SVGSVGElement; hit: SVGCircleElement; arcHalo: SVGPathElement; arc: SVGPathElement; knob: SVGCircleElement; label: HTMLElement; dial: WidgetDial; dragging: boolean; live: number; }
@@ -1377,222 +1475,6 @@ function wireDialDrag(root: HTMLElement, target: SVGCircleElement, card: Card): 
   };
   target.addEventListener("pointerup", end);
   target.addEventListener("pointercancel", end);
-}
-
-// ── stack widget (ordered layer pile, one active + peeked previews) ──────────
-
-const STACK_STYLE_ID = "draw-adapter-stack-style";
-
-function ensureStackStyle(): void {
-  if (typeof document === "undefined" || document.getElementById(STACK_STYLE_ID)) return;
-  const st = document.createElement("style");
-  st.id = STACK_STYLE_ID;
-  st.textContent =
-    // Outer container — tight vertical flow, no chrome of its own.
-    `.dap-stack{display:flex;flex-direction:column;align-items:stretch;gap:4px}` +
-    // Pinned editor — frameless: no background, no border, no radius.
-    `.dap-stack-editor{position:relative;padding:4px;box-sizing:border-box}` +
-    `.dap-stack-strip{display:flex;flex-direction:column;align-items:stretch;gap:0}` +
-    // Preview items — "link" style: no box, no border, no radius, minimal vertical padding.
-    `.dap-stack-item{position:relative;padding:2px 0}` +
-    `.dap-stack-item.dap-stack-clickable{cursor:pointer}` +
-    `.dap-stack-item.dap-stack-clickable:hover{text-decoration:underline}` +
-    // Active slot (twin in pinned) — bold only, no gray.
-    `.dap-stack-item.dap-stack-twin{font-weight:bold}` +
-    // Disabled (active slot): non-selectable only, no gray.
-    `.dap-stack-item.dap-stack-disabled{pointer-events:none}` +
-    // Add / remove buttons — unchanged.
-    `.dap-stack-remove-btn,.dap-stack-add-btn{position:absolute;z-index:2;` +
-    `width:18px;height:18px;display:flex;align-items:center;justify-content:center;` +
-    `border-radius:50%;border:${CHROME_BORDER};background:${CHROME_SURFACE};` +
-    `color:${CHROME_INK};font-size:14px;font-weight:bold;line-height:1;cursor:pointer;padding:0;` +
-    `box-shadow:${CHROME_SHADOW}}` +
-    `.dap-stack-remove-btn{top:-9px;right:-9px}` +
-    `.dap-stack-add-btn{bottom:-9px;right:-9px}` +
-    `.dap-stack-remove-btn:hover,.dap-stack-add-btn:hover{background:${CHROME_HOVER}}`;
-  document.head.appendChild(st);
-}
-
-interface StackItemDom {
-  el: HTMLElement;
-  previewEl: HTMLElement;
-  bodyEl: HTMLElement;
-}
-
-interface StackState {
-  editorEl: HTMLElement | undefined;
-  stripEl: HTMLElement;
-  items: Map<string, StackItemDom>;
-  addBtn: HTMLButtonElement | undefined;
-  removeBtn: HTMLButtonElement | undefined;
-  btnContainer: HTMLElement | undefined;
-  activeId: string | undefined;
-}
-
-const stackState = new WeakMap<HTMLElement, StackState>();
-
-function createStack(_card: Card): HTMLElement {
-  ensureStackStyle();
-  const root = document.createElement("div");
-  root.className = "dap-stack";
-  preventCardDrag(root);
-  const stripEl = document.createElement("div");
-  stripEl.className = "dap-stack-strip";
-  root.appendChild(stripEl);
-  stackState.set(root, {
-    editorEl: undefined,
-    stripEl,
-    items: new Map(),
-    addBtn: undefined,
-    removeBtn: undefined,
-    btnContainer: undefined,
-    activeId: undefined,
-  });
-  // Tell Card.wirePointer the stack handles its own presses (don't start a card drag).
-  // We add the sentinel class so the card's exclusion selector can detect it.
-  root.classList.add("draw-adapter-widget-stack");
-  return root;
-}
-
-function updateStack(root: HTMLElement, node: WidgetStack, card: Card): void {
-  const st = stackState.get(root)!;
-  const { items, min, max, editorPlacement } = node;
-  const canAdd = items.length < max;
-  const canRemove = items.length > min;
-  const activeItem = items.find((i) => i.active);
-  st.activeId = activeItem?.id;
-
-  // ── Pinned editor ─────────────────────────────────────────────────────────
-  let newBtnContainer: HTMLElement | undefined;
-
-  if (editorPlacement === "pinned") {
-    if (!st.editorEl) {
-      const el = document.createElement("div");
-      el.className = "dap-stack-editor";
-      const bodyEl = document.createElement("div");
-      bodyEl.className = "dap-stack-editor-body";
-      el.appendChild(bodyEl);
-      root.insertBefore(el, st.stripEl);
-      st.editorEl = el;
-    }
-    const editorBody = st.editorEl.querySelector(":scope > .dap-stack-editor-body") as HTMLElement;
-    if (activeItem) reconcile(editorBody, [activeItem.body], card);
-    newBtnContainer = st.editorEl;
-  } else {
-    if (st.editorEl) { st.editorEl.remove(); st.editorEl = undefined; }
-  }
-
-  // ── Strip items ───────────────────────────────────────────────────────────
-  const { stripEl } = st;
-  const seen = new Set<string>();
-
-  for (let idx = 0; idx < items.length; idx++) {
-    const item = items[idx]!;
-    seen.add(item.id);
-    let dom = st.items.get(item.id);
-
-    if (!dom) {
-      const el = document.createElement("div");
-      el.className = "dap-stack-item";
-      const previewEl = document.createElement("div");
-      previewEl.className = "dap-stack-item-preview";
-      const bodyEl = document.createElement("div");
-      bodyEl.className = "dap-stack-item-body";
-      bodyEl.style.display = "none";
-      el.append(previewEl, bodyEl);
-      dom = { el, previewEl, bodyEl };
-      st.items.set(item.id, dom);
-      // Wire tap once — reads clickability from dataset at call time.
-      wireTapButton(el, () => {
-        if (el.dataset["stackClickable"] === "1") {
-          card.emitAction(`selectLayer:${el.dataset["stackId"] ?? ""}`);
-          card.focusHost();
-        }
-      });
-    }
-
-    const { el, previewEl, bodyEl } = dom;
-
-    // Ensure position in strip.
-    const cur = stripEl.children[idx];
-    if (cur !== el) {
-      if (cur) stripEl.insertBefore(el, cur);
-      else stripEl.appendChild(el);
-    }
-
-    const isInlineActive = editorPlacement === "inline" && item.active;
-    const isTwin = editorPlacement === "pinned" && item.active;
-    const isClickable = !item.disabled && !item.active;
-
-    el.className =
-      "dap-stack-item" +
-      (isClickable ? " dap-stack-clickable" : "") +
-      (isTwin ? " dap-stack-twin" : "") +
-      (item.disabled && !isInlineActive ? " dap-stack-disabled" : "");
-    el.dataset["stackId"] = item.id;
-    el.dataset["stackClickable"] = isClickable ? "1" : "";
-
-    if (isInlineActive) {
-      previewEl.style.display = "none";
-      bodyEl.style.display = "";
-      reconcile(bodyEl, [item.body], card);
-      newBtnContainer = el;
-    } else {
-      previewEl.style.display = "";
-      bodyEl.style.display = "none";
-      if (typeof item.preview === "string") {
-        previewEl.textContent = item.preview;
-      } else {
-        reconcile(previewEl, [item.preview], card);
-      }
-    }
-  }
-
-  // Remove strip items no longer in the list.
-  for (const [id, dom] of st.items) {
-    if (!seen.has(id)) { dom.el.remove(); st.items.delete(id); }
-  }
-  while (stripEl.children.length > items.length) {
-    stripEl.removeChild(stripEl.lastElementChild!);
-  }
-
-  // ── Add / Remove buttons ───────────────────────────────────────────────────
-  if (st.btnContainer !== newBtnContainer) {
-    st.addBtn?.remove(); st.addBtn = undefined;
-    st.removeBtn?.remove(); st.removeBtn = undefined;
-    st.btnContainer = newBtnContainer;
-  }
-
-  if (newBtnContainer) {
-    if (canRemove && !st.removeBtn) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "dap-stack-remove-btn";
-      btn.textContent = "×";
-      btn.setAttribute("aria-label", "Remove layer");
-      newBtnContainer.appendChild(btn);
-      wireTapButton(btn, () => {
-        if (st.activeId) card.emitAction(`removeLayer:${st.activeId}`);
-        card.focusHost();
-      });
-      st.removeBtn = btn;
-    } else if (!canRemove && st.removeBtn) {
-      st.removeBtn.remove(); st.removeBtn = undefined;
-    }
-
-    if (canAdd && !st.addBtn) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "dap-stack-add-btn";
-      btn.textContent = "+";
-      btn.setAttribute("aria-label", "Add layer");
-      newBtnContainer.appendChild(btn);
-      wireTapButton(btn, () => { card.emitAction("addLayer"); card.focusHost(); });
-      st.addBtn = btn;
-    } else if (!canAdd && st.addBtn) {
-      st.addBtn.remove(); st.addBtn = undefined;
-    }
-  }
 }
 
 // ── card frame shapes (non-rectangular SVG outlines) ──────────────────────────
@@ -1943,7 +1825,7 @@ class Card {
     root.addEventListener("pointerdown", (e) => {
       const t = e.target as HTMLElement | null;
       // editing or the delete button handle their own press — don't start a drag/select
-      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl, .draw-adapter-widget-gauge, .draw-adapter-widget-dial, .draw-adapter-widget-stack")) return;
+      if (t?.closest("input, textarea, select, [contenteditable], .draw-adapter-widget-del, .draw-adapter-widget-btn, .draw-adapter-widget-ctrl, .draw-adapter-widget-gauge, .draw-adapter-widget-dial")) return;
       e.preventDefault();   // no text selection while dragging the card
       e.stopPropagation();  // don't let the map navigate (bubble phase)
       this.dragging = true;
@@ -2004,8 +1886,6 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     el = createGauge();
   } else if (node.kind === "dial") {
     el = createDial(card);
-  } else if (node.kind === "stack") {
-    el = createStack(card);
   } else if (node.control === "picker") {
     const span = document.createElement("span");
     span.className = "draw-adapter-widget-ctrl";
@@ -2103,7 +1983,6 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
   }
   if (node.kind === "gauge") { updateGauge(el, node, card); return; }
   if (node.kind === "dial") { updateDial(el, node, card); return; }
-  if (node.kind === "stack") { updateStack(el, node as WidgetStack, card); return; }
   // text
   if (node.control === "picker") {
     updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color, node.size);

@@ -496,12 +496,16 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 
   **Multi-range mode**: `{ kind: "gauge", min, max, ranges: [...] }` renders **N independent
   `[base, top]` intervals on ONE shared axis**. Intended for multicouche SIGWX/TEMSI (one FL gauge
-  per cloud layer → N ranges per gauge). Each range carries its own `color` for knobs and the
-  semi-transparent filled band; ranges overlap freely — the blend of semi-transparencies signals the
-  common zone. Within a range, `base ≤ top` is enforced; between ranges, no clamping. Dragging a knob
-  emits `onWidgetEdit({ id, name, value })` per move; dragging the **band** (between the two knobs)
+  per cloud layer → N ranges per gauge). Each range carries its own `color` for knobs and labels;
+  ranges overlap freely — the blend of semi-transparencies signals the common zone. Within a range,
+  `base ≤ top` is enforced; between ranges, no clamping. Dragging a knob emits
+  `onWidgetEdit({ id, name, value })` per move; dragging the **band** (between the two knobs)
   translates both bounds together (width preserved). The `active` field (range `id` or index) puts
   that range on top (z-index) for tie-break when knobs coincide.
+  **Band fill** (`fill?: string`): by default the coloured band uses `color`. Set `fill: ""` for a
+  **transparent, borderless band** (CAT turbulence convention) — knobs and labels remain visible.
+  Set `fill` to any CSS colour to paint the band differently from `color`. The `knobStroke` gauge
+  field controls the knob border colour in ranges mode (default white, `""` → no border).
   **Drag-to-trash (vertical gauges only):** a predominantly horizontal drag (`|dx| > 8 px`,
   `|dx| > |dy|`) on a band reveals a trash icon to the right of the card; releasing past 50 px fires
   `onWidgetAction({ id, event: "removeRange:${idx}:${rangeId}" })`. Releasing before the threshold
@@ -546,40 +550,6 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   `"dial"` are their own `WidgetNode` kinds — see above). `FakeAdapter` (`./testing`) records the set
   and adds `.editWidget(id, value, name?)` / `.dragGauge(id, name, value)` / `.deleteWidget(id)` /
   `.actionWidget(id, event)` / `.clickWidget(id)`.
-- **Stack widget:** `{ kind: "stack", items, min, max, editorPlacement }` — an ordered pile of
-  cards (cloud layers, jet break-points, any repeated list). One item is **active/editable** at a
-  time; the others show a compact **peek preview** (`items[i].preview` — a `string` or any
-  `WidgetNode`). The full editor body (`items[i].body`) is shown either in a **fixed editor above
-  the strip** (`editorPlacement: "pinned"`) or **inline at the item's position** (`"inline"`).
-  In `pinned` mode the active slot in the strip shows a **read-only twin** (same blue visual, no
-  editing). `+` (bottom-right) and `×` (top-right) buttons appear on the active context, gated by
-  `max`/`min`; they fire `addLayer` / `removeLayer:<id>` via `onWidgetAction`. Clicking a
-  non-active peek fires `selectLayer:<id>`. Field edits inside `body` flow through `onWidgetEdit`
-  with list-scoped names (e.g. `layers.0.cloudBase`). Fully reconciled in place across re-renders.
-
-  ```ts
-  adapter.setWidgets([{
-    id: "temsi-layers", anchor: { lon: 10, lat: 48 },
-    child: { dir: "v", items: [{
-      kind: "stack",
-      editorPlacement: "pinned",
-      min: 1, max: 5,
-      items: [
-        { id: "L1", active: false, disabled: false,
-          preview: { kind: "text", value: "FL050–FL180" },
-          body: { dir: "v", items: [/* pickers + gauge */] } },
-        { id: "L2", active: true,  disabled: true,   // active slot → twin in strip
-          preview: { kind: "text", value: "FL180–FL350" },
-          body: { dir: "v", items: [/* pickers + gauge */] } },
-      ],
-    }] },
-  }]);
-  adapter.onWidgetAction(({ id, event }) => {
-    if (event === "addLayer")               controller.addLayer(id);
-    if (event.startsWith("removeLayer:"))  controller.removeLayer(id, event.slice(13));
-    if (event.startsWith("selectLayer:"))  controller.selectLayer(id, event.slice(12));
-  });
-  ```
 
 ## Camera, container & overlay visibility
 
