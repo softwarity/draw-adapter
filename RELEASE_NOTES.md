@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.6.0
+
 - **Remove (widgets):** **`WidgetStack` retired.** `sigwx-draw` no longer emits `kind:"stack"`;
   the multi-range `WidgetGauge.ranges` control replaced it for all layer-pile use cases. Removed:
   `WidgetStack`, `WidgetStackItem` types; `kind:"stack"` from the `WidgetNode` union; all stack
