@@ -510,6 +510,13 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   `|dx| > |dy|`) on a band reveals a trash icon to the right of the card; releasing past 50 px fires
   `onWidgetAction({ id, event: "removeRange:${idx}:${rangeId}" })`. Releasing before the threshold
   snaps the band back — no event. Disabled when only one range remains.
+  **Hover-add** (`canAdd?: boolean`, default `false`): when `canAdd: true`, hovering an **empty span**
+  of the axis (a gap between or around bands) shows a transient `+` glyph on the track axis with the
+  snapped FL value beside it. Clicking fires
+  `onWidgetAction({ id, event: "addLayerAt:<v>" })`. The `+` is suppressed while dragging a knob or
+  band, when the cursor is over an occupied band or at `g.max`, and whenever `canAdd` is falsy. Set
+  `canAdd: false` (or omit) on gauges that never support add (CB wafs, …); set it `true` on TEMSI
+  multicouche gauges, and clear it back to `false` once the layer count reaches `repeat.max`.
 
   ```ts
   adapter.setWidgets([{

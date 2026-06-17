@@ -37,6 +37,23 @@
   - New types: `WidgetRange`; `WidgetGauge.cursors` is now optional (mutually exclusive with
     `ranges`); `WidgetGauge.active` added.
 
+- **Add (widgets):** **`WidgetGauge` — hover-add affordance on empty axis spans** (`canAdd?: boolean`).
+  Hovering over an **empty FL span** (a gap between/around bands) on a vertical `ranges` gauge shows a
+  transient `+` glyph centred on the track axis, accompanied by the **snapped value** beside it
+  (same label style as range knobs). Clicking the `+` fires
+  `onWidgetAction({ id, event: "addLayerAt:<v>" })` where `<v>` is the FL value under the cursor,
+  snapped to `step` and clamped to `[min, max[`.
+
+  - **Opt-in.** `canAdd` defaults to `false` — the adapter shows no `+` unless the lib explicitly
+    passes `canAdd: true`. Gauges that never support hover-add (CB wafs, single-cursor gauges, …)
+    need no change.
+  - **Auto-suppressed** when: the cursor is inside any `[base, top]` range, at `g.max`, while dragging
+    a knob or band, or when `canAdd` is falsy.
+  - **Sibling of the existing `addLayer` / `addLayerBelow` / `removeRange:<i>`** events — the lib
+    inserts a new range centred at the given FL, clamped and sorted with the others.
+  - New `WidgetGauge.canAdd?: boolean` (default `false`; set `true` on TEMSI-style gauges, omit or
+    set `false` on all others).
+
 - **Add (widgets):** **`WidgetButton` — axis-aligned placement + outward gap.**
   Two new `place` keywords and one new field for action buttons on cards that carry a vertical
   `ranges` gauge:
