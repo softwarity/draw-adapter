@@ -2102,11 +2102,15 @@ export class WidgetLayer {
       const gap = w.anchorTo.gap ?? 0;
       let dx = 0;
       let dy = 0;
+      const mainCX = (mainRect.left + mainRect.right)  / 2;
+      const mainCY = (mainRect.top  + mainRect.bottom) / 2;
+      const satCX  = (satRect.left  + satRect.right)   / 2;
+      const satCY  = (satRect.top   + satRect.bottom)  / 2;
       switch (w.anchorTo.side) {
-        case "right":  dx = mainRect.right  + gap - satRect.left;   break;
-        case "left":   dx = mainRect.left   - gap - satRect.right;  break;
-        case "top":    dy = mainRect.top    - gap - satRect.bottom; break;
-        case "bottom": dy = mainRect.bottom + gap - satRect.top;    break;
+        case "right":  dx = mainRect.right  + gap - satRect.left;   dy = mainCY - satCY; break;
+        case "left":   dx = mainRect.left   - gap - satRect.right;  dy = mainCY - satCY; break;
+        case "top":    dy = mainRect.top    - gap - satRect.bottom; dx = mainCX - satCX; break;
+        case "bottom": dy = mainRect.bottom + gap - satRect.top;    dx = mainCX - satCX; break;
       }
       satellite.setAnchorExtra(dx, dy);
     }

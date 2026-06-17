@@ -2114,9 +2114,9 @@ describe("WidgetLayer — anchorTo satellite positioning", () => {
       Element.prototype.getBoundingClientRect = origGet;
     }
 
-    // Expected dx = mainRect.right + gap - satRect.left = 200 + 8 - 10 = 198
-    // transform should contain the base translate(0%,0%) PLUS translate(198.00px, 0.00px)
-    expect(satCard.style.transform).toContain("translate(198.00px, 0.00px)");
+    // dx = mainRect.right + gap − satRect.left = 200 + 8 − 10 = 198
+    // dy = mainCY − satCY = (50+100)/2 − (50+80)/2 = 75 − 65 = 10  (cross-axis centering)
+    expect(satCard.style.transform).toContain("translate(198.00px, 10.00px)");
   });
 
   it("side=bottom: applies correct dy offset", () => {
@@ -2187,8 +2187,61 @@ describe("WidgetLayer — anchorTo satellite positioning", () => {
       Element.prototype.getBoundingClientRect = origGet;
     }
 
-    // Expected dx = mainRect.left - gap - satRect.right = 200 - 6 - 260 = -66
-    expect(satCard.style.transform).toContain("translate(-66.00px, 0.00px)");
+    // dx = mainRect.left − gap − satRect.right = 200 − 6 − 260 = −66
+    // dy = mainCY − satCY = (50+100)/2 − (50+80)/2 = 75 − 65 = 10  (cross-axis centering)
+    expect(satCard.style.transform).toContain("translate(-66.00px, 10.00px)");
+  });
+
+  it("side=right: centers satellite vertically on main card (cross-axis centering)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right" } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      // main: top=100, bottom=200 → CY=150; sat: top=10, bottom=50 → CY=30
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 0, right: 80, top: 100, bottom: 200, width: 80, height: 100, x: 0, y: 100, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 0, right: 40, top: 10,  bottom: 50,  width: 40, height: 40,  x: 0, y: 10,  toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right" } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // dx = mainRect.right − satRect.left = 80 − 0 = 80
+    // dy = mainCY − satCY = 150 − 30 = 120  ← vertical centering
+    expect(satCard.style.transform).toContain("translate(80.00px, 120.00px)");
+  });
+
+  it("side=bottom: centers satellite horizontally on main card (cross-axis centering)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "bottom" } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      // main: left=100, right=200 → CX=150; sat: left=10, right=70 → CX=40
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 100, right: 200, top: 0, bottom: 60, width: 100, height: 60, x: 100, y: 0, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 10,  right: 70,  top: 0, bottom: 30, width: 60,  height: 30, x: 10,  y: 0, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "bottom" } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // dy = mainRect.bottom − satRect.top = 60 − 0 = 60
+    // dx = mainCX − satCX = 150 − 40 = 110  ← horizontal centering
+    expect(satCard.style.transform).toContain("translate(110.00px, 60.00px)");
   });
 
   it("re-run on second setWidgets re-positions with updated rects (simulate main card growing)", () => {
