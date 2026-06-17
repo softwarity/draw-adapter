@@ -491,8 +491,10 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   **Cursor mode** (default): `{ kind: "gauge", min, max, cursors: [{ name, value, label? }] }` is a
   linear slider: **1–3 cursors that can't cross**, `step` snapping, an optional one-notch `beyond`
   (off-chart "XXX" ⇒ emits `min - step` / `max + step`), a filled span + per-cursor labels.
+  When two cursors reach the same value, the central one (middle by index) stays on top and is
+  draggable; the duplicate label is hidden (redundant).
 
-  **Multi-range mode** (new): `{ kind: "gauge", min, max, ranges: [...] }` renders **N independent
+  **Multi-range mode**: `{ kind: "gauge", min, max, ranges: [...] }` renders **N independent
   `[base, top]` intervals on ONE shared axis**. Intended for multicouche SIGWX/TEMSI (one FL gauge
   per cloud layer → N ranges per gauge). Each range carries its own `color` for knobs and the
   semi-transparent filled band; ranges overlap freely — the blend of semi-transparencies signals the
@@ -500,6 +502,10 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
   emits `onWidgetEdit({ id, name, value })` per move; dragging the **band** (between the two knobs)
   translates both bounds together (width preserved). The `active` field (range `id` or index) puts
   that range on top (z-index) for tie-break when knobs coincide.
+  **Drag-to-trash (vertical gauges only):** a predominantly horizontal drag (`|dx| > 8 px`,
+  `|dx| > |dy|`) on a band reveals a trash icon to the right of the card; releasing past 50 px fires
+  `onWidgetAction({ id, event: "removeRange:${idx}:${rangeId}" })`. Releasing before the threshold
+  snaps the band back — no event. Disabled when only one range remains.
 
   ```ts
   adapter.setWidgets([{
