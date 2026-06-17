@@ -1999,3 +1999,228 @@ describe("WidgetLayer — range fill decoupled from color (ADAPTER-RANGE-FILL-OP
     expect(knob.style.borderStyle).toBe("none");
   });
 });
+
+// ── anchorTo satellite positioning ──────────────────────────────────────────────
+
+describe("WidgetLayer — anchorTo satellite positioning", () => {
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  const simpleCard = (id: string): MarkerWidget => ({
+    id,
+    anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "text", value: id }] },
+  });
+
+  it("accepts anchorTo without error and renders the satellite card", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("main"),
+      { ...simpleCard("sat"), anchorTo: { id: "main", side: "right", gap: 4 } },
+    ]);
+    // Both cards must be created (2 mounts)
+    expect(host.mounts).toHaveLength(2);
+    expect(cardEl(host, 0)).not.toBeNull();
+    expect(cardEl(host, 1)).not.toBeNull();
+  });
+
+  it("satellite without anchorTo keeps its own origin transform (no extra translate)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([
+      { ...simpleCard("a"), origin: "top-left" },
+    ]);
+    const t = cardEl(host).style.transform;
+    // "top-left" ⇒ ox=0, oy=0 ⇒ translate(0%, 0%) — no extra translate appended
+    expect(t).toBe("translate(0.0000%, 0.0000%)");
+    expect(t).not.toContain("translate(0.00px"); // no extra offset
+  });
+
+  it("falls back to own anchor/origin when the target id is absent", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([
+      { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "missing", side: "right" } },
+    ]);
+    // jsdom rects are all-zero → repositionAnchoredCards is a no-op; the card keeps its base transform
+    const t = cardEl(host).style.transform;
+    expect(t).toBe("translate(0.0000%, 0.0000%)");
+    expect(t).not.toContain("translate(0.00px");
+  });
+
+  it("satellite card is fully interactive (emits onWidgetAction)", () => {
+    const host = new FakeHost();
+    const actions: { id: string; event: string }[] = [];
+    const layer = new WidgetLayer(host);
+    layer.onWidgetAction((e) => actions.push(e));
+    layer.setWidgets([
+      simpleCard("main"),
+      {
+        ...simpleCard("sat"),
+        anchorTo: { id: "main", side: "right" },
+        buttons: [{ event: "ping", bordered: true }],
+      },
+    ]);
+    const satCard = cardEl(host, 1);
+    const btn = satCard.querySelector(".draw-adapter-widget-btn") as HTMLElement;
+    expect(btn).not.toBeNull();
+    // Simulate a tap: pointerdown + pointerup within 3px
+    btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    btn.dispatchEvent(new MouseEvent("pointerup",   { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: "sat", event: "ping" });
+  });
+
+  it("removes ResizeObserver and card on setWidgets without the satellite", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("main"),
+      { ...simpleCard("sat"), anchorTo: { id: "main", side: "bottom" } },
+    ]);
+    expect(host.mounts).toHaveLength(2);
+    // Remove satellite in next render
+    layer.setWidgets([simpleCard("main")]);
+    expect(host.mounts[1]!.removed).toBe(true);
+  });
+
+  it("destroy() disconnects the ResizeObserver without error", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("main"),
+      { ...simpleCard("sat"), anchorTo: { id: "main", side: "top" } },
+    ]);
+    expect(() => layer.destroy()).not.toThrow();
+  });
+
+  it("applies measured offset when getBoundingClientRect returns non-zero values", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right", gap: 8 } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    // Simulate a real layout: main card rect [left=100, right=200]; satellite at [left=10]
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 100, right: 200, top: 50, bottom: 100, width: 100, height: 50, x: 100, y: 50, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 10,  right: 60,  top: 50, bottom: 80,  width: 50,  height: 30, x: 10,  y: 50, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      // Trigger a re-render to pick up the mocked rects
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right", gap: 8 } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // Expected dx = mainRect.right + gap - satRect.left = 200 + 8 - 10 = 198
+    // transform should contain the base translate(0%,0%) PLUS translate(198.00px, 0.00px)
+    expect(satCard.style.transform).toContain("translate(198.00px, 0.00px)");
+  });
+
+  it("side=bottom: applies correct dy offset", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "bottom", gap: 4 } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 0, right: 100, top: 50, bottom: 120, width: 100, height: 70, x: 0, y: 50, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 0, right: 100, top: 20, bottom: 60,  width: 100, height: 40, x: 0, y: 20, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "bottom", gap: 4 } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // Expected dy = mainRect.bottom + gap - satRect.top = 120 + 4 - 20 = 104
+    expect(satCard.style.transform).toContain("translate(0.00px, 104.00px)");
+  });
+
+  it("side=top: applies correct dy offset (satellite above main)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "top", gap: 2 } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 0, right: 100, top: 100, bottom: 170, width: 100, height: 70, x: 0, y: 100, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 0, right: 100, top: 130, bottom: 160, width: 100, height: 30, x: 0, y: 130, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "top", gap: 2 } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // Expected dy = mainRect.top - gap - satRect.bottom = 100 - 2 - 160 = -62
+    expect(satCard.style.transform).toContain("translate(0.00px, -62.00px)");
+  });
+
+  it("side=left: applies correct dx offset (satellite to the left of main)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "left", gap: 6 } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 200, right: 300, top: 50, bottom: 100, width: 100, height: 50, x: 200, y: 50, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 210, right: 260, top: 50, bottom: 80,  width: 50,  height: 30, x: 210, y: 50, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "left", gap: 6 } }]);
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+
+    // Expected dx = mainRect.left - gap - satRect.right = 200 - 6 - 260 = -66
+    expect(satCard.style.transform).toContain("translate(-66.00px, 0.00px)");
+  });
+
+  it("re-run on second setWidgets re-positions with updated rects (simulate main card growing)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+
+    layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right" } }]);
+
+    const mainCard = cardEl(host, 0);
+    const satCard  = cardEl(host, 1);
+
+    const origGet = Element.prototype.getBoundingClientRect;
+    try {
+      // First render: main is 80px wide (right=80)
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 0, right: 80, top: 0, bottom: 40, width: 80, height: 40, x: 0, y: 0, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 5, right: 55, top: 0, bottom: 40, width: 50, height: 40, x: 5, y: 0, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right" } }]);
+      expect(satCard.style.transform).toContain("translate(75.00px, 0.00px)"); // dx = 80 - 5 = 75
+
+      // Second render: main grew to 120px wide (right=120)
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this === mainCard) return { left: 0, right: 120, top: 0, bottom: 40, width: 120, height: 40, x: 0, y: 0, toJSON() { return {}; } };
+        if (this === satCard)  return { left: 5,  right: 55,  top: 0, bottom: 40, width: 50,  height: 40, x: 5,  y: 0, toJSON() { return {}; } };
+        return origGet.call(this);
+      };
+      layer.setWidgets([simpleCard("main"), { ...simpleCard("sat"), origin: "top-left", anchorTo: { id: "main", side: "right" } }]);
+      expect(satCard.style.transform).toContain("translate(115.00px, 0.00px)"); // dx = 120 - 5 = 115
+    } finally {
+      Element.prototype.getBoundingClientRect = origGet;
+    }
+  });
+});

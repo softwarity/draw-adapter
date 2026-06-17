@@ -1536,6 +1536,12 @@ class Card {
   private dragging = false;
   private downX = 0;
   private downY = 0;
+  /** Cached origin fractions (set by update, read by refreshTransform + anchorTo positioning). */
+  private ox = 0.5;
+  private oy = 0.5;
+  /** Extra pixel offset applied by anchorTo repositioning (added after the %-based origin transform). */
+  private anchorExtraX = 0;
+  private anchorExtraY = 0;
 
   constructor(
     mount: WidgetMount,
@@ -1573,15 +1579,37 @@ class Card {
     this.wirePointer();
   }
 
+  /** Compose and apply the card's CSS transform: %-based origin + optional px anchorTo offset. */
+  private refreshTransform(): void {
+    let t = `translate(${(-this.ox * 100).toFixed(4)}%, ${(-this.oy * 100).toFixed(4)}%)`;
+    if (this.anchorExtraX !== 0 || this.anchorExtraY !== 0) {
+      t += ` translate(${this.anchorExtraX.toFixed(2)}px, ${this.anchorExtraY.toFixed(2)}px)`;
+    }
+    this.root.style.transform = t;
+  }
+
+  /**
+   * Apply an extra pixel offset on top of the %-based origin transform (used by anchorTo
+   * repositioning). Call with `(0, 0)` to remove the extra and restore the base position.
+   */
+  setAnchorExtra(dx: number, dy: number): void {
+    this.anchorExtraX = dx;
+    this.anchorExtraY = dy;
+    this.refreshTransform();
+  }
+
   /** Reconcile this card's DOM to `w` in place (never recreate — preserves input focus). */
   update(w: MarkerWidget): void {
     this.id = w.id;
     this.anchor = w.anchor;
-    const [ox, oy] = originXY(w.origin);
+    [this.ox, this.oy] = originXY(w.origin);
+    // Reset extra offset: repositionAnchoredCards() will recompute it after all cards are updated.
+    this.anchorExtraX = 0;
+    this.anchorExtraY = 0;
+    this.root.dataset["ox"] = `${this.ox}`; // remembered for the snapshot compositing offset
+    this.root.dataset["oy"] = `${this.oy}`;
+    this.refreshTransform();
     const s = this.root.style;
-    s.transform = `translate(${(-ox * 100).toFixed(4)}%, ${(-oy * 100).toFixed(4)}%)`;
-    this.root.dataset["ox"] = `${ox}`; // remembered for the snapshot compositing offset
-    this.root.dataset["oy"] = `${oy}`;
     const framed = !!(w.bg || w.border);
     s.background = w.bg ?? "transparent";
     s.border = w.border ? `${boxBorderWidth(w.borderWidth)}px solid ${w.border}` : ""; // "" clears it (no frame border)
@@ -2018,10 +2046,13 @@ export class WidgetLayer {
   private deleteCb: ((e: { id: string }) => void) | undefined;
   private actionCb: ((e: { id: string; event: string }) => void) | undefined;
   private coordFmt: (ll: LatLng) => string = defaultCoordFormat;
+  private currentWidgets: MarkerWidget[] = [];
+  private resizeObserver: ResizeObserver | undefined;
 
   constructor(private readonly host: WidgetHost) {}
 
   setWidgets(widgets: MarkerWidget[]): void {
+    this.currentWidgets = widgets;
     const seen = new Set<string>();
     for (const w of widgets) {
       seen.add(w.id);
@@ -2034,12 +2065,64 @@ export class WidgetLayer {
       } else {
         card.mount.setAnchor(w.anchor);
       }
-      card.update(w);
+      card.update(w); // resets anchorExtra to 0 and applies base %-transform
     }
     for (const [id, card] of this.cards) {
       if (seen.has(id)) continue;
       card.mount.remove();
       this.cards.delete(id);
+    }
+    this.repositionAnchoredCards();
+    this.updateResizeObserver();
+  }
+
+  /**
+   * Re-position all satellite cards that declare `anchorTo`: compute the px offset that puts
+   * their perpendicular edge flush against their target's measured edge (+ gap), then apply it
+   * as an extra CSS translation on top of the %-based origin transform.
+   *
+   * Called after the full setWidgets update loop, and from the ResizeObserver when a reference
+   * card's size changes. In jsdom (getBoundingClientRect returns zero), this is a safe no-op.
+   */
+  private repositionAnchoredCards(): void {
+    // Two-pass: first reset all satellites' extras so getBoundingClientRect reflects base-only
+    // transforms (needed on ResizeObserver re-runs where the previous extra is already applied).
+    for (const w of this.currentWidgets) {
+      if (w.anchorTo) this.cards.get(w.id)?.setAnchorExtra(0, 0);
+    }
+    // Second pass: measure and set the corrective offset for each satellite.
+    for (const w of this.currentWidgets) {
+      if (!w.anchorTo) continue;
+      const satellite = this.cards.get(w.id);
+      const main = this.cards.get(w.anchorTo.id);
+      if (!satellite || !main) continue; // target absent → fallback to own anchor/origin
+      const mainRect = main.root.getBoundingClientRect();
+      const satRect  = satellite.root.getBoundingClientRect();
+      if (!mainRect.width && !mainRect.height) continue; // no layout engine (jsdom)
+      const gap = w.anchorTo.gap ?? 0;
+      let dx = 0;
+      let dy = 0;
+      switch (w.anchorTo.side) {
+        case "right":  dx = mainRect.right  + gap - satRect.left;   break;
+        case "left":   dx = mainRect.left   - gap - satRect.right;  break;
+        case "top":    dy = mainRect.top    - gap - satRect.bottom; break;
+        case "bottom": dy = mainRect.bottom + gap - satRect.top;    break;
+      }
+      satellite.setAnchorExtra(dx, dy);
+    }
+  }
+
+  /** Watch reference cards with a ResizeObserver so satellites re-snap when the main card's
+   *  content changes its size (e.g. a new label line appears). */
+  private updateResizeObserver(): void {
+    this.resizeObserver?.disconnect();
+    const refIds = new Set<string>();
+    for (const w of this.currentWidgets) if (w.anchorTo) refIds.add(w.anchorTo.id);
+    if (!refIds.size || typeof ResizeObserver === "undefined") return;
+    this.resizeObserver = new ResizeObserver(() => this.repositionAnchoredCards());
+    for (const id of refIds) {
+      const card = this.cards.get(id);
+      if (card) this.resizeObserver.observe(card.root);
     }
   }
 
@@ -2069,6 +2152,7 @@ export class WidgetLayer {
   }
 
   destroy(): void {
+    this.resizeObserver?.disconnect();
     for (const card of this.cards.values()) card.mount.remove();
     this.cards.clear();
   }

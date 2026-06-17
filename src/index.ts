@@ -378,6 +378,28 @@ export interface WidgetButton {
  *  tropopause label). Pass your own `number[][]` for a custom outline. */
 export type BoxShape = "rect" | "pentagon-up" | "pentagon-down" | number[][];
 
+/**
+ * Attach a satellite card to a measured edge of another card (the "main" card) so the two
+ * touch flush, regardless of either card's measured size.
+ *
+ * `side` governs **only the perpendicular (edge-clearing) axis**; the **cross axis** keeps
+ * using the satellite's own `anchor` + `origin` (so FL-pinned positions are untouched):
+ * - `"right"` → satellite's LEFT edge at main's RIGHT edge + `gap`.  Cross = own anchor/origin.
+ * - `"left"`  → satellite's RIGHT edge at main's LEFT edge − `gap`. Cross = own anchor/origin.
+ * - `"top"`   → satellite's BOTTOM edge at main's TOP edge − `gap`.  Cross = own anchor/origin.
+ * - `"bottom"`→ satellite's TOP edge at main's BOTTOM edge + `gap`.  Cross = own anchor/origin.
+ *
+ * If `id` is not currently rendered, the satellite falls back to its own `anchor`/`origin`.
+ */
+export interface WidgetAnchorTo {
+  /** Id of the sibling card (the "main" card) to attach to. */
+  id: string;
+  /** Which measured edge of the main card this satellite butts against. */
+  side: "top" | "bottom" | "left" | "right";
+  /** Gap in px between the two touching edges. Default `0` (flush). */
+  gap?: number;
+}
+
 /** An anchored marker widget (a DOM card). Positions + frames only; layout lives in the
  *  single root {@link WidgetBox}. `padding`/`radius` reuse the label-box presets so widgets
  *  and label boxes look consistent. */
@@ -387,6 +409,13 @@ export interface MarkerWidget {
   anchor: LatLng;
   /** Which point of the card pins to `anchor`. Default `"center"`. */
   origin?: WidgetOrigin;
+  /**
+   * Attach this card to a measured edge of another card (its "main" card). The perpendicular
+   * axis snaps flush to the named edge (+ `gap`); the cross axis uses this card's own
+   * `anchor`/`origin`. See {@link WidgetAnchorTo}. Falls back to own anchor when the target
+   * card is absent.
+   */
+  anchorTo?: WidgetAnchorTo;
   /** Card fill; omit ⇒ transparent. */
   bg?: string;
   /** Border colour; omit ⇒ no border. Its **width** is set by `borderWidth` (preset). */
