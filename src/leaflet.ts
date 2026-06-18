@@ -39,9 +39,10 @@ import type {
   TooltipStyle,
   WidgetEdit,
 } from "./index.js";
-import { cursorForHit } from "./index.js";
+import { cursorForHit, defaultCoordFormat } from "./index.js";
 import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
 import { WidgetLayer } from "./widget.js";
+import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { num, str, rgba } from "./coerce.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { colorizeSprite } from "./symbols.js";
@@ -66,6 +67,31 @@ function isDraggableHit(hit: Hit): boolean {
 /** Pixel hit-tolerance for {@link LeafletAdapter.hitAt} — same 5px as MapLibre's query box
  *  pad and OpenLayers' `hitTolerance`, so a thin 1–2px line is just as easy to grab on all three. */
 const HIT_TOL = 5;
+
+/** Overlay a `static` marker-widget sprite hit resolves against — reuses the call-out overlay so the
+ *  consumer's existing call-out interaction handles it unchanged (see {@link MarkerWidget.static}). */
+const WSPRITE_HIT_OVERLAY = "text-boxes";
+/** Pane for sprite icons — above the overlay panes (`400 + i*10`), below the tooltip (`1000`). */
+const WSPRITE_PANE = "dap-wsprite";
+
+const ORIGIN_FRAC: Record<string, [number, number]> = {
+  center: [0.5, 0.5], top: [0.5, 0], bottom: [0.5, 1], left: [0, 0.5], right: [1, 0.5],
+  "top-left": [0, 0], "top-right": [1, 0], "bottom-left": [0, 1], "bottom-right": [1, 1],
+};
+/** The [x,y] fraction (0..1) of the sprite that pins to its geo anchor. */
+function originFraction(o: MarkerWidget["origin"]): [number, number] {
+  if (!o) return [0.5, 0.5];
+  if (typeof o === "object") return [o.x, o.y];
+  return ORIGIN_FRAC[o] ?? [0.5, 0.5];
+}
+/** Build a divIcon showing a rasterized sprite as an `<img>` at its CSS WxH (the PNG is device-px, so
+ *  the browser downscales it → crisp on retina), pinned by `origin`. Screen-fixed at every zoom. */
+function spriteDivIcon(res: SpriteResult, o: MarkerWidget["origin"]): L.DivIcon {
+  const [ox, oy] = originFraction(o);
+  const { width: w, height: h } = res;
+  const html = `<img src="${res.canvas.toDataURL()}" width="${w}" height="${h}" style="display:block"/>`;
+  return L.divIcon({ html, className: "draw-adapter-sprite", iconSize: [w, h], iconAnchor: [ox * w, oy * h] });
+}
 
 const LF_PANE_STYLE_ID = "draw-adapter-leaflet-pane-style";
 
@@ -146,6 +172,14 @@ export class LeafletAdapter implements MapAdapter {
   private moved = false;
   private viewHandler: (() => void) | undefined;
   private widgets: WidgetLayer | undefined;
+  /** Coord formatter, mirrored from {@link setCoordFormat} so sprites format `coord` leaves like cards. */
+  private coordFmt: (ll: LatLng) => string = defaultCoordFormat;
+  /** Group of `static`-widget sprite markers (lazy); hit-tested geometrically as {@link WSPRITE_HIT_OVERLAY}. */
+  private spriteGroup: L.LayerGroup | undefined;
+  /** Monotonic token so a superseded async sprite update never clobbers a newer `setWidgets`. */
+  private spriteToken = 0;
+  /** Widget ids with a live sprite (for cache eviction on `destroy`). */
+  private readonly spriteIds = new Set<string>();
   /** The non-interactive {@link highlightArea} frame + whether its dedicated pane exists. */
   private highlightPoly: L.Polygon | undefined;
   private highlightPaneReady = false;
@@ -557,11 +591,66 @@ export class LeafletAdapter implements MapAdapter {
     return this.widgets;
   }
 
-  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  setWidgets(widgets: MarkerWidget[]): void {
+    const dom: MarkerWidget[] = [];
+    const sprites: MarkerWidget[] = [];
+    for (const w of widgets) (w.static ? sprites : dom).push(w);
+    this.widgetLayer().setWidgets(dom);
+    this.updateSprites(sprites);
+  }
   onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
   onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
   onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
-  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.coordFmt = fn; this.widgetLayer().setCoordFormat(fn); }
+
+  /** Create the sprite pane + group once (lazy: only when a `static` widget appears). */
+  private ensureSpriteLayer(): L.LayerGroup {
+    if (!this.spriteGroup) {
+      if (!this.map.getPane(WSPRITE_PANE)) {
+        const pane = this.map.createPane(WSPRITE_PANE);
+        pane.style.zIndex = "690"; // above overlay panes, below the tooltip (1000)
+        pane.classList.add("draw-adapter-pane");
+      }
+      this.spriteGroup = L.layerGroup().addTo(this.map);
+    }
+    return this.spriteGroup;
+  }
+
+  /**
+   * Rasterize each `static` widget to an `<img>` divIcon marker (props `{ featureId, labelId }` on the
+   * marker's `feature`, so the geometric {@link hitAt} surfaces them as call-out hits). The markers are
+   * `interactive: false`: the press falls through to the map and is resolved geometrically, exactly
+   * like a canvas call-out — never the DOM-card `widget` path. Async + token-guarded.
+   */
+  private updateSprites(widgets: MarkerWidget[]): void {
+    if (!widgets.length && !this.spriteIds.size && !this.spriteGroup) return; // never used → no-op
+    const token = ++this.spriteToken;
+    const run = async (): Promise<void> => {
+      const container = this.map.getContainer();
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+      const markers: L.Marker[] = [];
+      const seen = new Set<string>();
+      for (const w of widgets) {
+        const res = await rasterizeWidget(w, { dpr, coordFmt: this.coordFmt, container });
+        if (token !== this.spriteToken) return; // superseded mid-flight
+        if (!res) continue;
+        const marker = L.marker([w.anchor.lat, w.anchor.lon], { pane: WSPRITE_PANE, icon: spriteDivIcon(res, w.origin), interactive: false, keyboard: false });
+        (marker as L.Marker & { feature?: Feature }).feature = {
+          type: "Feature", geometry: { type: "Point", coordinates: [w.anchor.lon, w.anchor.lat] },
+          properties: { featureId: w.id, labelId: w.labelId ?? "l" },
+        };
+        markers.push(marker);
+        seen.add(w.id);
+      }
+      if (token !== this.spriteToken) return;
+      const group = this.ensureSpriteLayer();
+      group.clearLayers();
+      for (const m of markers) group.addLayer(m);
+      for (const id of Array.from(this.spriteIds)) if (!seen.has(id)) { this.spriteIds.delete(id); clearSpriteCache(id); }
+      for (const id of seen) this.spriteIds.add(id);
+    };
+    void run().catch(() => { /* a failed rasterization leaves the prior sprites in place */ });
+  }
 
   destroy(): void {
     for (const g of this.groups.values()) {
@@ -569,6 +658,10 @@ export class LeafletAdapter implements MapAdapter {
       this.map.removeLayer(g);
     }
     this.groups.clear();
+    if (this.spriteGroup) { this.spriteGroup.clearLayers(); this.map.removeLayer(this.spriteGroup); this.spriteGroup = undefined; }
+    this.map.getPane(WSPRITE_PANE)?.remove();
+    for (const id of this.spriteIds) clearSpriteCache(id);
+    this.spriteIds.clear();
     if (this.highlightPoly) { this.highlightPoly.remove(); this.highlightPoly = undefined; }
     this.map.getPane("dap-highlight")?.remove();
     this.highlightPaneReady = false;
@@ -640,6 +733,22 @@ export class LeafletAdapter implements MapAdapter {
         }
       });
     });
+    // `static`-widget sprites — hit-tested geometrically as the call-out overlay, above every manifest
+    // overlay (z = layers.length), so a sprite surfaces the same hit as a canvas call-out.
+    const spritePane = this.map.getPane(WSPRITE_PANE);
+    if (this.spriteGroup && (hittable?.has(WSPRITE_HIT_OVERLAY) ?? true) && (!spritePane || spritePane.style.display !== "none")) {
+      const z = this.opts.layers.length;
+      this.spriteGroup.eachLayer((layer) => {
+        const d = this.surfaceDist(layer, pt, cRect);
+        if (d == null || d > HIT_TOL) return;
+        if (z > bestZ || (z === bestZ && d < bestDist)) {
+          const props = ((layer as L.Layer & { feature?: Feature }).feature?.properties ?? {}) as Record<string, unknown>;
+          best = { overlay: WSPRITE_HIT_OVERLAY, props };
+          bestZ = z;
+          bestDist = d;
+        }
+      });
+    }
     return best;
   }
 

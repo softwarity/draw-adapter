@@ -12,7 +12,7 @@
 // to the *directory* and throws ERR_UNSUPPORTED_DIR_IMPORT. tsc does not rewrite
 // specifiers; bundlers hide this, Node does not. `import type` is erased, so the
 // type-only `ol/*` imports below need no `.js`.
-import type { FeatureCollection } from "geojson";
+import type { Feature as GeoJSONFeature, FeatureCollection } from "geojson";
 import type { FeatureLike } from "ol/Feature";
 import type { EventsKey } from "ol/events";
 import { getHeight, getWidth } from "ol/extent.js";
@@ -53,9 +53,10 @@ import type {
   TooltipStyle,
   WidgetEdit,
 } from "./index.js";
-import { cursorForHit } from "./index.js";
+import { cursorForHit, defaultCoordFormat } from "./index.js";
 import { densifyBboxRing, warnOnce } from "./geo.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
+import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
 import { boxPadding, textBoxBorderWidth } from "./textbox.js";
 import { modifiers } from "./modifiers.js";
@@ -113,6 +114,27 @@ export function createOpenLayersMap(opts: { container: HTMLElement | string; cen
   });
 }
 
+/** Overlay a `static` marker-widget sprite hit resolves against — reuses the call-out overlay so the
+ *  consumer's existing call-out interaction handles it unchanged (see {@link MarkerWidget.static}). */
+const WSPRITE_HIT_OVERLAY = "text-boxes";
+
+const ORIGIN_FRAC: Record<string, [number, number]> = {
+  center: [0.5, 0.5], top: [0.5, 0], bottom: [0.5, 1], left: [0, 0.5], right: [1, 0.5],
+  "top-left": [0, 0], "top-right": [1, 0], "bottom-left": [0, 1], "bottom-right": [1, 1],
+};
+/** The [x,y] fraction (0..1) of the sprite that pins to its geo anchor — an OpenLayers `Icon` anchor. */
+function originFraction(o: MarkerWidget["origin"]): [number, number] {
+  if (!o) return [0.5, 0.5];
+  if (typeof o === "object") return [o.x, o.y];
+  return ORIGIN_FRAC[o] ?? [0.5, 0.5];
+}
+/** Build an `ol/style/Icon` from a rasterized sprite: the device-px canvas displayed at its CSS WxH
+ *  (`scale = 1/dpr`), pinned by `origin`. Screen-fixed at every zoom (an `Icon` doesn't scale w/ view). */
+function spriteIcon(res: SpriteResult, o: MarkerWidget["origin"]): Icon {
+  const [ax, ay] = originFraction(o);
+  return new Icon({ img: res.canvas, scale: 1 / res.dpr, anchor: [ax, ay], anchorXUnits: "fraction", anchorYUnits: "fraction" });
+}
+
 export class OpenLayersAdapter implements MapAdapter {
   /** OpenLayers composites onto `<canvas>` layers → snapshot is supported. */
   protected readonly snapshotSupported = true;
@@ -156,6 +178,15 @@ export class OpenLayersAdapter implements MapAdapter {
   private dblOn = true;
   private widgets: WidgetLayer | undefined;
   private pointerCb: ((ev: PointerEvent) => void) | undefined;
+  /** Coord formatter, mirrored from {@link setCoordFormat} so sprites format `coord` leaves like cards. */
+  private coordFmt: (ll: LatLng) => string = defaultCoordFormat;
+  /** Source/layer for `static`-widget sprites (lazy; mapped to {@link WSPRITE_HIT_OVERLAY} for hits). */
+  private spriteSource: VectorSource | undefined;
+  private spriteLayer: VectorLayer | undefined;
+  /** Monotonic token so a superseded async sprite update never clobbers a newer `setWidgets`. */
+  private spriteToken = 0;
+  /** Widget ids with a live sprite (for cache eviction on `destroy`). */
+  private readonly spriteIds = new Set<string>();
   /** Raw EPSG:4326 data per overlay, kept so a projection swap can re-read (reproject) it. */
   private readonly lastData = new Map<string, FeatureCollection>();
   /** The non-interactive frame layer (see {@link highlightArea}); its last extent + style, so a
@@ -681,18 +712,86 @@ export class OpenLayersAdapter implements MapAdapter {
     return this.widgets;
   }
 
-  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  setWidgets(widgets: MarkerWidget[]): void {
+    const dom: MarkerWidget[] = [];
+    const sprites: MarkerWidget[] = [];
+    for (const w of widgets) (w.static ? sprites : dom).push(w);
+    this.widgetLayer().setWidgets(dom);
+    this.updateSprites(sprites);
+  }
   onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
   onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
   onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
-  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.coordFmt = fn; this.widgetLayer().setCoordFormat(fn); }
+
+  /** Add the sprite source + vector layer once (lazy). Mapped to {@link WSPRITE_HIT_OVERLAY} so its
+   *  features hit-test like canvas call-outs; given a top z so they hit even if the consumer's manifest
+   *  has no `text-boxes` layer (else its `z` would be -1 and never win the hit priority). */
+  private ensureSpriteLayer(): VectorSource {
+    if (!this.spriteSource) {
+      this.spriteSource = new VectorSource();
+      this.spriteLayer = new VectorLayer({ source: this.spriteSource });
+      this.layerOverlay.set(this.spriteLayer, WSPRITE_HIT_OVERLAY);
+      if (!this.zOf.has(WSPRITE_HIT_OVERLAY)) this.zOf.set(WSPRITE_HIT_OVERLAY, this.opts.layers.length);
+      this.map.addLayer(this.spriteLayer);
+    }
+    return this.spriteSource;
+  }
+
+  /**
+   * Rasterize each `static` widget to an `Icon` and push them as point features (props
+   * `{ featureId, labelId }`) into the sprite layer. Async (glyph rasterization) and token-guarded so
+   * a newer call wins.
+   */
+  private updateSprites(widgets: MarkerWidget[]): void {
+    if (!widgets.length && !this.spriteIds.size && !this.spriteSource) return; // never used → no-op
+    const token = ++this.spriteToken;
+    const run = async (): Promise<void> => {
+      const container = this.map.getTargetElement() ?? undefined;
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+      const styled: Array<{ w: MarkerWidget; res: SpriteResult }> = [];
+      for (const w of widgets) {
+        const res = await rasterizeWidget(w, { dpr, coordFmt: this.coordFmt, container });
+        if (token !== this.spriteToken) return; // superseded mid-flight
+        if (res) styled.push({ w, res });
+      }
+      if (token !== this.spriteToken) return;
+      const source = this.ensureSpriteLayer();
+      source.clear();
+      const seen = new Set<string>();
+      if (styled.length) {
+        const fc: FeatureCollection = {
+          type: "FeatureCollection",
+          features: styled.map(({ w }): GeoJSONFeature => ({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [w.anchor.lon, w.anchor.lat] },
+            properties: { featureId: w.id, labelId: w.labelId ?? "l" },
+          })),
+        };
+        const feats = this.format.readFeatures(fc, { dataProjection: "EPSG:4326", featureProjection: this.viewProj() });
+        for (let i = 0; i < feats.length; i++) {
+          const { w, res } = styled[i]!;
+          feats[i]!.setStyle(new Style({ image: spriteIcon(res, w.origin) }));
+          seen.add(w.id);
+        }
+        source.addFeatures(feats);
+      }
+      for (const id of Array.from(this.spriteIds)) if (!seen.has(id)) { this.spriteIds.delete(id); clearSpriteCache(id); }
+      for (const id of seen) this.spriteIds.add(id);
+    };
+    void run().catch(() => { /* a failed rasterization leaves the prior sprites in place */ });
+  }
 
   destroy(): void {
-    this.layerOverlay.forEach((_, layer) => this.map.removeLayer(layer as BaseLayer));
+    this.layerOverlay.forEach((_, layer) => this.map.removeLayer(layer as BaseLayer)); // incl. the sprite layer
     this.layerOverlay.clear();
     this.layers.clear();
     this.sources.clear();
     this.iconCache.clear();
+    this.spriteSource = undefined;
+    this.spriteLayer = undefined;
+    for (const id of this.spriteIds) clearSpriteCache(id);
+    this.spriteIds.clear();
     if (this.highlightLayer) { this.map.removeLayer(this.highlightLayer); this.highlightLayer = undefined; }
     this.highlightExtent = null;
     this.highlightStyleOpts = undefined;

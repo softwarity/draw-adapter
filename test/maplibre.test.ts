@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MapLibreAdapter } from "../src/maplibre.js";
-import type { LayerSpec, PointerEvent } from "../src/index.js";
+import type { LayerSpec, MarkerWidget, PointerEvent } from "../src/index.js";
 
 // jsdom never fires `Image.onload`, so `loadSpriteImage` (used by registerSymbols)
 // would hang. Stub a synchronous-ish image that resolves on `src` assignment.
@@ -366,5 +366,46 @@ describe("MapLibreAdapter — setProjection / viewArea / highlightArea", () => {
     adapter.highlightArea(null);
     expect(map.sources.has("__dap-highlight")).toBe(false);
     expect(map.getLayer("__dap-highlight-line")).toBeFalsy();
+  });
+});
+
+describe("MapLibreAdapter — static widget sprites", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const STATIC_W: MarkerWidget = {
+    id: "w1", anchor: { lon: 2, lat: 1 }, static: true, labelId: "main",
+    child: { dir: "v", items: [{ kind: "text", value: "FL340" }] },
+  };
+
+  it("adds a sprite source + symbol layer mapped to the call-out overlay (text-boxes)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setWidgets([STATIC_W]);
+    await flush();
+    expect(map.sources.has("__dap-widget-sprites")).toBe(true);
+    expect(layer(map, "__dap-widget-sprites").type).toBe("symbol");
+  });
+
+  it("a sprite hit surfaces overlay=text-boxes carrying the widget's featureId + labelId", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setWidgets([STATIC_W]);
+    await flush();
+    let lastHit: PointerEvent["hit"];
+    adapter.onPointer((e) => { if (e.type === "move") lastHit = e.hit; });
+    // The sprite layer is a real layer → its features surface as the call-out overlay, so the
+    // consumer's existing text-boxes interaction (drag = reposition, tap = select) handles them.
+    map.queryResult = [{ layer: { id: "__dap-widget-sprites" }, properties: { featureId: "w1", labelId: "main" } }];
+    map.emit("mousemove", { lngLat: { lat: 1, lng: 2 }, point: { x: 5, y: 5 } });
+    expect(lastHit?.overlay).toBe("text-boxes");
+    expect(lastHit?.props["featureId"]).toBe("w1");
+    expect(lastHit?.props["labelId"]).toBe("main");
+  });
+
+  it("creates no sprite layer when there is no static widget (purely additive)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setWidgets([]);
+    await flush();
+    expect(map.getLayer("__dap-widget-sprites")).toBeFalsy();
   });
 });

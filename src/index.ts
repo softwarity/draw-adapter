@@ -474,6 +474,25 @@ export interface MarkerWidget {
   /** Action buttons on the card's edges/corners (a `+`, a pen, …). Each fires
    *  {@link MapAdapter.onWidgetAction} with its `event`. The lib stays domain-free. */
   buttons?: WidgetButton[];
+  /**
+   * **Read-only sprite mode** (opt-in, additive). `true` ⇒ the adapter **rasterizes** `child`
+   * (the `WidgetBox` tree) to a bitmap once and places it as a **native icon** (GPU MapLibre
+   * `addImage`/symbol, OpenLayers `Icon`, Leaflet `<img>` divIcon) instead of mounting a live DOM
+   * card. The sprite is hit-testable + draggable and surfaces the **same hit as a canvas call-out**
+   * (`overlay: "text-boxes"`, `props: { featureId: id, labelId }`) — so the consumer's existing
+   * call-out interaction (drag = reposition, tap = select) handles it with no new code, and it does
+   * **not** use the DOM-card `widget` path (which selects on `down`). It has **no internal controls**
+   * (no picker/input/gauge): a sprite is an image. Absent/`false` ⇒ the live DOM card, unchanged.
+   *
+   * Use it for any **non-selected** (read-only) cartouche; re-rasterized only when `child`/frame or
+   * the device-pixel-ratio change (never per frame / pan / zoom). `deletable`/`buttons`/editable
+   * controls are ignored in sprite mode.
+   */
+  static?: boolean;
+  /** Label id reported in the sprite hit's `props.labelId` (pairs with `featureId: id` to key the
+   *  consumer's call-out drag, e.g. `pins["<id>:<labelId>"]`). Only used in {@link MarkerWidget.static}
+   *  mode; defaults to `"l"`. */
+  labelId?: string;
   /** Exactly one root box. */
   child: WidgetBox;
 }
@@ -776,6 +795,9 @@ export {
   svgToDataUrl,
   loadSpriteImage,
 } from "./symbols.js";
+
+export { measureWidget, rasterizeWidget, clearSpriteCache } from "./sprite.js";
+export type { WidgetSize, SpriteOptions, SpriteResult } from "./sprite.js";
 
 export { populateToolbar, applyToolbarLayout } from "./toolbar.js";
 export { bindKeyListener } from "./keyboard.js";

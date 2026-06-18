@@ -9,7 +9,7 @@
  * The manifest (`layers`) and the hit-testable set (`hitOverlays`) are supplied
  * by the consumer; this adapter knows no domain type.
  */
-import type { FeatureCollection } from "geojson";
+import type { Feature, FeatureCollection } from "geojson";
 // maplibre-gl v5 ships a UMD/CJS `main` with NO `module`/`exports` field and no
 // default export, so `import { Map } from "maplibre-gl"` throws under Node ESM
 // ("Named export 'Map' not found"). Import the namespace and resolve the ctor at
@@ -44,9 +44,10 @@ import type {
   TooltipStyle,
   WidgetEdit,
 } from "./index.js";
-import { cursorForHit, EMPTY_FC } from "./index.js";
+import { cursorForHit, defaultCoordFormat, EMPTY_FC } from "./index.js";
 import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
+import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { colorizeSprite, loadSpriteImage } from "./symbols.js";
 import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js";
 import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
@@ -73,6 +74,24 @@ export type Projection = "mercator" | "globe";
 const HL_SOURCE = "__dap-highlight";
 const HL_FILL = "__dap-highlight-fill";
 const HL_LINE = "__dap-highlight-line";
+
+/** Source + symbol layer for `static` marker-widget sprites (read-only cartouches rendered as native
+ *  icons). The layer is mapped to the {@link WSPRITE_HIT_OVERLAY} overlay for hit-testing, so a sprite
+ *  surfaces the SAME hit as a canvas call-out (drag = reposition, tap = select). */
+const WSPRITE_SOURCE = "__dap-widget-sprites";
+const WSPRITE_LAYER = "__dap-widget-sprites";
+/** Overlay a sprite hit resolves against — reuses the call-out overlay so the consumer's existing
+ *  call-out interaction handles it with no new code (see {@link MarkerWidget.static}). */
+const WSPRITE_HIT_OVERLAY = "text-boxes";
+
+const ORIGIN_ANCHORS = new Set(["center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]);
+/** A named {@link MarkerWidget.origin} maps 1:1 to a MapLibre `icon-anchor` (data-driven, well
+ *  supported). A fractional `{x,y}` origin falls back to `center` — `icon-offset` is NOT reliably
+ *  data-driven across maplibre-gl v5, so we avoid it; fractional origins are rare for read-only
+ *  call-outs (OpenLayers/Leaflet honour them exactly via their `anchor` fraction). */
+function spriteAnchor(o: MarkerWidget["origin"]): string {
+  return typeof o === "string" && ORIGIN_ANCHORS.has(o) ? o : "center";
+}
 
 const OSM_STYLE = {
   version: 8 as const,
@@ -153,6 +172,18 @@ export class MapLibreAdapter implements MapAdapter {
   private imgMissing: ((e: { id: string }) => void) | undefined;
   private widgets: WidgetLayer | undefined;
   private pointerCb: ((ev: PointerEvent) => void) | undefined;
+  /** Coord formatter, mirrored from {@link setCoordFormat} so sprite rasterization formats `coord`
+   *  leaves the same way the live cards do. */
+  private coordFmt: (ll: LatLng) => string = defaultCoordFormat;
+  /** Whether the `static`-widget sprite source/layer have been added (lazy; only if used). */
+  private spriteLayerBuilt = false;
+  /** Image ids baked for sprite icons (`__dap-wsprite|<id>`), removed on `destroy`. */
+  private readonly spriteImageIds = new Set<string>();
+  /** Last rasterized sprite per widget id — skip re-uploading the texture when unchanged (req:
+   *  re-raster only on content/dpr change, never per frame/pan/zoom). */
+  private readonly lastSpriteRef = new Map<string, SpriteResult>();
+  /** Monotonic token so a superseded async sprite update never clobbers a newer `setWidgets`. */
+  private spriteToken = 0;
 
   constructor(opts: { map: MapLibreMap } & AdapterOptions) {
     this.map = opts.map;
@@ -651,11 +682,97 @@ export class MapLibreAdapter implements MapAdapter {
     return this.widgets;
   }
 
-  setWidgets(widgets: MarkerWidget[]): void { this.widgetLayer().setWidgets(widgets); }
+  setWidgets(widgets: MarkerWidget[]): void {
+    // Split read-only `static` widgets (native sprite icons) from live DOM cards: each path diffs by
+    // id, so toggling `static` moves a widget cleanly from one to the other.
+    const dom: MarkerWidget[] = [];
+    const sprites: MarkerWidget[] = [];
+    for (const w of widgets) (w.static ? sprites : dom).push(w);
+    this.widgetLayer().setWidgets(dom);
+    this.updateSprites(sprites);
+  }
   onWidgetEdit(cb: (e: WidgetEdit) => void): void { this.widgetLayer().onWidgetEdit(cb); }
   onWidgetDelete(cb: (e: { id: string }) => void): void { this.widgetLayer().onWidgetDelete(cb); }
   onWidgetAction(cb: (e: { id: string; event: string }) => void): void { this.widgetLayer().onWidgetAction(cb); }
-  setCoordFormat(fn: (ll: LatLng) => string): void { this.widgetLayer().setCoordFormat(fn); }
+  setCoordFormat(fn: (ll: LatLng) => string): void { this.coordFmt = fn; this.widgetLayer().setCoordFormat(fn); }
+
+  /** Add the sprite source + symbol layer once (lazy: only when a `static` widget appears). The layer
+   *  is mapped to {@link WSPRITE_HIT_OVERLAY} so its features hit-test like canvas call-outs. */
+  private ensureSpriteLayer(): void {
+    if (this.spriteLayerBuilt) return;
+    if (!this.map.getSource(WSPRITE_SOURCE)) this.map.addSource(WSPRITE_SOURCE, { type: "geojson", data: EMPTY_FC } as never);
+    this.map.addLayer({
+      id: WSPRITE_LAYER,
+      type: "symbol",
+      source: WSPRITE_SOURCE,
+      layout: {
+        "icon-image": ["coalesce", ["get", "icon"], ""],
+        "icon-size": 1, // image is baked at pixelRatio=dpr ⇒ 1 ⇒ its CSS WxH, screen-fixed at any zoom
+        "icon-anchor": ["coalesce", ["get", "iconAnchor"], "center"],
+        "icon-allow-overlap": true,    // collision is the consumer's placement pass, not MapLibre's
+        "icon-ignore-placement": true,
+      },
+    } as never);
+    this.track(WSPRITE_LAYER, WSPRITE_HIT_OVERLAY);
+    this.spriteLayerBuilt = true;
+  }
+
+  /**
+   * Rasterize each `static` widget to a native icon and push them as point features (props
+   * `{ featureId, labelId }`) into the sprite layer. Async (glyph rasterization) and token-guarded so
+   * a newer call wins; the image texture is only (re)uploaded when the sprite actually changed.
+   */
+  private updateSprites(widgets: MarkerWidget[]): void {
+    if (!widgets.length && !this.lastSpriteRef.size && !this.spriteLayerBuilt) return; // never used → no-op
+    const token = ++this.spriteToken;
+    const run = async (): Promise<void> => {
+      const container = this.map.getContainer();
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+      const features: Feature[] = [];
+      const seen = new Set<string>();
+      for (const w of widgets) {
+        seen.add(w.id);
+        const res = await rasterizeWidget(w, { dpr, coordFmt: this.coordFmt, container });
+        if (token !== this.spriteToken) return; // superseded mid-flight
+        if (!res) continue;
+        const imgId = `__dap-wsprite|${w.id}`;
+        if (this.lastSpriteRef.get(w.id) !== res || !this.map.hasImage(imgId)) {
+          const ctx = res.canvas.getContext("2d");
+          const data = ctx?.getImageData(0, 0, res.canvas.width, res.canvas.height);
+          if (data) {
+            if (this.map.hasImage(imgId)) this.map.removeImage(imgId); // re-add to refresh pixels/pixelRatio
+            this.map.addImage(imgId, data as unknown as ImageData, { pixelRatio: res.dpr } as never);
+            this.spriteImageIds.add(imgId);
+            this.lastSpriteRef.set(w.id, res);
+          }
+        }
+        features.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [w.anchor.lon, w.anchor.lat] },
+          properties: {
+            featureId: w.id,
+            labelId: w.labelId ?? "l",
+            icon: imgId,
+            iconAnchor: spriteAnchor(w.origin),
+          },
+        });
+      }
+      if (token !== this.spriteToken) return;
+      // Drop images + cache for widgets that are gone.
+      for (const id of Array.from(this.lastSpriteRef.keys())) {
+        if (seen.has(id)) continue;
+        this.lastSpriteRef.delete(id);
+        clearSpriteCache(id);
+        const im = `__dap-wsprite|${id}`;
+        if (this.map.hasImage(im)) this.map.removeImage(im);
+        this.spriteImageIds.delete(im);
+      }
+      this.ensureSpriteLayer();
+      (this.map.getSource(WSPRITE_SOURCE) as { setData?: (d: FeatureCollection) => void } | undefined)
+        ?.setData?.({ type: "FeatureCollection", features });
+    };
+    void run().catch(() => { /* a failed rasterization just leaves the prior sprites in place */ });
+  }
 
   destroy(): void {
     const h = this.pointerHandlers;
@@ -696,10 +813,16 @@ export class MapLibreAdapter implements MapAdapter {
     for (const id of this.builtLayers) if (this.map.getLayer(id)) this.map.removeLayer(id);
     this.builtLayers.length = 0;
     this.renderedToOverlay.clear();
-    // Remove EVERY image we baked into the host map (bare ids, colour tints, data icons).
+    // Remove EVERY image we baked into the host map (bare ids, colour tints, data icons, sprites).
     for (const id of this.addedImages) if (this.map.hasImage(id)) this.map.removeImage(id);
     this.addedImages.clear();
+    for (const id of this.spriteImageIds) if (this.map.hasImage(id)) this.map.removeImage(id);
+    this.spriteImageIds.clear();
+    for (const id of this.lastSpriteRef.keys()) clearSpriteCache(id);
+    this.lastSpriteRef.clear();
+    this.spriteLayerBuilt = false;
     this.spriteSvgs = {};
+    if (this.map.getSource(WSPRITE_SOURCE)) this.map.removeSource(WSPRITE_SOURCE);
     for (const id of this.overlayIds) if (this.map.getSource(id)) this.map.removeSource(id);
     this.toolbarEl?.remove();
     this.toolbarEl = undefined;

@@ -78,7 +78,7 @@ function alignValue(a: WidgetBox["align"]): string {
  * cleared, not left stale. `border` as an object draws only the named sides (an absent side = no edge),
  * letting two boxes drop their shared edge to compose a continuous L-shaped outline.
  */
-function applyBoxFrame(s: CSSStyleDeclaration, box: WidgetBox): void {
+export function applyBoxFrame(s: CSSStyleDeclaration, box: WidgetBox): void {
   s.background = box.bg ?? "transparent";
   // Reset all border declarations first (in-place reconcile would otherwise keep a previous frame).
   s.border = s.borderTop = s.borderRight = s.borderBottom = s.borderLeft = "";
