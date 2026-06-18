@@ -2,6 +2,39 @@
 
 ## NEXT RELEASE
 
+- **Fix (Leaflet):** **Sélection au pixel près via une tolérance géométrique (~5px), à parité
+  MapLibre/OpenLayers.** Le picking Leaflet reposait entièrement sur `mouseover`/`mouseout`
+  (`this.hovered`) : aucune tolérance (la cible = la largeur de trait SVG rendue, ~1–2px pour un
+  front), et le hit n'était connu que d'un survol *antérieur* — un `setOverlay`/re-render recréant
+  le DOM le perdait, rendant une feature fraîchement dessinée/sélectionnée non re-sélectionnable sans
+  re-survol. Remplacé par un vrai `hitAt(containerPoint)` **géométrique** : chaque feature rendue est
+  projetée en pixels conteneur et la plus haute (z du manifeste) dont la distance-surface ≤ 5px gagne
+  (polyligne → segment le plus proche ; polygone → intérieur ou bord ; cercle/poignée → centre ±
+  rayon ; marqueur glyph/texte → sa boîte DOM). Les hits `down`/`move`/`contextmenu` en sont issus
+  (le press reste atomique : hit résolu au `down`, réutilisé au `click`), indépendamment de tout
+  survol. `hitOverlays` et les panes masqués restent respectés. Le suivi par `mouseover`/`mouseout`
+  (et le champ `this.hovered`) est supprimé — ce qui élimine définitivement la classe de bug du hover
+  périmé corrigée précédemment.
+
+- **Fix (Leaflet):** **L'élément fraîchement dessiné reste sélectionné (plus de désélection immédiate
+  après le tracé).** Leaflet émet un `click` natif après un geste de **drag** (la carte n'ayant pas
+  pané, il ne le supprime pas), alors que MapLibre/OL n'émettent un click que pour un press
+  **stationnaire** (`!moved`). Comme le consumer finalise+sélectionne le tracé sur le `up`, ce `click`
+  résiduel (hit vide) arrivait juste après et désélectionnait aussitôt (il fallait re-cliquer). Le
+  `click` est désormais **filtré** quand le pointeur a bougé au-delà de ~3px depuis le press, à parité
+  avec les autres moteurs. Cas complémentaire couvert au passage : le `click` que Leaflet tire après
+  un double-clic (fin de tracé d'un front) est lui aussi avalé. La sélection/désélection par clic
+  stationnaire reste inchangée.
+
+- **Fix (Leaflet):** **Plus de crash `preventOutline` au double-clic d'insertion de point sur une
+  ligne.** Un double-clic sur une feature fait re-render le consumer (insert d'un vertex →
+  `setOverlay`/`clearLayers`), ce qui détache du DOM l'élément `e.target` du `mousedown` en cours. Si
+  l'événement atteignait ensuite le `_handleDOMEvent` de Leaflet, son `preventOutline(e.target)`
+  remontait les `parentNode` jusqu'à `null` → `TypeError: can't access property "tabIndex"`. La
+  propagation du `mousedown` est désormais stoppée dès qu'un double-clic porte un **hit** (Leaflet ne
+  traite plus ce press) ; sans hit (carte vide), l'événement est laissé passer pour préserver le zoom
+  double-clic natif.
+
 - **Fix (toolbar):** **Ordre des flyouts de sous-menu déterministe (child[0] toujours collé au
   trigger).** Le flyout s'empilait toujours en `flex-direction: column` quelle que soit la direction
   d'ouverture : avec une toolbar en bas (flyout vers le haut) le premier enfant déclaré finissait en
@@ -12,24 +45,17 @@
   est inchangé (Tab, `byId`, `setToolbarActive` restent corrects). Aucune régression sur les toolbars
   en haut / à gauche (`down`/`right` conservent `column`/`row`).
 
-- **Fix (Leaflet):** **Désélection impossible après sélection d'une feature.**
-  Sur Leaflet, après avoir sélectionné une feature, cliquer sur une zone vide de la carte ne
-  désélectionnait plus. Deux causes combinées :
-
-  1. **Hover périmé** (`setOverlay`) — `clearLayers()` retire les éléments DOM sans émettre
-     `mouseout`. `this.hovered` restait collé à l'ancienne référence `props` ; le nouveau layer
-     (recréé par `addData`) obtenait de nouvelles références, donc son `mouseout` ne pouvait plus
-     effacer `this.hovered`. Chaque clic suivant portait un hit → re-sélection systématique.
-     **Fix** : `setOverlay` vide désormais `this.hovered` avant `clearLayers()` quand l'overlay
-     effacé est celui qui était survolé.
-
-  2. **Click-through sur cartes satellites gauge** (`setZIndex`) — les cartes satellites lone-dial
-     (jauges icing/turbulence) posent `root.style.pointerEvents = "none"` pour laisser les clics
-     traverser le trou du cadran (comportement voulu sur MapLibre/OpenLayers). Sur Leaflet, ces
-     clics atteignaient les overlays SVG text-boxes situés sous la carte satellite → re-survol de
-     la feature → re-sélection. **Fix** : `setZIndex(z > 0)` force maintenant
-     `root.style.pointerEvents = "auto"` sur les cartes satellites Leaflet uniquement (via
-     `querySelector` après `appendChild`), sans affecter MapLibre ni OpenLayers.
+- **Fix (Leaflet):** **Désélection impossible : les cartes satellites gauge ne laissent plus passer
+  les clics à travers (`setZIndex`).** Sur Leaflet, après avoir sélectionné une feature, cliquer sur
+  une zone vide ne désélectionnait plus. Les cartes satellites lone-dial (jauges icing/turbulence)
+  posent `root.style.pointerEvents = "none"` pour rendre le trou du cadran cliquable-à-travers (voulu
+  sur MapLibre/OpenLayers). Sur Leaflet ce clic traversait la carte satellite et déclenchait un `click`
+  map sur la feature située dessous → re-sélection, empêchant la désélection. `setZIndex(z > 0)` force
+  désormais `root.style.pointerEvents = "auto"` sur les cartes satellites Leaflet uniquement (via
+  `querySelector` après `appendChild`), sans affecter MapLibre ni OpenLayers, pour que la carte capte
+  le clic (`disableClickPropagation`) au lieu de le laisser passer. *(L'autre cause historique — un
+  hover périmé après re-render — est éliminée par le passage au hit-test géométrique ci-dessus, qui
+  supprime entièrement le suivi `mouseover`/`mouseout`.)*
 
 ---
 

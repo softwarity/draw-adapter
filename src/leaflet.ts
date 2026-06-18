@@ -5,9 +5,13 @@
  *
  * Per-overlay z-order uses one Leaflet **pane** per {@link LayerSpec} (increasing
  * `zIndex`); rotatable handle/symbol glyphs use `L.divIcon` + a CSS
- * `transform: rotate()` (Leaflet markers don't rotate natively). Hit-testing is
- * per-feature (`mouseover`/`mouseout` track the hovered hit) since Leaflet has no
- * `queryRenderedFeatures`. The drag-vs-pan conflict is solved exactly like the
+ * `transform: rotate()` (Leaflet markers don't rotate natively). Leaflet has no
+ * `queryRenderedFeatures`, so hit-testing is done GEOMETRICALLY at pointer time
+ * ({@link LeafletAdapter.hitAt}): each rendered feature is projected to container
+ * pixels and the topmost one within a ~5px tolerance wins — parity with the MapLibre
+ * (5px query box) / OpenLayers (`hitTolerance:5`) adapters, and independent of any
+ * prior hover so a freshly drawn/re-rendered feature is immediately selectable.
+ * The drag-vs-pan conflict is solved exactly like the
  * OpenLayers adapter: a capture-phase `pointerdown` on the container
  * `stopPropagation()`s draggable presses so Leaflet's own drag never starts a pan.
  *
@@ -59,6 +63,10 @@ function isDraggableHit(hit: Hit): boolean {
   return hit.props["role"] != null;
 }
 
+/** Pixel hit-tolerance for {@link LeafletAdapter.hitAt} — same 5px as MapLibre's query box
+ *  pad and OpenLayers' `hitTolerance`, so a thin 1–2px line is just as easy to grab on all three. */
+const HIT_TOL = 5;
+
 const LF_PANE_STYLE_ID = "draw-adapter-leaflet-pane-style";
 
 /** Let our overlay panes' interactive elements show the container cursor (the one
@@ -108,7 +116,6 @@ export class LeafletAdapter implements MapAdapter {
   private readonly paneNames: string[] = [];
   private sprites: Record<string, string> = {};
   private readyPromise: Promise<void> | undefined;
-  private hovered: Hit | undefined;
   private dragging = false;
   private locked = false;
   private panOn = true;
@@ -127,6 +134,16 @@ export class LeafletAdapter implements MapAdapter {
   private lastDownT = 0;
   private lastDownX = 0;
   private lastDownY = 0;
+  /** After a (manually-detected) double-click, Leaflet still fires a trailing `click` for that 2nd
+   *  press. Unlike MapLibre/OL — where `dblclick` is the LAST event of the gesture — that stray click
+   *  would land AFTER the consumer's commit→select (e.g. finishing a drawn front), carrying an empty
+   *  hit and deselecting it. This flag swallows exactly that one click. */
+  private suppressClick = false;
+  /** Whether the pointer moved past a small threshold since the press started. Leaflet fires a native
+   *  `click` after a drag (the map didn't pan, so it doesn't suppress it) — but MapLibre/OL only emit
+   *  a click for a STATIONARY press (`!moved`). Without this, finishing a drag-drawn shape (the
+   *  consumer commits+selects on `up`) is immediately undone by the trailing empty-hit click. */
+  private moved = false;
   private viewHandler: (() => void) | undefined;
   private widgets: WidgetLayer | undefined;
   /** The non-interactive {@link highlightArea} frame + whether its dedicated pane exists. */
@@ -155,7 +172,6 @@ export class LeafletAdapter implements MapAdapter {
           pane: paneName,
           style: (f) => this.styleFor(spec.kind, f),
           pointToLayer: (f, latlng) => this.pointLayer(spec.kind, spec.id, f, latlng, paneName),
-          onEachFeature: (f, layer) => this.bindFeature(spec.id, f, layer),
         });
         group.addTo(this.map);
         this.groups.set(spec.id, group);
@@ -182,11 +198,8 @@ export class LeafletAdapter implements MapAdapter {
   setOverlay(id: string, data: FeatureCollection): void {
     const group = this.groups.get(id);
     if (!group) return;
-    // clearLayers() removes DOM elements without firing mouseout — this.hovered stays stale
-    // pointing to the old props reference. The new layer's bindFeature gets new props objects,
-    // so its mouseout check (this.hovered?.props === newProps) never triggers, and this.hovered
-    // is permanently stuck → every subsequent click carries a hit → can never deselect.
-    if (this.hovered?.overlay === id) this.hovered = undefined;
+    // No stale-hover hazard: hits are resolved geometrically from the live layers at pointer time
+    // (see hitAt), not from a cached mouseover. Recreating the DOM here can't strand a hit.
     group.clearLayers();
     if (data.features.length) group.addData(data);
   }
@@ -391,7 +404,7 @@ export class LeafletAdapter implements MapAdapter {
     const onDown = (e: MouseEvent): void => {
       if ((e.target as HTMLElement | null)?.closest?.(".draw-adapter-widget")) return; // card owns it
       const ll = this.map.mouseEventToLatLng(e);
-      const hit = this.hovered;
+      const hit = this.hitAt(this.map.mouseEventToContainerPoint(e)); // geometric, ~5px tol — no hover needed
       // MANUAL double-click detection. Leaflet renders handles as DOM markers that are recreated
       // on every re-render, so the two clicks of a double-click land on DIFFERENT nodes and the
       // browser never fires a native "dblclick" (unlike OL's canvas, where it does). The
@@ -399,13 +412,21 @@ export class LeafletAdapter implements MapAdapter {
       const now = Date.now();
       if (now - this.lastDownT < 400 && Math.abs(e.clientX - this.lastDownX) < 6 && Math.abs(e.clientY - this.lastDownY) < 6) {
         this.lastDownT = 0; // consume (so a triple-click isn't two dbls)
-        if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
+        this.suppressClick = true; // Leaflet will still fire a `click` for this 2nd press — swallow it
+        // A dblclick ON a feature makes the consumer re-render (e.g. insert a vertex), which detaches
+        // this mousedown's `e.target` from the DOM. If the event then reached Leaflet's _handleDOMEvent,
+        // its preventOutline(e.target) would walk parentNode → null → "tabIndex of null" crash. Keep
+        // Leaflet off this press whenever there's a hit (also stops a pan start). No hit ⇒ leave it so
+        // Leaflet's own double-click zoom still works on the empty map.
+        if (hit) L.DomEvent.stopPropagation(e as unknown as Event);
         cb({ type: "dblclick", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e), ...(hit ? { hit } : {}) });
         return;
       }
       this.lastDownT = now;
       this.lastDownX = e.clientX;
       this.lastDownY = e.clientY;
+      this.suppressClick = false; // a fresh single press ⇒ its click is legitimate (select/deselect)
+      this.moved = false;         // track drag distance from here to gate the trailing click
       this.dragging = true;
       this.pressHit = hit; // remembered for this press's click
       if (hit && isDraggableHit(hit)) L.DomEvent.stopPropagation(e as unknown as Event);
@@ -424,7 +445,7 @@ export class LeafletAdapter implements MapAdapter {
     if (typeof window !== "undefined") {
       // Leaving the window mid-press loses the `up`; purge press state so the first click back
       // (the focusing click) starts clean instead of inheriting a stale drag/hit/dbl-click timer.
-      this.windowBlur = () => { this.dragging = false; this.pressHit = undefined; this.lastDownT = 0; };
+      this.windowBlur = () => { this.dragging = false; this.pressHit = undefined; this.lastDownT = 0; this.suppressClick = false; this.moved = false; };
       window.addEventListener("blur", this.windowBlur);
     }
 
@@ -439,22 +460,31 @@ export class LeafletAdapter implements MapAdapter {
         cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
       }
       if (this.dragging) {
+        const oe = evt.originalEvent;
+        if (Math.abs(oe.clientX - this.lastDownX) > 3 || Math.abs(oe.clientY - this.lastDownY) > 3) this.moved = true;
         cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
         return;
       }
-      const hit = this.hovered;
+      const hit = this.hitAt(evt.containerPoint); // hover affordance/cursor — recomputed geometrically
       this.setCursor(cursorForHit(hit));
       cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods, ...(hit ? { hit } : {}) });
     });
     this.map.on("click", (evt: L.LeafletMouseEvent) => {
-      // Atomic press: reuse the `down` hit. A select-driven re-render recreates the feature's DOM
-      // node, dropping `this.hovered` (mouseout, no fresh mouseover) — so re-reading it here misses.
+      // Swallow the stray click Leaflet fires right after a double-click (see suppressClick) — else it
+      // would deselect what the consumer just selected on dblclick (e.g. a freshly drawn front).
+      if (this.suppressClick) { this.suppressClick = false; return; }
+      // A drag gesture (e.g. drawing a shape by dragging) finalises on `up`; Leaflet still fires a
+      // native `click` afterwards, which would carry an empty hit and deselect what was just drawn.
+      // MapLibre/OL only emit a click for a stationary press — match that by gating on `moved`.
+      if (this.moved) { this.moved = false; return; }
+      // Atomic press: reuse the hit resolved at `down` (geometrically). Re-testing here would be
+      // harmless now, but keeping one hit per press guarantees down/click agree on the same target.
       const hit = this.pressHit;
       cb({ type: "click", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
     });
     this.map.on("contextmenu", (evt: L.LeafletMouseEvent) => {
       L.DomEvent.preventDefault(evt.originalEvent); // suppress the browser menu
-      const hit = this.hovered;
+      const hit = this.hitAt(evt.containerPoint);
       cb({ type: "contextmenu", lngLat: { lat: evt.latlng.lat, lon: evt.latlng.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
     });
     // (dblclick is handled by the native capture listener above — Leaflet's own map dblclick
@@ -550,6 +580,8 @@ export class LeafletAdapter implements MapAdapter {
     if (this.blurListener && typeof window !== "undefined") window.removeEventListener("blur", this.blurListener);
     this.domDown = this.domUp = this.windowBlur = this.blurListener = undefined;
     this.pressHit = undefined;
+    this.suppressClick = false;
+    this.moved = false;
     this.keyCleanup?.();
     this.keyCleanup = undefined;
     if (this.viewHandler) this.map.off("moveend zoomend", this.viewHandler);
@@ -559,7 +591,6 @@ export class LeafletAdapter implements MapAdapter {
     this.map.off("dblclick");
     this.cb = undefined;
     this.viewHandler = undefined;
-    this.hovered = undefined;
     this.toolbarEl?.remove();
     this.toolbarEl = undefined;
     this.tooltipEl?.remove();
@@ -576,12 +607,84 @@ export class LeafletAdapter implements MapAdapter {
   }
 
   // ── Hit tracking ───────────────────────────────────────────────────────────
-  private bindFeature(overlay: string, f: Feature, layer: L.Layer): void {
-    const hittable = this.opts.hitOverlays?.has(overlay) ?? true;
-    if (!hittable) return;
-    const props = (f.properties ?? {}) as Record<string, unknown>;
-    layer.on("mouseover", () => { this.hovered = { overlay, props }; });
-    layer.on("mouseout", () => { if (this.hovered?.props === props) this.hovered = undefined; });
+  /**
+   * Resolve the feature under a container-pixel point GEOMETRICALLY, with a ~5px tolerance
+   * ({@link HIT_TOL}) — Leaflet's stand-in for `queryRenderedFeatures`. Scans every hittable
+   * overlay's live layers (skipping hidden panes + overlays excluded by `hitOverlays`), measures
+   * the screen-space distance from the point to each feature's surface (0 = inside/on it), and
+   * returns the TOPMOST (highest manifest z, then nearest) feature within tolerance. Independent
+   * of any prior hover, so a freshly drawn/re-rendered feature is hittable with no mouse move.
+   */
+  private hitAt(pt: L.Point | undefined): Hit | undefined {
+    if (!pt) return undefined;
+    const hittable = this.opts.hitOverlays;
+    const cRect = this.map.getContainer().getBoundingClientRect();
+    let best: Hit | undefined;
+    let bestZ = -1;
+    let bestDist = Infinity;
+    // `opts.layers` order = pane z-order (400 + i*10), so the manifest index IS the z.
+    this.opts.layers.forEach((spec, z) => {
+      if (!(hittable?.has(spec.id) ?? true)) return; // overlay opted out of hit-testing
+      const pane = this.map.getPane(`dap-${spec.id}`);
+      if (pane && pane.style.display === "none") return; // hidden ⇒ pass-through
+      const group = this.groups.get(spec.id);
+      if (!group) return;
+      group.eachLayer((layer) => {
+        const d = this.surfaceDist(layer, pt, cRect);
+        if (d == null || d > HIT_TOL) return;
+        if (z > bestZ || (z === bestZ && d < bestDist)) {
+          const props = ((layer as L.Layer & { feature?: Feature }).feature?.properties ?? {}) as Record<string, unknown>;
+          best = { overlay: spec.id, props };
+          bestZ = z;
+          bestDist = d;
+        }
+      });
+    });
+    return best;
+  }
+
+  /** Screen-space distance (px) from `pt` to a rendered layer's surface — `0` when inside/on it,
+   *  `null` when the layer carries no hittable geometry. Mirrors the geometry kinds Leaflet renders:
+   *  polygon (inside-or-edge), polyline (nearest segment), circle (centre±radius), marker (its DOM
+   *  box, so glyph/symbol/text-call-out sizes are honoured), and groups (nearest child). */
+  private surfaceDist(layer: L.Layer, pt: L.Point, cRect: DOMRect): number | null {
+    const map = this.map;
+    // Polygon extends Polyline in Leaflet — test it FIRST (inside test + edge distance).
+    if (layer instanceof L.Polygon) {
+      const rings = normalizeLatLngs(layer.getLatLngs()).map((r) => r.map((ll) => map.latLngToContainerPoint(ll)));
+      return pointInRings(pt, rings) ? 0 : minSegDist(pt, rings, true);
+    }
+    if (layer instanceof L.Polyline) {
+      const lines = normalizeLatLngs(layer.getLatLngs()).map((r) => r.map((ll) => map.latLngToContainerPoint(ll)));
+      return minSegDist(pt, lines, false);
+    }
+    if (layer instanceof L.CircleMarker) {
+      const rad = layer.getRadius();
+      if (rad <= 0) return null; // invisible placeholder (e.g. symbol with no sprite) ⇒ not hittable
+      return Math.max(0, pt.distanceTo(map.latLngToContainerPoint(layer.getLatLng())) - rad);
+    }
+    if (layer instanceof L.Marker) {
+      const el = layer.getElement();
+      // The visible glyph/text is the marker's inner box (the icon element can be 0×0, e.g. text).
+      const box = (el?.firstElementChild as HTMLElement | null) ?? el;
+      const r = box?.getBoundingClientRect();
+      if (!r || (r.width === 0 && r.height === 0)) {
+        return pt.distanceTo(map.latLngToContainerPoint(layer.getLatLng())); // size-less ⇒ point distance
+      }
+      const dx = Math.max(r.left - cRect.left - pt.x, 0, pt.x - (r.right - cRect.left));
+      const dy = Math.max(r.top - cRect.top - pt.y, 0, pt.y - (r.bottom - cRect.top));
+      return Math.hypot(dx, dy);
+    }
+    if (layer instanceof L.LayerGroup) {
+      // circle kind = featureGroup(dot + glyph) — nearest of its children.
+      let min: number | null = null;
+      layer.eachLayer((c) => {
+        const d = this.surfaceDist(c, pt, cRect);
+        if (d != null && (min == null || d < min)) min = d;
+      });
+      return min;
+    }
+    return null;
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -714,4 +817,50 @@ export class LeafletAdapter implements MapAdapter {
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
+}
+
+// ── Geometric hit-test helpers (pure, pixel-space) ────────────────────────────
+
+/** Flatten Leaflet's `getLatLngs()` (flat for a simple polyline, nested for multi/rings/holes)
+ *  into a uniform list of LatLng arrays — one per line or ring. */
+function normalizeLatLngs(latlngs: unknown): L.LatLng[][] {
+  if (!Array.isArray(latlngs) || latlngs.length === 0) return [];
+  if (latlngs[0] instanceof L.LatLng) return [latlngs as L.LatLng[]];
+  const out: L.LatLng[][] = [];
+  for (const sub of latlngs) out.push(...normalizeLatLngs(sub));
+  return out;
+}
+
+/** Distance (px) from point `p` to segment `a→b`. */
+function distToSeg(p: L.Point, a: L.Point, b: L.Point): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/** Min distance (px) from `p` to a set of lines/rings. `closed` adds the last→first edge (polygons). */
+function minSegDist(p: L.Point, lines: L.Point[][], closed: boolean): number {
+  let min = Infinity;
+  for (const line of lines) {
+    const n = line.length;
+    if (n === 0) continue;
+    if (n === 1) { min = Math.min(min, Math.hypot(p.x - line[0]!.x, p.y - line[0]!.y)); continue; }
+    const segs = closed ? n : n - 1;
+    for (let i = 0; i < segs; i++) min = Math.min(min, distToSeg(p, line[i]!, line[(i + 1) % n]!));
+  }
+  return min;
+}
+
+/** Even-odd point-in-polygon over all rings combined (honours holes). */
+function pointInRings(p: L.Point, rings: L.Point[][]): boolean {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i]!, b = ring[j]!;
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+  }
+  return inside;
 }
