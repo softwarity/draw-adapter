@@ -70,6 +70,40 @@ function alignValue(a: WidgetBox["align"]): string {
   return a === "start" ? "flex-start" : a === "end" ? "flex-end" : "center";
 }
 
+/**
+ * Apply a {@link WidgetBox}'s optional frame (`bg`/`border`/`borderWidth`/`radius`/`padding`) — the
+ * same presets as the root card, so a sub-column can outline/fill itself. Border + padding sit in the
+ * content box, so they reserve room in the flex flow (siblings shift); `bg` paints behind the children.
+ * Every property is (re)written each update — boxes are reconciled in place, so unset fields must be
+ * cleared, not left stale. `border` as an object draws only the named sides (an absent side = no edge),
+ * letting two boxes drop their shared edge to compose a continuous L-shaped outline.
+ */
+function applyBoxFrame(s: CSSStyleDeclaration, box: WidgetBox): void {
+  s.background = box.bg ?? "transparent";
+  // Reset all border declarations first (in-place reconcile would otherwise keep a previous frame).
+  s.border = s.borderTop = s.borderRight = s.borderBottom = s.borderLeft = "";
+  if (box.border) {
+    const edge = `${boxBorderWidth(box.borderWidth)}px solid `;
+    if (typeof box.border === "string") {
+      s.border = edge + box.border;
+    } else {
+      if (box.border.top) s.borderTop = edge + box.border.top;
+      if (box.border.right) s.borderRight = edge + box.border.right;
+      if (box.border.bottom) s.borderBottom = edge + box.border.bottom;
+      if (box.border.left) s.borderLeft = edge + box.border.left;
+    }
+  }
+  s.borderRadius = `${boxRadius(box.radius)}px`;
+  // Pad when framed (default `medium`) or when `padding` is given explicitly; else none — mirrors the
+  // root card so an unframed box stays unpadded by default (`boxPadding(undefined)` is `medium`, not 0).
+  if (box.bg || box.border || box.padding != null) {
+    const [pv, ph] = boxPadding(box.padding);
+    s.padding = `${pv}px ${ph}px`;
+  } else {
+    s.padding = "0";
+  }
+}
+
 /** Dataset key tagging a DOM node's render kind, so reconciliation can reuse vs replace. */
 const KIND = "wtag";
 function nodeTag(node: WidgetNode): string {
@@ -1994,6 +2028,7 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
     s.gap = `${node.gap ?? 0}px`;
     s.color = node.color ?? "";
     s.fontSize = node.size != null ? `${node.size}px` : "";
+    applyBoxFrame(s, node); // optional bg/border/borderWidth/radius/padding (same presets as the card)
     reconcile(el, node.items, card);
     return;
   }
@@ -2190,7 +2225,9 @@ export class WidgetLayer {
 const SNAPSHOT_STYLE_PROPS = [
   "font", "font-family", "font-size", "font-weight", "font-style", "letter-spacing",
   "color", "background", "background-color", "background-image",
-  "border", "border-radius", "padding", "margin",
+  // Per-side borders, NOT just the `border` shorthand: `getComputedStyle().border` is "" when the four
+  // sides differ, so a WidgetBox per-side frame (the L-shape) would vanish from the export otherwise.
+  "border", "border-top", "border-right", "border-bottom", "border-left", "border-radius", "padding", "margin",
   "display", "flex-direction", "align-items", "justify-content", "gap",
   "width", "height", "box-sizing", "white-space", "text-align", "line-height", "opacity",
 ];

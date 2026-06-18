@@ -2,6 +2,15 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **Cadre optionnel sur les `WidgetBox` internes** (`bg`, `border`, `borderWidth`,
+  `radius`, `padding` — mêmes presets que la card racine). Permet d'encadrer/remplir une sous-colonne
+  (vbox/hbox) au sein d'une même card, honoré à l'identique sur les 3 moteurs (DOM partagé). La bordure
+  + le padding sont réservés **dans le flux** (les frères se décalent), le `bg` est peint derrière les
+  enfants. `border` accepte une couleur unie (4 côtés) **ou** un objet `{top?,right?,bottom?,left?}`
+  (nouveau type `WidgetBoxBorder`) : un côté omis ne dessine **pas** d'arête — deux box accolées qui
+  omettent chacune l'arête partagée composent un contour continu en **L**. Tout omis ⇒ aucun cadre
+  (comportement des box existantes inchangé).
+
 - **Fix (Leaflet):** **Sélection au pixel près via une tolérance géométrique (~5px), à parité
   MapLibre/OpenLayers.** Le picking Leaflet reposait entièrement sur `mouseover`/`mouseout`
   (`this.hovered`) : aucune tolérance (la cible = la largeur de trait SVG rendue, ~1–2px pour un

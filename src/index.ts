@@ -318,8 +318,21 @@ export interface WidgetDial {
   knobStroke?: string;
 }
 
-/** A layout box (vbox/hbox). Carries no frame; **may** set `color`/`size` that cascade
- *  to descendant text/coord (plain CSS inheritance). */
+/** Per-side border colours for a {@link WidgetBox}. A side left `undefined` draws **no edge** there
+ *  — so two boxes can omit their shared edge and compose a continuous non-rectangular outline (an L).
+ *  All present sides share the same `borderWidth` preset. */
+export interface WidgetBoxBorder {
+  top?: string;
+  right?: string;
+  bottom?: string;
+  left?: string;
+}
+
+/** A layout box (vbox/hbox). May set `color`/`size` that cascade to descendant text/coord (plain CSS
+ *  inheritance), and — optionally — its **own frame** (`bg`/`border`/`borderWidth`/`radius`/`padding`,
+ *  same presets as {@link MarkerWidget}) to outline or fill a sub-column. The frame reserves its
+ *  border + padding **in the flow** (siblings shift); `bg` is painted behind the box's children.
+ *  All omitted ⇒ no frame (behaviour unchanged). */
 export interface WidgetBox {
   /** `"v"` ⇒ column, `"h"` ⇒ row. */
   dir: "v" | "h";
@@ -331,6 +344,18 @@ export interface WidgetBox {
   color?: string;
   /** Font size px for this subtree — inherited likewise. */
   size?: number;
+  /** Box fill, painted behind its children; omit ⇒ transparent. */
+  bg?: string;
+  /** Border colour. A `string` borders all four sides; a {@link WidgetBoxBorder} object borders only
+   *  the named sides (an absent side draws no edge → compose L-shapes). Omit ⇒ no border. */
+  border?: string | WidgetBoxBorder;
+  /** Border width preset (reuses {@link TextBoxSize}), applied to every drawn side. Default `"medium"`
+   *  (1px) when `border` is set. */
+  borderWidth?: TextBoxSize;
+  /** Corner radius preset (reuses {@link TextBoxRadius}). Default `"none"`. */
+  radius?: TextBoxRadius;
+  /** Inner padding preset (reuses {@link TextBoxSize}). Omit ⇒ no padding. */
+  padding?: TextBoxSize;
   items: WidgetNode[];
 }
 

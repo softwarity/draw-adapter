@@ -116,6 +116,62 @@ describe("WidgetLayer — builds the card tree", () => {
     expect(card.style.border).toBe("");
   });
 
+  it("an inner box can frame itself (bg/border/borderWidth/radius/padding), reserved in the flow", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "c1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", gap: 4, items: [
+        { dir: "v", items: [{ kind: "text", value: "AMOUNT" }] }, // plain column (no frame)
+        { dir: "v", bg: "rgb(238, 238, 238)", border: "#1f2328", borderWidth: "small", radius: "small", padding: "small",
+          items: [{ kind: "text", value: "ICE" }] }, // framed column
+      ] },
+    }]);
+    const boxes = cardEl(host).querySelectorAll<HTMLElement>('[data-wtag="box"]');
+    // boxes[0] = root child (h-row), [1] = plain column, [2] = framed column
+    const framed = boxes[2]!;
+    expect(framed.style.border).toContain("0.5px solid"); // borderWidth "small"
+    expect(framed.style.borderRadius).toBe("3px");        // radius "small"
+    expect(framed.style.padding).toBe("3px 5px");         // padding "small"
+    expect(framed.style.background).toBe("rgb(238, 238, 238)");
+    // plain sibling stays bare — no regression
+    const plain = boxes[1]!;
+    expect(plain.style.border).toBe("");
+    expect(plain.style.padding).toBe("0px");
+    expect(plain.style.background).toBe("transparent");
+  });
+
+  it("a per-side border object draws only the named edges (compose an L)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([{
+      id: "L", anchor: { lon: 0, lat: 0 },
+      child: { dir: "v", borderWidth: "medium", border: { top: "#1f2328", right: "#1f2328", bottom: "#1f2328" },
+        items: [{ kind: "text", value: "X" }] },
+    }]);
+    const box = cardEl(host).querySelector<HTMLElement>('[data-wtag="box"]')!;
+    expect(box.style.borderTop).toContain("1px solid");
+    expect(box.style.borderRight).toContain("1px solid");
+    expect(box.style.borderBottom).toContain("1px solid");
+    expect(box.style.borderLeft).toBe(""); // no left edge ⇒ open side, so two boxes form a continuous L
+  });
+
+  it("clears a box frame on in-place update when its styling is removed", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const W = (framed: boolean): MarkerWidget => ({
+      id: "u", anchor: { lon: 0, lat: 0 },
+      child: { dir: "v", ...(framed ? { border: "#1f2328", padding: "small", radius: "small" } : {}),
+        items: [{ kind: "text", value: "X" }] },
+    });
+    layer.setWidgets([W(true)]);
+    const box = cardEl(host).querySelector<HTMLElement>('[data-wtag="box"]')!;
+    expect(box.style.border).toContain("1px solid");
+    expect(box.style.padding).toBe("3px 5px");
+    layer.setWidgets([W(false)]); // same id ⇒ in-place reconcile reuses the same box element
+    expect(box.style.border).toBe("");
+    expect(box.style.borderRadius).toBe("0px");
+    expect(box.style.padding).toBe("0px");
+  });
+
   it("static (non-editable) text renders a <span>, not an <input>", () => {
     const host = new FakeHost();
     new WidgetLayer(host).setWidgets([{
