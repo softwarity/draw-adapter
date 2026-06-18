@@ -2,9 +2,47 @@
 
 ## NEXT RELEASE
 
+- **Fix (Leaflet):** **Désélection impossible après sélection d'une feature.**
+  Sur Leaflet, après avoir sélectionné une feature, cliquer sur une zone vide de la carte ne
+  désélectionnait plus. Deux causes combinées :
+
+  1. **Hover périmé** (`setOverlay`) — `clearLayers()` retire les éléments DOM sans émettre
+     `mouseout`. `this.hovered` restait collé à l'ancienne référence `props` ; le nouveau layer
+     (recréé par `addData`) obtenait de nouvelles références, donc son `mouseout` ne pouvait plus
+     effacer `this.hovered`. Chaque clic suivant portait un hit → re-sélection systématique.
+     **Fix** : `setOverlay` vide désormais `this.hovered` avant `clearLayers()` quand l'overlay
+     effacé est celui qui était survolé.
+
+  2. **Click-through sur cartes satellites gauge** (`setZIndex`) — les cartes satellites lone-dial
+     (jauges icing/turbulence) posent `root.style.pointerEvents = "none"` pour laisser les clics
+     traverser le trou du cadran (comportement voulu sur MapLibre/OpenLayers). Sur Leaflet, ces
+     clics atteignaient les overlays SVG text-boxes situés sous la carte satellite → re-survol de
+     la feature → re-sélection. **Fix** : `setZIndex(z > 0)` force maintenant
+     `root.style.pointerEvents = "auto"` sur les cartes satellites Leaflet uniquement (via
+     `querySelector` après `appendChild`), sans affecter MapLibre ni OpenLayers.
+
 ---
 
 ## 0.6.1
+
+- **Add (widgets):** **`anchorTo` — cartes satellites accrochées à un bord mesuré.**
+  Un `MarkerWidget` peut déclarer `anchorTo: { id, side, gap? }` pour se positionner
+  automatiquement contre l'un des quatre bords (`"top"`, `"bottom"`, `"left"`, `"right"`) de la
+  carte référencée, quelles que soient les tailles respectives des deux cartes.
+
+  - **Axe perpendiculaire** (edge-clearing) : le bord sélectionné de la carte satellite colle au
+    bord opposé de la carte principale, décalé de `gap` px (défaut `0` = flush).
+  - **Axe transversal** : la carte satellite est **centrée** sur le centre de la carte principale
+    (centrage calculé à partir des `getBoundingClientRect` mesurés — stable quelque soit la taille
+    du contenu ou le zoom).
+  - **ResizeObserver** : tout changement de taille de la carte principale (nouvelle ligne de label,
+    modification de contenu…) déclenche un re-positionnement automatique des satellites.
+  - **Fallback** : si la carte `id` référencée est absente, la satellite reste sur son propre
+    `anchor` / `origin`.
+  - **z-order** : les satellites sont automatiquement rendus au-dessus de leur cible sur les trois
+    moteurs (MapLibre, OpenLayers, Leaflet).
+  - Nouveau type public : `WidgetAnchorTo` (`id`, `side`, `gap?`).
+    Nouveau champ : `MarkerWidget.anchorTo?: WidgetAnchorTo`.
 
 ---
 

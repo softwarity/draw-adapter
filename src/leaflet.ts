@@ -182,6 +182,11 @@ export class LeafletAdapter implements MapAdapter {
   setOverlay(id: string, data: FeatureCollection): void {
     const group = this.groups.get(id);
     if (!group) return;
+    // clearLayers() removes DOM elements without firing mouseout — this.hovered stays stale
+    // pointing to the old props reference. The new layer's bindFeature gets new props objects,
+    // so its mouseout check (this.hovered?.props === newProps) never triggers, and this.hovered
+    // is permanently stuck → every subsequent click carries a hit → can never deselect.
+    if (this.hovered?.overlay === id) this.hovered = undefined;
     group.clearLayers();
     if (data.features.length) group.addData(data);
   }
@@ -495,6 +500,19 @@ export class LeafletAdapter implements MapAdapter {
             el,
             setAnchor: (a) => { marker.setLatLng([a.lat, a.lon]); },
             remove: () => { marker.remove(); },
+            setZIndex: (z) => {
+              if (z > 0 && el.parentElement) {
+                // DOM reordering: satellite cards move to the end of the pane so they render
+                // above the main card. Called in ascending-depth order by WidgetLayer.
+                el.parentElement.appendChild(el);
+                // Lone-dial satellite cards (icing/turbulence gauges) set root.pointerEvents
+                // to "none" so the dial hole is click-through — correct on MapLibre (hits the
+                // canvas below) but wrong on Leaflet (hits hittable SVG text-box labels →
+                // false re-selection). Force root back to auto after update() may have set none.
+                const root = el.querySelector<HTMLElement>(".draw-adapter-widget-card");
+                if (root) root.style.pointerEvents = "auto";
+              }
+            },
           };
         },
         unprojectClient: (cx, cy) => {

@@ -662,6 +662,7 @@ export class OpenLayersAdapter implements MapAdapter {
             el,
             setAnchor: (a) => overlay.setPosition(fromLonLat([a.lon, a.lat], this.viewProj())),
             remove: () => map.removeOverlay(overlay),
+            setZIndex: (z) => { if (el.parentElement) el.parentElement.style.zIndex = z > 0 ? String(z) : ""; },
           };
         },
         unprojectClient: (cx, cy) => {

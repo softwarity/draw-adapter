@@ -39,6 +39,8 @@ export interface WidgetMount {
   setAnchor(anchor: LatLng): void;
   /** Detach the mount from the map. */
   remove(): void;
+  /** Set the CSS z-index of the engine overlay so this mount stacks above (z>0) or at default (z=0). */
+  setZIndex(z: number): void;
 }
 
 /** What each engine adapter supplies so the shared layer can place + wire cards. */
@@ -2113,6 +2115,25 @@ export class WidgetLayer {
         case "bottom": dy = mainRect.bottom + gap - satRect.top;    dx = mainCX - satCX; break;
       }
       satellite.setAnchorExtra(dx, dy);
+    }
+    // Third pass: z-order — a satellite card must render above its target on every engine.
+    // Compute anchorTo depth (0 = root, 1 = direct satellite, 2 = satellite-of-satellite…) by
+    // repeated relaxation so any chain depth is handled without needing topological pre-sorting.
+    const depth = new Map<string, number>();
+    for (const w of this.currentWidgets) depth.set(w.id, 0);
+    for (let i = 0; i < this.currentWidgets.length; i++) {
+      for (const w of this.currentWidgets) {
+        if (w.anchorTo) {
+          const pd = depth.get(w.anchorTo.id) ?? 0;
+          if ((depth.get(w.id) ?? 0) <= pd) depth.set(w.id, pd + 1);
+        }
+      }
+    }
+    // Sort ascending so DOM-reorder engines (Leaflet) produce the correct element order:
+    // depth-0 elements stay, depth-1 are appended after them, depth-2 after depth-1, etc.
+    const byDepth = [...this.currentWidgets].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
+    for (const w of byDepth) {
+      this.cards.get(w.id)?.mount.setZIndex(depth.get(w.id) ?? 0);
     }
   }
 

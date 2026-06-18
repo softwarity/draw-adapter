@@ -636,6 +636,7 @@ export class MapLibreAdapter implements MapAdapter {
             el,
             setAnchor: (a) => { marker.setLngLat([a.lon, a.lat]); },
             remove: () => { marker.remove(); },
+            setZIndex: (z) => { if (el.parentElement) el.parentElement.style.zIndex = z > 0 ? String(z) : ""; },
           };
         },
         unprojectClient: (cx, cy) => {

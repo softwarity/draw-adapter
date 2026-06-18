@@ -19,6 +19,7 @@ class FakeHost implements WidgetHost {
       el,
       setAnchor: (a) => { m.anchor = a; },
       remove: () => { m.removed = true; el.remove(); },
+      setZIndex: (z) => { el.style.zIndex = z > 0 ? String(z) : ""; },
     };
   }
   unprojectClient(cx: number, cy: number): LatLng { return { lat: cy, lon: cx }; }
@@ -2275,5 +2276,42 @@ describe("WidgetLayer — anchorTo satellite positioning", () => {
     } finally {
       Element.prototype.getBoundingClientRect = origGet;
     }
+  });
+
+  it("satellite card gets z-index 1, target card gets z-index '' (above its target)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("main"),
+      { ...simpleCard("sat"), anchorTo: { id: "main", side: "right" } },
+    ]);
+    expect(host.mounts[0]!.el.style.zIndex).toBe("");    // main: no z-index override
+    expect(host.mounts[1]!.el.style.zIndex).toBe("1");  // sat: above its target
+  });
+
+  it("chain A←B←C gets increasing z-index depths", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("a"),
+      { ...simpleCard("b"), anchorTo: { id: "a", side: "right" } },
+      { ...simpleCard("c"), anchorTo: { id: "b", side: "right" } },
+    ]);
+    expect(host.mounts[0]!.el.style.zIndex).toBe("");   // a: root
+    expect(host.mounts[1]!.el.style.zIndex).toBe("1");  // b: depth 1
+    expect(host.mounts[2]!.el.style.zIndex).toBe("2");  // c: depth 2
+  });
+
+  it("non-anchorTo cards keep z-index '' even after a setWidgets with satellites", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    layer.setWidgets([
+      simpleCard("a"),
+      simpleCard("b"),
+      { ...simpleCard("sat"), anchorTo: { id: "a", side: "top" } },
+    ]);
+    expect(host.mounts[0]!.el.style.zIndex).toBe("");   // a: no z-index
+    expect(host.mounts[1]!.el.style.zIndex).toBe("");   // b: no z-index
+    expect(host.mounts[2]!.el.style.zIndex).toBe("1");  // sat: depth 1
   });
 });
