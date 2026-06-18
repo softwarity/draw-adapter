@@ -2,6 +2,16 @@
 
 ## NEXT RELEASE
 
+- **Fix (toolbar):** **Ordre des flyouts de sous-menu déterministe (child[0] toujours collé au
+  trigger).** Le flyout s'empilait toujours en `flex-direction: column` quelle que soit la direction
+  d'ouverture : avec une toolbar en bas (flyout vers le haut) le premier enfant déclaré finissait en
+  haut du menu (le plus loin du trigger), forçant les consommateurs à inverser leur tableau. Le flow
+  suit désormais la direction d'ouverture (`down`→`column`, `up`→`column-reverse`, `right`→`row`,
+  `left`→`row-reverse`) : `child[0]` est **toujours** la case adjacente au trigger, les suivantes
+  s'empilant à l'opposé, et ce à toute profondeur d'imbrication (axe alterné). L'ordre DOM/déclaration
+  est inchangé (Tab, `byId`, `setToolbarActive` restent corrects). Aucune régression sur les toolbars
+  en haut / à gauche (`down`/`right` conservent `column`/`row`).
+
 - **Fix (Leaflet):** **Désélection impossible après sélection d'une feature.**
   Sur Leaflet, après avoir sélectionné une feature, cliquer sur une zone vide de la carte ne
   désélectionnait plus. Deux causes combinées :

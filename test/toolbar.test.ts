@@ -236,6 +236,28 @@ describe("populateToolbar — submenus (flyout)", () => {
     expect(side("right")).toContain("dap-submenu-left");
   });
 
+  it("flows so child[0] sits adjacent to the trigger for every position (reverse on up/left)", () => {
+    const flow = (position: ToolbarOptions["position"]): string => {
+      document.body.innerHTML = "";
+      const el = document.createElement("div");
+      populateToolbar(el, [withChildren()], position ? { position } : undefined);
+      el.querySelector<HTMLButtonElement>("button.dap-submenu-trigger")!.click(); // open ⇒ menu in body
+      return menu().style.flexDirection;
+    };
+    expect(flow("top-left")).toBe("column"); // opens down: child[0] just below trigger
+    expect(flow("bottom-left")).toBe("column-reverse"); // opens up: child[0] just above trigger
+    expect(flow("left-top")).toBe("row"); // opens right: child[0] just right of trigger
+    expect(flow("right-top")).toBe("row-reverse"); // opens left: child[0] just left of trigger
+  });
+
+  it("keeps DOM/declaration order regardless of flow (Tab order + byId stay correct)", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, [withChildren()], { position: "bottom-left" }); // opens up ⇒ column-reverse
+    el.querySelector<HTMLButtonElement>("button.dap-submenu-trigger")!.click();
+    const tools = [...menu().querySelectorAll("button")].map((b) => b.dataset["tool"]);
+    expect(tools).toEqual(["label", "box"]); // child[0] first in the DOM even though it renders last visually
+  });
+
   it("a press outside the toolbar (and outside the flyout) closes it", () => {
     const el = document.createElement("div");
     const outside = document.createElement("div");
@@ -295,6 +317,17 @@ describe("populateToolbar — nested submenus (sub-sub-menu, alternating directi
     expect(subFlyout).not.toBeNull();
     expect(subFlyout.classList.contains("open")).toBe(true);
     expect(subFlyout.style.flexDirection).toBe("row"); // horizontal — flipped from its parent
+  });
+
+  it("a bottom bar reverses each axis so child[0] stays adjacent at every depth", () => {
+    const el = document.createElement("div");
+    populateToolbar(el, [nested().item], { position: "bottom-left" }); // opens up
+    el.querySelector<HTMLButtonElement>('button[data-tool="root"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const firstFlyout = menuBySide("up")!;
+    expect(firstFlyout.style.flexDirection).toBe("column-reverse"); // child[0] just above trigger
+    firstFlyout.querySelector<HTMLButtonElement>('button[data-tool="branch"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    const subFlyout = menuBySide("right")!; // up alternates to right (into the map)
+    expect(subFlyout.style.flexDirection).toBe("row"); // child[0] just right of its trigger
   });
 
   it("opening a sibling branch collapses the other; ancestors stay open", () => {

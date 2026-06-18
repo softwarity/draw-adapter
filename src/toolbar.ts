@@ -78,6 +78,14 @@ const SUBMENU_SIDE: Record<string, Side> = {
  */
 const ALTERNATE: Record<Side, Side> = { down: "right", up: "right", right: "down", left: "down" };
 
+/**
+ * Flex flow per open direction so `child[0]` is ALWAYS the one adjacent to the trigger, whatever
+ * the side — and the rest stack away from it. DOM/declaration order is kept (append in array order),
+ * only the *visual* flow flips: opening up/left reverses so the first child lands next to the trigger
+ * instead of farthest from it. `down`/`right` keep the natural flow (no change for top/left bars).
+ */
+const FLOW: Record<Side, string> = { down: "column", up: "column-reverse", right: "row", left: "row-reverse" };
+
 function ensureToolbarStyle(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -293,7 +301,6 @@ function buildSubmenu(
 ): SubmenuNode {
   const isToggle = item.toggle === true;
   const items = item.children ?? [];
-  const sideways = side === "left" || side === "right"; // opening sideways ⇒ row flyout
 
   const trigger = createButton(item);
   trigger.classList.add("dap-submenu-trigger");
@@ -301,8 +308,9 @@ function buildSubmenu(
 
   const menu = document.createElement("div");
   menu.className = `dap-submenu dap-submenu-${side}`;
-  // A flyout opening up/down is a vertical column; one opening left/right is a horizontal row.
-  menu.style.flexDirection = sideways ? "row" : "column";
+  // Flow follows the open direction (column[-reverse] up/down, row[-reverse] left/right) so child[0]
+  // always sits next to the trigger and the rest stack away — independent of toolbar position.
+  menu.style.flexDirection = FLOW[side];
   ctx.registerMenu(menu);
 
   const place = (): void => {
