@@ -550,6 +550,11 @@ export interface ToolbarOptions {
    * On the Leaflet adapter the button is shown but DISABLED.
    */
   snapshot?: "none" | false | null | { quality?: SnapshotQuality; onClick?: SnapshotDelivery; shutter?: boolean; hideOverlays?: string[] };
+  /** Add a "fullscreen" toggle (between the snapshot and lock buttons) — requests the browser
+   *  Fullscreen API on the map container so the map fills the screen, and resizes the engine to fit.
+   *  Default `true`; set `false` to hide it. Hidden automatically where the Fullscreen API is
+   *  unavailable (e.g. an iframe without `allowfullscreen`). */
+  fullscreen?: boolean;
   /** Add a "lock map" toggle at the **end** of the bar — freezes pan/zoom/rotate so the
    *  map can't move while drawing. Default `true`; set `false` to hide it. */
   lock?: boolean;

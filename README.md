@@ -205,7 +205,7 @@ placement and click wiring** (it knows no action — each item's `onClick` is yo
 ```ts
 adapter.addToolbar(
   [{ id: "circle", title: "Circle", svg: "<svg…>", toggle: true, onClick: () => draw.circle() }],
-  { position: "top-left" }, // 12 anchors (flow derived from the edge) + padding / gap / className / tools / clear / lock / snapshot
+  { position: "top-left" }, // 12 anchors (flow derived from the edge) + padding / gap / className / tools / clear / snapshot / fullscreen / lock
 );
 ```
 
@@ -238,6 +238,11 @@ The adapter appends its own **chrome** buttons at the end of the bar (they're
   under the hood, and the lock **wins** over the controller's transient `setPanEnabled`
   until you unlock.
 - **Snapshot** — the PNG capture button (see [Snapshots](#snapshots-png)).
+- **Fullscreen** — a toggle (sits **between the snapshot and lock buttons**; default on,
+  `fullscreen: false` hides it) that requests the browser **Fullscreen API** on the map container and
+  resizes the engine to fit. Its icon/tooltip flip with state and stay in sync when you leave
+  fullscreen with **Esc**. Hidden automatically where the Fullscreen API is unavailable (e.g. an
+  iframe without `allowfullscreen`).
 
 ### Submenus (flyouts)
 

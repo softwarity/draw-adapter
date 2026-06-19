@@ -54,6 +54,7 @@ import { boxPadding, boxRadius, textBoxBorderWidth } from "./textbox.js";
 import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
+import { fullscreenToolbarItem } from "./fullscreen.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
@@ -356,8 +357,9 @@ export class MapLibreAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getContainer()),
     });
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.map.resize());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
-    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
     this.map.getContainer().appendChild(el);
     this.toolbarEl = el;

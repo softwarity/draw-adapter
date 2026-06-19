@@ -65,6 +65,7 @@ import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js
 import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { deliverSnapshot, shutterFlash, snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
+import { fullscreenToolbarItem } from "./fullscreen.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { applyTooltipStyle } from "./tooltip.js";
 
@@ -268,8 +269,9 @@ export class OpenLayersAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getViewport()),
     });
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.getContainer(), () => this.map.updateSize());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
-    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getViewport()));
     this.map.getTargetElement()?.appendChild(el);
     this.toolbarEl = el;

@@ -2,6 +2,16 @@
 
 ## NEXT RELEASE
 
+- **Fix (Leaflet):** **Contenu d'une card à `boxShape` non-rect (pentagon / polygon custom) masqué par
+  son propre cadre.** Le cadre SVG d'un `boxShape` est inséré en **premier enfant** (censé être derrière)
+  et le contenu mis en `position:relative` pour passer au-dessus — un empilement **par tree-order** qui
+  n'est PAS honoré dans le DOM marker de Leaflet : le SVG `position:absolute` (avec son `fill`) peignait
+  **par-dessus** le contenu et masquait le texte (ex. le `H`/`L` + FL du tropopause — forme bien visible
+  mais « vide »). La card reçoit désormais son **propre contexte d'empilement** (`isolation:isolate`) et
+  le cadre SVG un **`z-index:-1`** explicite ⇒ il reste **sous** le contenu sur les 3 moteurs, tandis que
+  les boutons (delete/action, `z-index:1`) restent au-dessus. Inchangé pour les cards rectangulaires
+  (pas de SVG) ; MapLibre/OpenLayers étaient déjà corrects (l'ordre est juste rendu explicite).
+
 ---
 
 ## 0.7.0

@@ -1692,11 +1692,12 @@ class Card {
     const cs = this.content.style;
     if (!poly) {
       if (this.shapeSvg) { this.shapeSvg.remove(); this.shapeSvg = undefined; }
-      cs.padding = ""; cs.margin = ""; cs.position = "";
+      cs.padding = ""; cs.margin = ""; cs.position = ""; this.root.style.isolation = "";
       return;
     }
     const rs = this.root.style;
     rs.background = "transparent"; rs.border = ""; rs.borderRadius = "0"; rs.padding = "0"; rs.overflow = "visible";
+    rs.isolation = "isolate"; // own stacking context ⇒ the shape SVG's `z-index:-1` stays scoped to the card AND behind the content even where tree-order stacking isn't honoured (e.g. Leaflet's marker-icon DOM, where the absolute SVG would otherwise paint OVER the relative content and hide the text)
     const [pv, ph] = boxPadding(w.padding);
     cs.padding = `${pv}px ${ph}px`;
     cs.position = "relative"; // paint above the SVG
@@ -1709,7 +1710,7 @@ class Card {
     if (!svg) {
       svg = document.createElementNS(SVGNS, "svg");
       svg.setAttribute("class", "draw-adapter-widget-shape");
-      const ss = svg.style; ss.position = "absolute"; ss.pointerEvents = "none"; ss.overflow = "visible";
+      const ss = svg.style; ss.position = "absolute"; ss.zIndex = "-1"; ss.pointerEvents = "none"; ss.overflow = "visible";
       svg.appendChild(document.createElementNS(SVGNS, "polygon"));
       this.root.insertBefore(svg, this.root.firstChild); // behind the content
       this.shapeSvg = svg;

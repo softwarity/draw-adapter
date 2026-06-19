@@ -50,6 +50,7 @@ import { resolveAdapterOptions, type ResolvedAdapterOptions } from "./options.js
 import { populateToolbar, setToolbarActive } from "./toolbar.js";
 import { snapshotToolbarItem } from "./snapshot.js";
 import { lockToolbarItem } from "./lock.js";
+import { fullscreenToolbarItem } from "./fullscreen.js";
 import { bindKeyListener, refocusMap } from "./keyboard.js";
 import { modifiers } from "./modifiers.js";
 import { applyTooltipStyle } from "./tooltip.js";
@@ -280,8 +281,9 @@ export class LeafletAdapter implements MapAdapter {
       reason: LEAFLET_SNAPSHOT_UNSUPPORTED,
       snapshot: () => this.snapshot(),
     });
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.map.invalidateSize());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
-    const chrome = [snap, lock].filter((x): x is ToolbarItem => x != null);
+    const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
     // Leaflet panes climb to z-index ~700 and its controls to ~1000, so the
     // generic toolbar's z-index:3 (set by applyToolbarLayout) would hide the bar
