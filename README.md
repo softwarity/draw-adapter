@@ -446,6 +446,17 @@ adapter.setCoordFormat(({ lon, lat }) => formatLatLng(lat, lon)); // formats the
 - **One implementation, all three engines:** the card rides each engine's native anchored-overlay
   primitive (MapLibre `Marker` / OpenLayers `Overlay` / Leaflet `divIcon`), so it tracks per-frame
   through pan/zoom and stays screen-upright. It's wired with Pointer Events, so touch works.
+- **Read-only sprite mode (`static: true`):** for a **non-selected** cartouche, set `static: true` and
+  the adapter **rasterizes** the `child` tree to a bitmap **once** and places it as a **native icon**
+  (MapLibre symbol / OpenLayers `Icon` / Leaflet `<img>`) instead of a live DOM card — so N read-only
+  call-outs cost N icons, not N DOM cards repositioned every frame. It re-rasterizes only when
+  `child`/frame or the device-pixel-ratio change (never on pan/zoom) and is **always painted** (never
+  hidden by label collision — placement stays the consumer's job). The sprite is draggable and surfaces
+  the **same hit as a canvas call-out** — `onPointer` →
+  `{ overlay: "text-boxes", props: { featureId: id, labelId } }` — so your existing call-out drag/select
+  handles it unchanged (it does **not** take the DOM-card `widget` hit). It has **no internal controls**
+  (input/picker/gauge) and ignores `deletable`/`buttons`; `labelId` (default `"l"`) pairs with
+  `featureId` to key the drag.
 - **Delete:** `deletable: true` (or `{ title }` for a tooltip) shows a bare `×` in the card's **top-right corner**; clicking it
   fires `onWidgetDelete({ id })` — the lib doesn't remove the card, the consumer drops the `id`
   from its next `setWidgets`. It's a **separate element** from the input (so an input-only card

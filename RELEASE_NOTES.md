@@ -2,6 +2,21 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **Mode sprite read-only (`MarkerWidget.static: true`)** — pour une cartouche
+  **non sélectionnée**, l'adapter **rasterise** le `child` (l'arbre `WidgetBox`) en bitmap une fois et
+  le pose comme **icône native** (MapLibre `addImage` + symbol layer `__dap-widget-sprites`, OpenLayers
+  `Icon`, Leaflet `<img>` divIcon) au lieu de monter une card DOM vivante : N cartouches read-only =
+  N icônes, plus N cards DOM repositionnées à chaque frame. Re-rasterisé **uniquement** au changement
+  de `child`/cadre ou de `devicePixelRatio` (jamais au pan/zoom). Le sprite est **hit-testable +
+  draggable** et remonte **le même hit qu'un call-out canvas** (`onPointer` →
+  `{ overlay: "text-boxes", props: { featureId: id, labelId } }`) ⇒ l'interaction call-out existante du
+  consommateur (drag = repositionner, tap = sélectionner) le gère **sans code nouveau** (il n'emprunte
+  PAS le chemin DOM-card `widget`). Aucun contrôle interne (picker/input/gauge ignorés),
+  `deletable`/`buttons` ignorés ; `labelId?` (défaut `"l"`) appaire le hit avec `featureId`. **Rendu
+  inconditionnel** — jamais masqué par la collision : MapLibre `icon-allow-overlap` +
+  `icon-ignore-placement`, couche sprite OpenLayers **hors** `declutter`, Leaflet `<img>` DOM — le
+  placement / l'anti-collision restent **100 % pilotés par le consommateur**. Identique sur les 3 moteurs.
+
 - **Add (widgets):** **Cadre optionnel sur les `WidgetBox` internes** (`bg`, `border`, `borderWidth`,
   `radius`, `padding` — mêmes presets que la card racine). Permet d'encadrer/remplir une sous-colonne
   (vbox/hbox) au sein d'une même card, honoré à l'identique sur les 3 moteurs (DOM partagé). La bordure

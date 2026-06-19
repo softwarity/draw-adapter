@@ -8,7 +8,7 @@ import View from "ol/View.js";
 import { Circle as CircleStyle, Icon, Style } from "ol/style.js";
 
 import { OpenLayersAdapter } from "../src/openlayers.js";
-import type { LayerSpec, PointerEvent } from "../src/index.js";
+import type { LayerSpec, MarkerWidget, PointerEvent } from "../src/index.js";
 
 const LAYERS: LayerSpec[] = [
   { id: "area", kind: "fill" },
@@ -267,6 +267,50 @@ describe("OpenLayersAdapter — marker widgets", () => {
     input.value = "A";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     expect(edits).toEqual([{ id: "w1", value: "A" }]);
+  });
+});
+
+describe("OpenLayersAdapter — static widget sprites", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const STATIC_W: MarkerWidget = {
+    id: "w1", anchor: { lon: 2, lat: 1 }, static: true, labelId: "main",
+    child: { dir: "v", items: [{ kind: "text", value: "FL340" }] },
+  };
+  // The lazy sprite layer is the only layer added by setWidgets([static]) (a static widget renders no
+  // DOM card overlay), so it's whatever appears in `map.added` that wasn't there after ready().
+  const freshLayer = (map: FakeOlMap, before: Set<VectorLayer>) => map.added.find((l) => !before.has(l))!;
+
+  // Regression guard for SPRITE-COLLISION-SPEC: the sprite layer must NOT declutter. Placement is the
+  // consumer's pass, so OpenLayers must never auto-hide a sprite that overlaps a basemap label or
+  // another icon (a declutter layer drops overlapping icons — and they stop hit-testing — exactly the
+  // MapLibre collision symptom). `getDeclutter()` must stay falsy.
+  it("renders sprites on a non-declutter layer (never auto-hidden by overlap)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const before = new Set(map.added);
+    adapter.setWidgets([STATIC_W]);
+    await flush();
+    const fresh = map.added.filter((l) => !before.has(l));
+    expect(fresh).toHaveLength(1); // exactly the lazy sprite layer
+    expect(fresh[0]!.getDeclutter()).toBeFalsy();
+  });
+
+  it("a sprite hit surfaces overlay=text-boxes carrying the widget's featureId + labelId", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    const before = new Set(map.added);
+    adapter.setWidgets([STATIC_W]);
+    await flush();
+    const spriteLayer = freshLayer(map, before);
+    let lastHit: PointerEvent["hit"];
+    adapter.onPointer((e) => { if (e.type === "move") lastHit = e.hit; });
+    // The sprite layer reuses the call-out overlay, so the consumer's existing text-boxes interaction
+    // (drag = reposition, tap = select) handles the press unchanged.
+    map.hits = [{ feature: { getProperties: () => ({ featureId: "w1", labelId: "main", geometry: {} }) }, layer: spriteLayer }];
+    map.emit("pointermove", { coordinate: [0, 0], pixel: [5, 5] });
+    expect(lastHit?.overlay).toBe("text-boxes");
+    expect(lastHit?.props["featureId"]).toBe("w1");
+    expect(lastHit?.props["labelId"]).toBe("main");
   });
 });
 

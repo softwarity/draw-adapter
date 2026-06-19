@@ -385,6 +385,22 @@ describe("MapLibreAdapter — static widget sprites", () => {
     expect(layer(map, "__dap-widget-sprites").type).toBe("symbol");
   });
 
+  // Regression guard for SPRITE-COLLISION-SPEC: a `static` sprite must render UNCONDITIONALLY —
+  // MapLibre must never cull it for overlapping a basemap label (or another symbol), since placement
+  // is the consumer's job. Both `icon-allow-overlap` (paint it even when overlapping) AND
+  // `icon-ignore-placement` (don't let it block — or be blocked by — other symbols) are required, and
+  // `queryRenderedFeatures` only returns *placed* icons, so without these a hidden sprite is also not
+  // hit-testable. If either flips off, sprites vanish near dense labels and stop being draggable.
+  it("forces unconditional placement on the sprite layer (icon-allow-overlap + icon-ignore-placement)", async () => {
+    const { map, adapter } = build();
+    await adapter.ready();
+    adapter.setWidgets([STATIC_W]);
+    await flush();
+    const { layout } = layer(map, "__dap-widget-sprites");
+    expect(layout?.["icon-allow-overlap"]).toBe(true);
+    expect(layout?.["icon-ignore-placement"]).toBe(true);
+  });
+
   it("a sprite hit surfaces overlay=text-boxes carrying the widget's featureId + labelId", async () => {
     const { map, adapter } = build();
     await adapter.ready();
