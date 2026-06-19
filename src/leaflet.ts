@@ -153,6 +153,7 @@ export class LeafletAdapter implements MapAdapter {
   private cb: ((ev: PointerEvent) => void) | undefined;
   private domDown: ((e: Event) => void) | undefined;
   private domUp: ((e: MouseEvent) => void) | undefined;
+  private domMove: ((e: MouseEvent) => void) | undefined;
   private windowBlur: (() => void) | undefined;
   private blurListener: (() => void) | undefined;
   /** Hit captured at `down`, reused for that press's `click` (atomic press — see onPointer). */
@@ -474,10 +475,30 @@ export class LeafletAdapter implements MapAdapter {
       const ll = this.map.mouseEventToLatLng(e); // real lon/lat from the release point (#2)
       cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(e) });
     };
+    // Drag moves are tracked on `document`, NOT `map.on("mousemove")`: Leaflet's map move fires only
+    // while the pointer is over the map AND not swallowed by an interactive marker/card, so a FAST drag
+    // (pointer briefly off-container, or crossing another handle/card) silently drops the move ⇒ the
+    // drag is "lost". The document listener fires regardless; `mouseEventToLatLng` re-projects even
+    // outside the container, matching how MapLibre/OpenLayers track a drag continuously off their canvas.
+    const onDocMove = (e: MouseEvent): void => {
+      if (!this.dragging) return; // hover (cursor + hit) stays on `map.on("mousemove")` below
+      const ll = this.map.mouseEventToLatLng(e);
+      const mods = modifiers(e);
+      if (e.buttons === 0) { // a swallowed `up` (window-focus gesture): finalise so nothing sticks
+        this.dragging = false;
+        this.pressHit = undefined;
+        cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
+        return;
+      }
+      if (Math.abs(e.clientX - this.lastDownX) > 3 || Math.abs(e.clientY - this.lastDownY) > 3) this.moved = true;
+      cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
+    };
     container.addEventListener("mousedown", onDown, true);
     document.addEventListener("mouseup", onUp);
+    document.addEventListener("mousemove", onDocMove);
     this.domDown = onDown as (e: Event) => void;
     this.domUp = onUp;
+    this.domMove = onDocMove;
     if (typeof window !== "undefined") {
       // Leaving the window mid-press loses the `up`; purge press state so the first click back
       // (the focusing click) starts clean instead of inheriting a stale drag/hit/dbl-click timer.
@@ -486,24 +507,11 @@ export class LeafletAdapter implements MapAdapter {
     }
 
     this.map.on("mousemove", (evt: L.LeafletMouseEvent) => {
+      if (this.dragging) return; // a drag in progress ⇒ moves come from the document listener above
       const ll = evt.latlng;
-      const mods = modifiers(evt.originalEvent);
-      // Recover a swallowed `up`: a move with NO button held means the press already ended
-      // (e.g. the mouseup was eaten by a window-focusing gesture). Finalise so nothing sticks.
-      if (this.dragging && evt.originalEvent.buttons === 0) {
-        this.dragging = false;
-        this.pressHit = undefined;
-        cb({ type: "up", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
-      }
-      if (this.dragging) {
-        const oe = evt.originalEvent;
-        if (Math.abs(oe.clientX - this.lastDownX) > 3 || Math.abs(oe.clientY - this.lastDownY) > 3) this.moved = true;
-        cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods });
-        return;
-      }
       const hit = this.hitAt(evt.containerPoint); // hover affordance/cursor — recomputed geometrically
       this.setCursor(cursorForHit(hit));
-      cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...mods, ...(hit ? { hit } : {}) });
+      cb({ type: "move", lngLat: { lat: ll.lat, lon: ll.lng }, ...modifiers(evt.originalEvent), ...(hit ? { hit } : {}) });
     });
     this.map.on("click", (evt: L.LeafletMouseEvent) => {
       // Swallow the stray click Leaflet fires right after a double-click (see suppressClick) — else it
@@ -671,9 +679,10 @@ export class LeafletAdapter implements MapAdapter {
     this.paneNames.length = 0;
     if (this.domDown) this.map.getContainer().removeEventListener("mousedown", this.domDown as EventListener, true);
     if (this.domUp) document.removeEventListener("mouseup", this.domUp);
+    if (this.domMove) document.removeEventListener("mousemove", this.domMove);
     if (this.windowBlur && typeof window !== "undefined") window.removeEventListener("blur", this.windowBlur);
     if (this.blurListener && typeof window !== "undefined") window.removeEventListener("blur", this.blurListener);
-    this.domDown = this.domUp = this.windowBlur = this.blurListener = undefined;
+    this.domDown = this.domUp = this.domMove = this.windowBlur = this.blurListener = undefined;
     this.pressHit = undefined;
     this.suppressClick = false;
     this.moved = false;

@@ -2,6 +2,23 @@
 
 ## NEXT RELEASE
 
+- **Fix (Leaflet):** **Drag lâché sur un geste rapide (handles, slider-handles, retrait latéral d'un
+  break-point).** Le move pendant un drag était suivi par `map.on("mousemove")` — qui ne se déclenche
+  que tant que le pointeur est **sur la carte ET non avalé par un marker/cartouche interactif** ; un
+  drag rapide (le pointeur sort brièvement du conteneur ou croise un autre handle/card) **perdait** le
+  move ⇒ drag lâché. Les moves de drag sont désormais suivis au niveau **`document`**
+  (`mouseEventToLatLng` re-projette même hors conteneur), comme MapLibre/OpenLayers suivent un drag en
+  continu sur leur canvas — `down` (capture conteneur) et `up` (`document`) l'étaient déjà ; le survol
+  (curseur + hit) reste sur `map.on("mousemove")`.
+
+- **Fix (Leaflet):** **Sliders de gauge en cartouche : drag lâché dès que le pointeur quitte le knob**
+  (déplacer la plage, redimensionner via les knobs base/top, retrait latéral d'une plage). Les
+  contrôles de gauge suivaient le drag via `setPointerCapture` sur le knob — **peu fiable sur Leaflet**
+  (la capture ne tenait pas : le suivi s'arrêtait dès qu'on sortait du petit knob, pénible pour
+  redimensionner). Les 3 drags (knob cursor, knobs base/top de plage, **band**) sont désormais suivis
+  au niveau **`document`** (helper `trackDrag`, indépendant de la capture ; l'état est clé par card,
+  donc il survit aussi à un re-render en cours de drag). Identique sur les 3 moteurs.
+
 - **Add (sprites):** **Le rasteriseur de sprite réplique les `boxShape` non-rect** (`pentagon-up`,
   `pentagon-down`, polygon custom `number[][]`). Jusqu'ici un `static: true` `MarkerWidget` à `boxShape`
   non-rect **perdait sa pointe** (rabattu sur un rectangle) ; il est désormais **pixel-shape-identique à

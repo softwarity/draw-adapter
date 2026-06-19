@@ -1155,6 +1155,22 @@ describe("WidgetLayer — gauge control", () => {
     expect(host.emits).toHaveLength(0);
   });
 
+  it("a knob drag is tracked on `document` — a move keeps driving it after the pointer leaves the knob", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const edits: WidgetEdit[] = [];
+    layer.onWidgetEdit((e) => edits.push(e));
+    layer.setWidgets([gaugeCard([{ name: "lo", value: 25 }])]);
+    const knob = cardEl(host).querySelector(".draw-adapter-widget-knob") as HTMLElement;
+    knob.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 5, clientY: 5 }));
+    edits.length = 0;
+    // The pointer has left the small knob, so the move lands on `document`. The old element-bound
+    // listener (+ flaky `setPointerCapture` on Leaflet) drove nothing here; the drag now follows it.
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 5, clientY: 0, buttons: 1 }));
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 5, clientY: 0 }));
+    expect(edits.some((e) => e.name === "lo")).toBe(true);
+  });
+
   it("a11y: a knob is a slider (role + aria-value*) and arrow keys step the value", () => {
     const host = new FakeHost();
     const layer = new WidgetLayer(host);

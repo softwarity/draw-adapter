@@ -252,9 +252,10 @@ describe("LeafletAdapter", () => {
     a.onPointer((e) => types.push(e.type));
     const p = map.latLngToContainerPoint([10, 10]);
     el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: p.x, clientY: p.y })); // down
-    // drag: a held-button move well past the 3px threshold (a shape drawn by dragging)
+    // drag: a held-button move well past the 3px threshold (a shape drawn by dragging). Drag moves are
+    // tracked on `document` now (robust to fast moves / markers swallowing Leaflet's map mousemove).
     const far = L.point(p.x + 40, p.y + 40);
-    map.fire("mousemove", { latlng: map.containerPointToLatLng(far), layerPoint: far, containerPoint: far, originalEvent: new MouseEvent("mousemove", { clientX: p.x + 40, clientY: p.y + 40, buttons: 1 }) });
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: p.x + 40, clientY: p.y + 40, buttons: 1 }));
     document.dispatchEvent(new MouseEvent("mouseup", { clientX: p.x + 40, clientY: p.y + 40 })); // press ends
     map.fire("click", { latlng: map.containerPointToLatLng(far), originalEvent: new MouseEvent("click") }); // Leaflet's native post-drag click
     expect(types).toContain("down");

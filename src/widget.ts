@@ -896,36 +896,49 @@ function addKnob(root: HTMLElement, st: GaugeState, card: Card): void {
   });
 }
 
+/** Drive a gauge knob/band drag from `document` rather than the element — robust where
+ *  `setPointerCapture` is unreliable (notably Leaflet, where the captured pointer stops being followed
+ *  the instant it leaves the small knob). Call from `pointerdown` AFTER setting the drag state; `onMove`
+ *  fires for every live pointer move anywhere on the page, `onEnd` runs once on up/cancel; the document
+ *  listeners auto-detach. */
+function trackDrag(onMove: (e: globalThis.PointerEvent) => void, onEnd: (e: globalThis.PointerEvent) => void): void {
+  const move = (e: globalThis.PointerEvent): void => onMove(e);
+  const end = (e: globalThis.PointerEvent): void => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", end);
+    document.removeEventListener("pointercancel", end);
+    onEnd(e);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", end);
+  document.addEventListener("pointercancel", end);
+}
+
 function wireKnobDrag(root: HTMLElement, dot: HTMLElement, index: number, card: Card): void {
   dot.addEventListener("pointerdown", (e) => {
     e.stopPropagation(); e.preventDefault();
     const st = gaugeState.get(root); if (!st) return;
     st.dragging = index;
-    try { dot.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
+    trackDrag(
+      (ev) => {
+        const s = gaugeState.get(root); if (!s || s.dragging !== index) return;
+        const g = s.gauge, len = g.length ?? GAUGE_LEN, horizontal = g.orientation === "horizontal";
+        // Map against the CONTAINER (fixed size), NOT the guide line: the guide resizes to hug the
+        // cursors, so reading its rect would feed back into the value and make the drag jitter. The
+        // track area is inset by KNOB/2 at each end and spans `len`.
+        const rect = root.getBoundingClientRect();
+        const frac = horizontal
+          ? (ev.clientX - rect.left - KNOB / 2) / len
+          : 1 - (ev.clientY - rect.top - KNOB / 2) / len;
+        const v = clampCursor(g.min + frac * (g.max - g.min), index, g);
+        s.live[index] = v;
+        placeKnob(s.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+        placeGaugeGuide(s, len, horizontal);
+        card.emitEdit(String(v), (g.cursors ?? [])[index]?.name);
+      },
+      () => { const s = gaugeState.get(root); if (s && s.dragging === index) s.dragging = null; },
+    );
   });
-  dot.addEventListener("pointermove", (e) => {
-    const st = gaugeState.get(root); if (!st || st.dragging !== index) return;
-    const g = st.gauge, len = g.length ?? GAUGE_LEN, horizontal = g.orientation === "horizontal";
-    // Map against the CONTAINER (fixed size), NOT the guide line: the guide now resizes to hug the
-    // cursors, so reading its rect would feed back into the value and make the drag jitter. The track
-    // area is inset by KNOB/2 at each end and spans `len`.
-    const rect = root.getBoundingClientRect();
-    const frac = horizontal
-      ? (e.clientX - rect.left - KNOB / 2) / len
-      : 1 - (e.clientY - rect.top - KNOB / 2) / len;
-    const v = clampCursor(g.min + frac * (g.max - g.min), index, g);
-    st.live[index] = v;
-    placeKnob(st.knobs[index]!, gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
-    placeGaugeGuide(st, len, horizontal);
-    card.emitEdit(String(v), (g.cursors ?? [])[index]?.name);
-  });
-  const end = (e: globalThis.PointerEvent): void => {
-    const st = gaugeState.get(root); if (!st || st.dragging !== index) return;
-    st.dragging = null;
-    try { dot.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-  };
-  dot.addEventListener("pointerup", end);
-  dot.addEventListener("pointercancel", end);
 }
 
 // ── multi-range gauge ────────────────────────────────────────────────────────
@@ -967,40 +980,35 @@ function wireRangeKnobDrag(root: HTMLElement, dot: HTMLElement, which: "base" | 
     e.stopPropagation(); e.preventDefault();
     const rng = st.rangeStates[idx]; if (!rng) return;
     rng.dragging = which;
-    try { dot.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
     // emit on pointerdown so the consumer can identify which range was touched
-    const range = st.gauge.ranges?.[idx]; if (!range) return;
-    card.emitEdit(String(rng.live[which]), (which === "base" ? range.base : range.top).name);
+    const range0 = st.gauge.ranges?.[idx]; if (!range0) return;
+    card.emitEdit(String(rng.live[which]), (which === "base" ? range0.base : range0.top).name);
+    trackDrag(
+      (ev) => {
+        const r = st.rangeStates[idx]; if (!r || r.dragging !== which) return;
+        const g = st.gauge;
+        const range = g.ranges?.[idx]; if (!range) return;
+        const len = g.length ?? GAUGE_LEN;
+        const horizontal = g.orientation === "horizontal";
+        const rect = root.getBoundingClientRect();
+        const frac = horizontal
+          ? (ev.clientX - rect.left - KNOB / 2) / len
+          : 1 - (ev.clientY - rect.top - KNOB / 2) / len;
+        const { lo, hi } = gaugeBounds(g);
+        let v = snapStep(Math.min(hi, Math.max(lo, g.min + frac * (g.max - g.min))), g.step);
+        if (which === "base") v = Math.min(v, r.live.top);
+        else                  v = Math.max(v, r.live.base);
+        r.live[which] = v;
+        placeKnob(r[which], gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
+        const bA = gaugeAlong(valueFraction(r.live.base, g.min, g.max), len, horizontal);
+        const tA = gaugeAlong(valueFraction(r.live.top,  g.min, g.max), len, horizontal);
+        placeBar(r.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
+        dot.setAttribute("aria-valuenow", String(v));
+        card.emitEdit(String(v), (which === "base" ? range.base : range.top).name);
+      },
+      () => { const r = st.rangeStates[idx]; if (r && r.dragging === which) r.dragging = null; },
+    );
   });
-  dot.addEventListener("pointermove", (e) => {
-    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== which) return;
-    const g = st.gauge;
-    const range = g.ranges?.[idx]; if (!range) return;
-    const len = g.length ?? GAUGE_LEN;
-    const horizontal = g.orientation === "horizontal";
-    const rect = root.getBoundingClientRect();
-    const frac = horizontal
-      ? (e.clientX - rect.left - KNOB / 2) / len
-      : 1 - (e.clientY - rect.top - KNOB / 2) / len;
-    const { lo, hi } = gaugeBounds(g);
-    let v = snapStep(Math.min(hi, Math.max(lo, g.min + frac * (g.max - g.min))), g.step);
-    if (which === "base") v = Math.min(v, rng.live.top);
-    else                  v = Math.max(v, rng.live.base);
-    rng.live[which] = v;
-    placeKnob(rng[which], gaugeAlong(valueFraction(v, g.min, g.max), len, horizontal), horizontal);
-    const bA = gaugeAlong(valueFraction(rng.live.base, g.min, g.max), len, horizontal);
-    const tA = gaugeAlong(valueFraction(rng.live.top,  g.min, g.max), len, horizontal);
-    placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
-    dot.setAttribute("aria-valuenow", String(v));
-    card.emitEdit(String(v), (which === "base" ? range.base : range.top).name);
-  });
-  const end = (e: globalThis.PointerEvent): void => {
-    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== which) return;
-    rng.dragging = null;
-    try { dot.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-  };
-  dot.addEventListener("pointerup", end);
-  dot.addEventListener("pointercancel", end);
   dot.addEventListener("keydown", (e) => {
     const rng = st.rangeStates[idx]; if (!rng) return;
     const dir = e.key === "ArrowUp" || e.key === "ArrowRight" ? 1 : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -1 : 0;
@@ -1082,100 +1090,96 @@ function wireRangeBandDrag(root: HTMLElement, halo: HTMLElement, idx: number, st
     rng.bandGesture = "pending";
     rng.liveBandBase = rng.live.base;
     rng.liveBandTop  = rng.live.top;
-    try { halo.setPointerCapture(e.pointerId); } catch { /* jsdom / unsupported */ }
-    const range = g.ranges?.[idx]; if (!range) return;
-    card.emitEdit(String(rng.live.base), range.base.name);
-  });
+    const range0 = g.ranges?.[idx]; if (!range0) return;
+    card.emitEdit(String(rng.live.base), range0.base.name);
+    trackDrag(
+      (ev) => {
+        const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
+        const g = st.gauge;
+        const range = g.ranges?.[idx]; if (!range) return;
+        const horizontal = g.orientation === "horizontal";
 
-  halo.addEventListener("pointermove", (e) => {
-    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
-    const g = st.gauge;
-    const range = g.ranges?.[idx]; if (!range) return;
-    const horizontal = g.orientation === "horizontal";
+        // Lateral-drag / trash-icon path: vertical gauges only
+        if (!horizontal && rng.bandGesture !== "vertical") {
+          const dx = ev.clientX - rng.bandDownX;
+          const dy = ev.clientY - rng.bandDownY;
+          const adx = Math.abs(dx), ady = Math.abs(dy);
 
-    // Lateral-drag / trash-icon path: vertical gauges only
-    if (!horizontal && rng.bandGesture !== "vertical") {
-      const dx = e.clientX - rng.bandDownX;
-      const dy = e.clientY - rng.bandDownY;
-      const adx = Math.abs(dx), ady = Math.abs(dy);
+          if (rng.bandGesture === "pending") {
+            const canDelete = (g.ranges?.length ?? 0) > 1; // no trash when only one range remains
+            if (adx > FLING_SHOW_DX && adx > ady && canDelete) {
+              rng.bandGesture = "fling";
+            } else if (ady > 3) {
+              rng.bandGesture = "vertical";
+            } else {
+              return; // direction undecided — wait
+            }
+          }
 
-      if (rng.bandGesture === "pending") {
-        const canDelete = (g.ranges?.length ?? 0) > 1; // no trash when only one range remains
-        if (adx > FLING_SHOW_DX && adx > ady && canDelete) {
-          rng.bandGesture = "fling";
-        } else if (ady > 3) {
-          rng.bandGesture = "vertical";
-        } else {
-          return; // direction undecided — wait
+          if (rng.bandGesture === "fling") {
+            const dir: 1 | -1 = dx > 0 ? 1 : -1;
+            const armed = adx >= FLING_COMMIT_DX;
+            showTrash(dir, armed);
+            // Band follows cursor; dims when armed
+            halo.style.transform = `translateX(${dx}px)`;
+            halo.style.opacity = armed ? "0.25" : rng.haloOpacity;
+            halo.style.background = range.fill ?? range.color;
+            return;
+          }
         }
-      }
 
-      if (rng.bandGesture === "fling") {
-        const dir: 1 | -1 = dx > 0 ? 1 : -1;
-        const armed = adx >= FLING_COMMIT_DX;
-        showTrash(dir, armed);
-        // Band follows cursor; dims when armed
-        halo.style.transform = `translateX(${dx}px)`;
-        halo.style.opacity = armed ? "0.25" : rng.haloOpacity;
-        halo.style.background = range.fill ?? range.color;
-        return;
-      }
-    }
+        // Vertical (along-axis) band drag — unchanged
+        const len = g.length ?? GAUGE_LEN;
+        const rect = root.getBoundingClientRect();
+        const currentAlong = horizontal ? (ev.clientX - rect.left) : (ev.clientY - rect.top);
+        const deltaAlong = currentAlong - rng.bandDownAlong;
+        const deltaVal = horizontal
+          ? deltaAlong / len * (g.max - g.min)
+          : -deltaAlong / len * (g.max - g.min);
+        const width = rng.liveBandTop - rng.liveBandBase;
+        let newBase = rng.liveBandBase + deltaVal;
+        let newTop  = rng.liveBandTop  + deltaVal;
+        const { lo, hi } = gaugeBounds(g);
+        if (newBase < lo) { newBase = lo; newTop = lo + width; }
+        if (newTop  > hi) { newTop  = hi; newBase = hi - width; }
+        newBase = snapStep(newBase, g.step);
+        newTop  = snapStep(newTop,  g.step);
+        rng.live.base = newBase;
+        rng.live.top  = newTop;
+        const bA = gaugeAlong(valueFraction(newBase, g.min, g.max), len, horizontal);
+        const tA = gaugeAlong(valueFraction(newTop,  g.min, g.max), len, horizontal);
+        placeKnob(rng.base, bA, horizontal);
+        placeKnob(rng.top,  tA, horizontal);
+        placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
+        rng.base.dot.setAttribute("aria-valuenow", String(newBase));
+        rng.top.dot.setAttribute("aria-valuenow", String(newTop));
+        card.emitEdit(String(newBase), range.base.name);
+        card.emitEdit(String(newTop),  range.top.name);
+      },
+      (ev) => {
+        const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
+        const g = st.gauge;
+        const gesture = rng.bandGesture;
+        rng.dragging = null;
+        rng.bandGesture = "pending";
 
-    // Vertical (along-axis) band drag — unchanged
-    const len = g.length ?? GAUGE_LEN;
-    const rect = root.getBoundingClientRect();
-    const currentAlong = horizontal ? (e.clientX - rect.left) : (e.clientY - rect.top);
-    const deltaAlong = currentAlong - rng.bandDownAlong;
-    const deltaVal = horizontal
-      ? deltaAlong / len * (g.max - g.min)
-      : -deltaAlong / len * (g.max - g.min);
-    const width = rng.liveBandTop - rng.liveBandBase;
-    let newBase = rng.liveBandBase + deltaVal;
-    let newTop  = rng.liveBandTop  + deltaVal;
-    const { lo, hi } = gaugeBounds(g);
-    if (newBase < lo) { newBase = lo; newTop = lo + width; }
-    if (newTop  > hi) { newTop  = hi; newBase = hi - width; }
-    newBase = snapStep(newBase, g.step);
-    newTop  = snapStep(newTop,  g.step);
-    rng.live.base = newBase;
-    rng.live.top  = newTop;
-    const bA = gaugeAlong(valueFraction(newBase, g.min, g.max), len, horizontal);
-    const tA = gaugeAlong(valueFraction(newTop,  g.min, g.max), len, horizontal);
-    placeKnob(rng.base, bA, horizontal);
-    placeKnob(rng.top,  tA, horizontal);
-    placeBar(rng.halo, Math.min(bA, tA), Math.max(bA, tA), RANGE_BAND_W, horizontal);
-    rng.base.dot.setAttribute("aria-valuenow", String(newBase));
-    rng.top.dot.setAttribute("aria-valuenow", String(newTop));
-    card.emitEdit(String(newBase), range.base.name);
-    card.emitEdit(String(newTop),  range.top.name);
+        if (gesture === "fling") {
+          const dx = ev.clientX - rng.bandDownX;
+          if (Math.abs(dx) >= FLING_COMMIT_DX) {
+            // User dragged onto the trash zone — emit removeRange
+            const range = g.ranges?.[idx];
+            const rangeId = range?.id != null ? `:${range.id}` : "";
+            card.emitAction(`removeRange:${idx}${rangeId}`);
+          }
+          // Always snap the band back regardless of commit
+          halo.style.transform = "";
+          halo.style.opacity = rng.haloOpacity;
+          halo.style.background = g.ranges?.[idx]?.fill ?? g.ranges?.[idx]?.color ?? "";
+        }
+        hideTrash();
+      },
+    );
   });
-
-  const end = (e: globalThis.PointerEvent): void => {
-    const rng = st.rangeStates[idx]; if (!rng || rng.dragging !== "band") return;
-    const g = st.gauge;
-    const gesture = rng.bandGesture;
-    rng.dragging = null;
-    rng.bandGesture = "pending";
-    try { halo.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-
-    if (gesture === "fling") {
-      const dx = e.clientX - rng.bandDownX;
-      if (Math.abs(dx) >= FLING_COMMIT_DX) {
-        // User dragged onto the trash zone — emit removeRange
-        const range = g.ranges?.[idx];
-        const rangeId = range?.id != null ? `:${range.id}` : "";
-        card.emitAction(`removeRange:${idx}${rangeId}`);
-      }
-      // Always snap the band back regardless of commit
-      halo.style.transform = "";
-      halo.style.opacity = rng.haloOpacity;
-      halo.style.background = g.ranges?.[idx]?.fill ?? g.ranges?.[idx]?.color ?? "";
-    }
-    hideTrash();
-  };
-  halo.addEventListener("pointerup", end);
-  halo.addEventListener("pointercancel", end);
 }
 
 const HOVER_ADD_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/></svg>`;
