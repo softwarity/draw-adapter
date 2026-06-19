@@ -2,6 +2,14 @@
 
 ## NEXT RELEASE
 
+- **Fix (sprites):** **`svgToDataUrl` injecte `xmlns` sur le `<svg>` racine s'il manque.** Une image
+  `data:image/svg+xml` est parsée en **XML strict** : sans `xmlns` elle échoue **silencieusement** à
+  charger (⇒ **sprite/marqueur VIDE**), alors que le même markup est toléré injecté inline dans le DOM.
+  Donc tout glyphe inline dont l'auteur a omis le namespace donnait un marqueur vide à la rasterisation
+  (les 3 moteurs). `svgToDataUrl` ajoute désormais `xmlns="http://www.w3.org/2000/svg"` sur le `<svg>`
+  racine quand il est absent (sans doublon s'il est déjà présent) ⇒ n'importe quel glyphe inline
+  rasterise de façon robuste.
+
 ---
 
 ## 0.7.3

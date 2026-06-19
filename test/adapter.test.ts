@@ -33,6 +33,14 @@ describe("sprite utils", () => {
   it("colorizes currentColor", () =>
     expect(colorizeSprite('<path stroke="currentColor"/>', "#123")).toBe('<path stroke="#123"/>'));
   it("encodes a data url", () => expect(svgToDataUrl("<svg/>")).toMatch(/^data:image\/svg\+xml/));
+  it("injects xmlns on a namespaceless <svg> (a data: image is strict XML ⇒ would load empty otherwise)", () => {
+    const decoded = decodeURIComponent(svgToDataUrl("<svg><path/></svg>").split(",")[1]!);
+    expect(decoded).toContain('xmlns="http://www.w3.org/2000/svg"');
+  });
+  it("does not duplicate an xmlns that is already present", () => {
+    const decoded = decodeURIComponent(svgToDataUrl('<svg xmlns="http://www.w3.org/2000/svg"><path/></svg>').split(",")[1]!);
+    expect(decoded.match(/xmlns=/g)).toHaveLength(1);
+  });
 });
 
 describe("FakeAdapter", () => {

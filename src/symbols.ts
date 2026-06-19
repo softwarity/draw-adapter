@@ -21,9 +21,19 @@ export function colorizeSprite(svg: string, color: string): string {
   return svg.split("currentColor").join(color);
 }
 
-/** Encode an SVG string as a `data:image/svg+xml` URL. */
+/** The SVG namespace, required on the root `<svg>` of a `data:` image (see {@link svgToDataUrl}). */
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Encode an SVG string as a `data:image/svg+xml` URL. A `data:` SVG image is parsed as **strict XML**,
+ * so it silently fails to load (⇒ an EMPTY sprite) without an `xmlns` on the root — even though the very
+ * same markup is tolerated when injected inline into the DOM. So inject the SVG namespace on the root
+ * `<svg>` when the glyph author omitted it, making ANY inline glyph rasterize robustly.
+ */
 export function svgToDataUrl(svg: string): string {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg.trim());
+  let s = svg.trim();
+  if (!/<svg[^>]*\sxmlns\s*=/.test(s)) s = s.replace(/<svg\b/, `<svg xmlns="${SVG_NS}"`);
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(s);
 }
 
 /**
