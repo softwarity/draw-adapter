@@ -640,6 +640,34 @@ describe("WidgetLayer — carousel control", () => {
     cel(host).dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }));
     expect(host.emits).toHaveLength(0);
   });
+
+  it("re-renders the trigger when only the LABEL of the selected option changes (value unchanged)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    // tropopause-style: a template label embedding the FL; the value ("high") stays put while the FL
+    // (edited by another control) changes the label.
+    const tropo = (label: string): MarkerWidget => ({
+      id: "t", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "kind", value: "high",
+        options: [{ value: "high", label }, { value: "low", label: "L" }] }] },
+    });
+    layer.setWidgets([tropo("H 380")]);
+    expect(cel(host).textContent).toBe("H 380");
+    layer.setWidgets([tropo("H 450")]); // same value, new label ⇒ must follow (was frozen at "H 380")
+    expect(cel(host).textContent).toBe("H 450");
+  });
+
+  it("does NOT re-paint a glyph option when value/label/svg are all unchanged (no flicker)", () => {
+    const host = new FakeHost();
+    const layer = new WidgetLayer(host);
+    const card = (): MarkerWidget => ({ id: "g", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", value: "a",
+        options: [{ value: "a", svg: "<svg id='A'></svg>" }, { value: "b", svg: "<svg id='B'></svg>" }] }] } });
+    layer.setWidgets([card()]);
+    const svg1 = cel(host).querySelector("svg");
+    layer.setWidgets([card()]); // identical ⇒ no renderOption ⇒ same DOM node (no innerHTML reset)
+    expect(cel(host).querySelector("svg")).toBe(svg1);
+  });
 });
 
 describe("WidgetLayer — picker flower / grid modes", () => {

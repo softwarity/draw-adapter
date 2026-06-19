@@ -2,6 +2,17 @@
 
 ## NEXT RELEASE
 
+- **Fix (widgets):** **Picker : le label du trigger se rafraîchit quand SEUL le label de l'option
+  sélectionnée change (value inchangée).** Un picker dont les labels d'options sont des templates
+  embarquant une valeur éditée ailleurs (ex. le `kind` tropopause `"H\n{fl}"` dont le FL est réglé par
+  la jauge de la même carte) restait figé (« H 380 ») tant que la carte était **sélectionnée** — le
+  trigger n'était re-peint que sur changement de `value`, jamais sur un changement de **label à value
+  constante** (il ne se corrigeait qu'à la désélection, via le sprite regénéré). `updatePicker` re-peint
+  désormais aussi quand le **label/svg** de l'option courante a changé (comparé à l'option *précédente*,
+  avant d'écraser le cache). Le garde anti-clobber de l'animation de cycle (re-peint sur `value`) est
+  conservé, et aucun re-peint inutile quand label & svg sont identiques (pas de flicker sur les pickers à
+  glyphes statiques — CB amount/type, sévérités, points WMO). Widget DOM partagé ⇒ identique sur les 3 moteurs.
+
 ---
 
 ## 0.7.2

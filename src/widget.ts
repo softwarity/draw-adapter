@@ -351,11 +351,21 @@ function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: str
     renderOption(el, opt);
     return;
   }
+  // Re-paint the trigger not only when the VALUE changes, but also when the current option's rendered
+  // label/glyph changed at CONSTANT value — e.g. a template label like the tropopause "H\n{fl}" whose
+  // `{fl}` was edited by another control (the gauge). The `st.value !== value` guard alone (kept so an
+  // in-flight cycle animation is never clobbered) would otherwise leave the trigger stale ("H 380")
+  // until a full re-mount. Compare against the PREVIOUS option, captured before `st.options` is overwritten.
+  const prevOpt = st.options.find((o) => optValue(o) === st.value) ?? st.options[0];
+  const labelChanged = !!opt && !!prevOpt && (
+    optLabel(opt) !== optLabel(prevOpt)
+    || (typeof opt !== "string" && typeof prevOpt !== "string" && opt.svg !== prevOpt.svg)
+  );
   st.options = options;
   st.name = name;
   st.mode = mode;
   st.color = color;
-  if (st.value !== value) {
+  if (st.value !== value || labelChanged) {
     st.value = value;
     renderOption(el, opt);
   }
