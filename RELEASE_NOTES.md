@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.0
+
 - **Add (widgets):** **Mode sprite read-only (`MarkerWidget.static: true`)** — pour une cartouche
   **non sélectionnée**, l'adapter **rasterise** le `child` (l'arbre `WidgetBox`) en bitmap une fois et
   le pose comme **icône native** (MapLibre `addImage` + symbol layer `__dap-widget-sprites`, OpenLayers
