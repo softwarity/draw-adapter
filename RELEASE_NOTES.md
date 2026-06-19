@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.1
+
 - **Fix (Leaflet):** **Contenu d'une card à `boxShape` non-rect (pentagon / polygon custom) masqué par
   son propre cadre.** Le cadre SVG d'un `boxShape` est inséré en **premier enfant** (censé être derrière)
   et le contenu mis en `position:relative` pour passer au-dessus — un empilement **par tree-order** qui
