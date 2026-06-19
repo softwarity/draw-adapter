@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.3
+
 - **Fix (widgets):** **Picker : le label du trigger se rafraîchit quand SEUL le label de l'option
   sélectionnée change (value inchangée).** Un picker dont les labels d'options sont des templates
   embarquant une valeur éditée ailleurs (ex. le `kind` tropopause `"H\n{fl}"` dont le FL est réglé par
