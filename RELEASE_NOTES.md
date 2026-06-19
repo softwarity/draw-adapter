@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.4
+
 - **Fix (sprites):** **`svgToDataUrl` injecte `xmlns` sur le `<svg>` racine s'il manque.** Une image
   `data:image/svg+xml` est parsée en **XML strict** : sans `xmlns` elle échoue **silencieusement** à
   charger (⇒ **sprite/marqueur VIDE**), alors que le même markup est toléré injecté inline dans le DOM.
