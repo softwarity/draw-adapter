@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.2
+
 - **Fix (Leaflet):** **Drag lâché sur un geste rapide (handles, slider-handles, retrait latéral d'un
   break-point).** Le move pendant un drag était suivi par `map.on("mousemove")` — qui ne se déclenche
   que tant que le pointeur est **sur la carte ET non avalé par un marker/cartouche interactif** ; un
