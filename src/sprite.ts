@@ -20,7 +20,7 @@
  */
 import type { LatLng, MarkerWidget, WidgetCoord, WidgetGlyph, WidgetNode, WidgetText } from "./index.js";
 import { boxBorderWidth, boxPadding, boxRadius } from "./textbox.js";
-import { applyBoxFrame } from "./widget.js";
+import { applyBoxFrame, resolveBoxShape, boxShapeLayout, type ShapeLayout } from "./widget.js";
 import { colorizeSprite, svgToDataUrl } from "./symbols.js";
 import { defaultCoordFormat } from "./coerce.js";
 
@@ -106,8 +106,9 @@ function widgetHash(w: MarkerWidget, coordFmt: (ll: LatLng) => string): string {
 
 /** Apply the card-level frame to the sprite root — mirrors `Card.update`'s root styling so a
  *  `static` widget lays out identically to its live DOM card (same bg/border/radius/padding/font).
- *  NOTE: a non-rect `boxShape` (pentagon / custom polygon) is NOT yet replicated here — the sprite
- *  draws the plain rect frame. Rect (the default, and most read-only call-outs) is pixel-faithful. */
+ *  This draws the plain **rect** frame; a non-rect `boxShape` (pentagon / custom polygon) is handled
+ *  in {@link rasterizeWidget} (via {@link shapedLayout} + {@link paintShapeFrame}), which strips this
+ *  rect frame and paints the contour instead — see {@link Card.applyShape} for the live-card twin. */
 function applyCardFrame(s: CSSStyleDeclaration, w: MarkerWidget): void {
   const framed = !!(w.bg || w.border);
   s.position = "relative";
@@ -379,6 +380,42 @@ function paintEl(ctx: CanvasRenderingContext2D, el: HTMLElement, ox: number, oy:
   for (const k of kids) paintEl(ctx, k, ox, oy, glyphs);
 }
 
+// ── non-rect boxShape (pentagon / custom polygon) — mirror the DOM card's `applyShape` on canvas ──
+
+/**
+ * Lay out a non-rect {@link MarkerWidget.boxShape} for the sprite, exactly like the live DOM card's
+ * `applyShape`: strip the CSS frame off `root`, move padding onto the content, measure the content box,
+ * and reuse {@link boxShapeLayout} for the SAME contour. Returns `null` for a plain rect (`root`
+ * untouched) or an unmeasurable content box. The off-screen `root` MUST already be mounted.
+ */
+function shapedLayout(root: HTMLElement, w: MarkerWidget): { content: HTMLElement; cr: DOMRect; lay: ShapeLayout; bw: number } | null {
+  const poly = resolveBoxShape(w.boxShape);
+  const content = root.firstElementChild as HTMLElement | null;
+  if (!poly || !content) return null;
+  // The frame becomes the painted polygon, so the CSS box steps aside and the padding moves onto the
+  // content — identical to `applyShape`, so the measured content box (and thus the contour) matches.
+  const rs = root.style; rs.background = "transparent"; rs.border = ""; rs.borderRadius = "0"; rs.padding = "0";
+  const [pv, ph] = boxPadding(w.padding);
+  content.style.padding = `${pv}px ${ph}px`;
+  const cr = content.getBoundingClientRect();
+  if (!cr.width || !cr.height) return null;
+  const bw = w.border ? boxBorderWidth(w.borderWidth) : 0;
+  return { content, cr, bw, lay: boxShapeLayout(poly, cr.width, cr.height, bw) };
+}
+
+/** Paint a {@link boxShapeLayout} contour onto the sprite canvas (fill = card `bg`, stroke = card
+ *  `border`) — the same polygon the DOM card draws as an SVG, behind the content. */
+function paintShapeFrame(ctx: CanvasRenderingContext2D, lay: ShapeLayout, w: MarkerWidget, bw: number): void {
+  const pts = lay.points.split(" ").map((s) => s.split(",").map(Number));
+  if (pts.length < 3) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0]![0]!, pts[0]![1]!);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]![0]!, pts[i]![1]!);
+  ctx.closePath();
+  if (w.bg) { ctx.fillStyle = w.bg; ctx.fill(); }
+  if (w.border && bw > 0) { ctx.strokeStyle = w.border; ctx.lineWidth = bw; ctx.lineJoin = "round"; ctx.stroke(); }
+}
+
 // ── public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -395,7 +432,10 @@ export function measureWidget(w: MarkerWidget, opts?: SpriteOptions): WidgetSize
   if (!container) return { width: 0, height: 0 };
   const root = buildStaticTree(w, coordFmt);
   mountOffscreen(root, container);
-  const size: WidgetSize = { width: root.offsetWidth, height: root.offsetHeight };
+  const shaped = shapedLayout(root, w); // non-rect boxShape ⇒ size = the contour bbox (incl. overshoot)
+  const size: WidgetSize = shaped
+    ? { width: shaped.lay.svgW, height: shaped.lay.svgH }
+    : { width: root.offsetWidth, height: root.offsetHeight };
   root.remove();
   cache.set(w.id, { hash, size }); // a stale sprite (if any) is dropped — size changed ⇒ re-raster needed
   return size;
@@ -418,24 +458,42 @@ export async function rasterizeWidget(w: MarkerWidget, opts?: SpriteOptions): Pr
   const container = opts?.container ?? document.body;
   const root = buildStaticTree(w, coordFmt);
   mountOffscreen(root, container);
-  const width = root.offsetWidth;
-  const height = root.offsetHeight;
-  if (!width || !height) { root.remove(); return null; }
+  const shaped = shapedLayout(root, w); // non-rect boxShape ⇒ paint a polygon frame instead of the CSS box
   const glyphs = await preloadGlyphs(root);
-  const origin = root.getBoundingClientRect();
 
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width * dpr));
-  canvas.height = Math.max(1, Math.round(height * dpr));
-  const ctx = canvas.getContext("2d");
-  let sprite: SpriteResult | null = null;
-  if (ctx) {
+  /** Make a `cssW × cssH` device-px canvas + a dpr-scaled 2D context (null if 2D is unavailable). */
+  const make = (cssW: number, cssH: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null => {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(cssW * dpr));
+    canvas.height = Math.max(1, Math.round(cssH * dpr));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
     ctx.scale(dpr, dpr);
     (ctx as { textRendering?: string }).textRendering = "optimizeLegibility"; // not in older TS DOM libs
-    paintEl(ctx, root, origin.left, origin.top, glyphs);
-    sprite = { canvas, width, height, dpr };
+    return { canvas, ctx };
+  };
+
+  let sprite: SpriteResult | null = null;
+  if (shaped) {
+    // Non-rect boxShape: the canvas is the contour bbox (INCLUDING the overshoot past the content box).
+    // Paint the polygon frame behind, then the content at the contour's [0,1] content-box origin
+    // (`inset + overshoot`) — pixel-shape-identical to the live DOM card's `applyShape`.
+    const { content, cr, lay, bw } = shaped;
+    const c = make(lay.svgW, lay.svgH);
+    if (c) {
+      paintShapeFrame(c.ctx, lay, w, bw);
+      paintEl(c.ctx, content, cr.left - (lay.inset + lay.over.l), cr.top - (lay.inset + lay.over.t), glyphs);
+      sprite = { canvas: c.canvas, width: lay.svgW, height: lay.svgH, dpr };
+    }
+  } else if (root.offsetWidth && root.offsetHeight) {
+    const origin = root.getBoundingClientRect();
+    const c = make(root.offsetWidth, root.offsetHeight);
+    if (c) {
+      paintEl(c.ctx, root, origin.left, origin.top, glyphs);
+      sprite = { canvas: c.canvas, width: root.offsetWidth, height: root.offsetHeight, dpr };
+    }
   }
   root.remove();
-  if (sprite) cache.set(w.id, { hash, size: { width, height }, sprite });
+  if (sprite) cache.set(w.id, { hash, size: { width: sprite.width, height: sprite.height }, sprite });
   return sprite;
 }

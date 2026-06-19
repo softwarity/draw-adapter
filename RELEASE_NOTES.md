@@ -2,6 +2,16 @@
 
 ## NEXT RELEASE
 
+- **Add (sprites):** **Le rasteriseur de sprite réplique les `boxShape` non-rect** (`pentagon-up`,
+  `pentagon-down`, polygon custom `number[][]`). Jusqu'ici un `static: true` `MarkerWidget` à `boxShape`
+  non-rect **perdait sa pointe** (rabattu sur un rectangle) ; il est désormais **pixel-shape-identique à
+  la card DOM vivante** : `rasterizeWidget` réutilise `resolveBoxShape` + `boxShapeLayout` (les mêmes
+  primitives que `applyShape`), peint le **contour** (fill = `bg`, stroke = `border`) derrière le contenu
+  sur le canvas, et **inclut l'overshoot** (la pointe au-delà de la box) dans le bitmap. `measureWidget`
+  renvoie la **même** bbox (placement / anti-collision cohérent). `rect`/absent inchangé ; surface de hit
+  toujours `text-boxes`. Permet au consommateur de re-spriter les cartouches à pointe (ex. le spot
+  tropopause `high`/`low`).
+
 ---
 
 ## 0.7.1
