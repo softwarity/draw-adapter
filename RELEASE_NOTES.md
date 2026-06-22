@@ -2,6 +2,17 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **Un picker `autofocus` ouvre son menu au MONTAGE** (à chaque création du nœud).
+  Jusqu'ici `autofocus` ne faisait que `input.focus()` (effet sur un `control:"input"`) et était ignoré
+  sur un `control:"picker"`. Désormais un picker `autofocus: true` **ouvre son menu sur un montage
+  frais** — flower → fan-out, grid → popover, carousel → no-op (il cycle au tap) — déféré à un microtask
+  (même sémantique que l'autofocus d'un input), et **uniquement à la création du nœud** (`createNode`),
+  jamais sur un re-render en place (`updateNode`). Pour un marker dont la carte est recréée à chaque
+  (re)sélection (sprite → carte DOM), cela revient à **menu ouvert à chaque sélection** ; mais un drag /
+  l'édition d'un autre champ pendant la sélection ne **ré-ouvre PAS** le menu. Choisir une option ferme
+  + émet `onWidgetEdit` normalement. Sans `autofocus` : inchangé partout. Widget DOM partagé ⇒ identique
+  sur les 3 moteurs.
+
 ---
 
 ## 0.7.4

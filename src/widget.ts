@@ -583,6 +583,17 @@ function tapPicker(el: HTMLElement, card: Card, shift: boolean): void {
   else openGrid(el, card);
 }
 
+/** Open a picker's menu by its resolved layout — used by an `autofocus` picker (opens on mount): a
+ *  flower fans out, a grid pops over; a carousel has no menu (no-op — it only cycles on tap). No-op if
+ *  a popup is already open for it. */
+function openPickerMenu(el: HTMLElement, card: Card): void {
+  const st = pickerState.get(el);
+  const layout = st ? pickerLayout(st.mode, st.options.length) : "carousel";
+  if (layout === "carousel" || popupOpenFor(el)) return;
+  if (layout === "flower") openFlower(el, card);
+  else openGrid(el, card);
+}
+
 /** Wire a picker as **both** a control and a drag handle: a clean **tap** acts on it (cycle, or open
  *  the flower/grid); a **drag** (press + move past ~3 px) forwards the gesture to the card so the
  *  whole card moves — so the control area no longer blocks dragging. */
@@ -1991,6 +2002,12 @@ function createNode(node: WidgetNode, card: Card): HTMLElement {
     });
     // tap ⇒ act (cycle, or open the flower/grid); drag ⇒ move the whole card (it's a drag handle too).
     wirePicker(span, card);
+    // `autofocus` on a picker OPENS its menu on MOUNT (mirrors an input's autofocus below): a flower
+    // fans out, a grid pops over (carousel = no-op). Deferred to a microtask so the reconcile's
+    // `updateNode` → `updatePicker` (which runs right after `createNode`) has populated the options/mode
+    // this reads. Because it lives in `createNode` (not `updateNode`), it fires only on a FRESH mount —
+    // i.e. each time a marker card is (re)built on selection — never on an in-place re-render.
+    if (node.autofocus) queueMicrotask(() => { try { openPickerMenu(span, card); } catch { /* ignore */ } });
     el = span;
   } else if (node.editable) {
     const input = document.createElement("input");

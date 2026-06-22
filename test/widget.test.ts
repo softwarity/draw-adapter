@@ -751,6 +751,46 @@ describe("WidgetLayer — picker flower / grid modes", () => {
     expect(flower()!.querySelectorAll(".dap-picker-petal")).toHaveLength(2);
   });
 
+  const afFlower = (): MarkerWidget => ({ id: "p1", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", mode: "flower", value: "o0", options: opts(8), autofocus: true }] } });
+
+  it("autofocus picker (flower): opens its menu on MOUNT, no tap (deferred to a microtask)", async () => {
+    new WidgetLayer(new FakeHost()).setWidgets([afFlower()]);
+    expect(flower()).toBeNull();     // not yet — the open is queued (mount semantics, like an input's autofocus)
+    await Promise.resolve();
+    expect(flower()).not.toBeNull(); // opened on mount
+  });
+
+  it("autofocus on a carousel picker is a no-op (no menu to open)", async () => {
+    new WidgetLayer(new FakeHost()).setWidgets([{ id: "p1", anchor: { lon: 0, lat: 0 },
+      child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", value: "o0", options: opts(3), autofocus: true }] } }]);
+    await Promise.resolve();
+    expect(flower()).toBeNull();
+    expect(grid()).toBeNull();
+  });
+
+  it("a picker WITHOUT autofocus never opens on mount", async () => {
+    new WidgetLayer(new FakeHost()).setWidgets([picker(8, "flower")]);
+    await Promise.resolve();
+    expect(flower()).toBeNull();
+  });
+
+  it("autofocus re-opens on a FRESH mount (deselect → reselect) but NOT on an in-place re-render", async () => {
+    const layer = new WidgetLayer(new FakeHost());
+    layer.setWidgets([afFlower()]);
+    await Promise.resolve();
+    expect(flower()).not.toBeNull();                                          // mount ⇒ open
+    document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); // press outside ⇒ close
+    expect(flower()).toBeNull();
+    layer.setWidgets([afFlower()]);                                           // in-place re-render (element reused)
+    await Promise.resolve();
+    expect(flower()).toBeNull();                                             // NOT re-opened
+    layer.setWidgets([]);                                                     // card removed (deselect)
+    layer.setWidgets([afFlower()]);                                          // re-added (reselect) ⇒ fresh mount
+    await Promise.resolve();
+    expect(flower()).not.toBeNull();                                         // re-opened on the fresh mount
+  });
+
   it("forced mode:grid is a grid even for few options", () => {
     const host = new FakeHost();
     new WidgetLayer(host).setWidgets([picker(3, "grid")]);
