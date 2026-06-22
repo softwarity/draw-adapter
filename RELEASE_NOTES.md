@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 0.7.5
+
 - **Add (widgets):** **Un picker `autofocus` ouvre son menu au MONTAGE** (à chaque création du nœud).
   Jusqu'ici `autofocus` ne faisait que `input.focus()` (effet sur un `control:"input"`) et était ignoré
   sur un `control:"picker"`. Désormais un picker `autofocus: true` **ouvre son menu sur un montage
