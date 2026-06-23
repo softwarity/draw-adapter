@@ -2,6 +2,12 @@
 
 ## NEXT RELEASE
 
+- **Add (widgets):** **`menuColor` sur un nœud picker.** Le **menu** (pétales du flower / cellules de la
+  grid) prend `menuColor ?? color`, tandis que le **trigger** garde `color` — pour accentuer le menu
+  ouvert d'une teinte différente du déclencheur. Sans effet sur un carousel (pas de menu). **Backward-compat
+  strict** : un picker sans `menuColor` est inchangé (le menu hérite de `color` comme avant). Exposé sur
+  le type `WidgetText`. Widget DOM partagé ⇒ identique sur les 3 moteurs.
+
 ---
 
 ## 0.7.5

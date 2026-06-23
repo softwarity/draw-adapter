@@ -791,6 +791,34 @@ describe("WidgetLayer — picker flower / grid modes", () => {
     expect(flower()).not.toBeNull();                                         // re-opened on the fresh mount
   });
 
+  const pickerColored = (mode: Mode, color?: string, menuColor?: string): MarkerWidget => ({
+    id: "p1", anchor: { lon: 0, lat: 0 },
+    child: { dir: "h", items: [{ kind: "text", control: "picker", name: "sym", mode,
+      value: "o0", options: opts(mode === "grid" ? 12 : 8), ...(color ? { color } : {}), ...(menuColor ? { menuColor } : {}) }] },
+  });
+
+  it("menuColor accents the MENU (flower) while the trigger keeps color", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([pickerColored("flower", "blue", "red")]);
+    expect(cel(host).style.color).toBe("blue"); // trigger keeps `color`
+    tap(cel(host));
+    expect(flower()!.style.color).toBe("red");  // menu uses `menuColor`
+  });
+
+  it("menuColor accents the grid menu too", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([pickerColored("grid", "blue", "red")]);
+    tap(cel(host));
+    expect(grid()!.style.color).toBe("red");
+  });
+
+  it("without menuColor the menu falls back to color (backward-compat, unchanged)", () => {
+    const host = new FakeHost();
+    new WidgetLayer(host).setWidgets([pickerColored("flower", "blue")]); // no menuColor
+    tap(cel(host));
+    expect(flower()!.style.color).toBe("blue"); // menu = color, as before
+  });
+
   it("forced mode:grid is a grid even for few options", () => {
     const host = new FakeHost();
     new WidgetLayer(host).setWidgets([picker(3, "grid")]);

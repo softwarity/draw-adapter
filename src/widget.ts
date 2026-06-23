@@ -278,7 +278,7 @@ const LINEAR_MAX = 5;   // ≤ this many options ⇒ a linear carousel
 const FLOWER_MAX = 10;  // ≤ this many options ⇒ a radial flower; beyond ⇒ a grid
 const PICKER_GLYPH_PX = 22; // default trigger glyph box (px) when `size` is unset — never the svg's intrinsic size
 
-const pickerState = new WeakMap<HTMLElement, { options: WidgetPickerOption[]; value: string; name: string | undefined; mode: PickerMode; color: string | undefined }>();
+const pickerState = new WeakMap<HTMLElement, { options: WidgetPickerOption[]; value: string; name: string | undefined; mode: PickerMode; color: string | undefined; menuColor: string | undefined }>();
 
 function optValue(o: WidgetPickerOption): string {
   return typeof o === "string" ? o : o.value;
@@ -326,7 +326,7 @@ function animateCarousel(el: HTMLElement, dir: number): void {
 
 /** Sync a picker element to the model — re-paints the value only when it changed, so it never
  *  clobbers an in-flight cycle animation. `color` is the accent the flower/grid inherit too. */
-function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined, size: number | undefined): void {
+function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: string, name: string | undefined, mode: PickerMode, color: string | undefined, menuColor: string | undefined, size: number | undefined): void {
   const opt = options.find((o) => optValue(o) === value) ?? options[0];
   el.title = opt ? optTitle(opt) : ""; // the trigger's tooltip follows the current value
   // a11y: announce the control + its current value, and whether it opens a menu (flower/grid).
@@ -347,7 +347,7 @@ function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: str
   }
   const st = pickerState.get(el);
   if (!st) {
-    pickerState.set(el, { options, value, name, mode, color });
+    pickerState.set(el, { options, value, name, mode, color, menuColor });
     renderOption(el, opt);
     return;
   }
@@ -365,6 +365,7 @@ function updatePicker(el: HTMLElement, options: WidgetPickerOption[], value: str
   st.name = name;
   st.mode = mode;
   st.color = color;
+  st.menuColor = menuColor;
   if (st.value !== value || labelChanged) {
     st.value = value;
     renderOption(el, opt);
@@ -500,7 +501,8 @@ function openFlower(trigger: HTMLElement, card: Card): void {
   ensurePickerStyle();
   const flower = document.createElement("div");
   flower.className = "dap-picker-flower";
-  if (st.color) flower.style.color = st.color; // accent the petals (bold + this ink), inherited below
+  const flowerInk = st.menuColor ?? st.color; // the MENU accent: `menuColor` overrides, else the trigger `color`
+  if (flowerInk) flower.style.color = flowerInk; // accent the petals (bold + this ink), inherited below
   const n = st.options.length;
   // Radius: large enough that N petals (≈34px pitch) don't overlap, with a sensible floor.
   const radius = Math.max(40, Math.round((n * 34) / (2 * Math.PI)));
@@ -537,7 +539,8 @@ function openGrid(trigger: HTMLElement, card: Card): void {
   ensurePickerStyle();
   const grid = document.createElement("div");
   grid.className = "dap-picker-grid";
-  if (st.color) grid.style.color = st.color; // accent the cells (bold + this ink), inherited below
+  const gridInk = st.menuColor ?? st.color; // the MENU accent: `menuColor` overrides, else the trigger `color`
+  if (gridInk) grid.style.color = gridInk; // accent the cells (bold + this ink), inherited below
   const cols = Math.min(6, Math.ceil(Math.sqrt(st.options.length)));
   grid.style.gridTemplateColumns = `repeat(${cols}, 30px)`;
   const items: { el: HTMLElement; value: string }[] = [];
@@ -2082,7 +2085,7 @@ function updateNode(el: HTMLElement, node: WidgetNode, card: Card): void {
   if (node.kind === "dial") { updateDial(el, node, card); return; }
   // text
   if (node.control === "picker") {
-    updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color, node.size);
+    updatePicker(el, node.options ?? [], node.value, node.name, node.mode ?? "carousel", node.color, node.menuColor, node.size);
     el.style.color = node.color ?? "";
     return;
   }

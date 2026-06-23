@@ -198,8 +198,13 @@ export interface WidgetText {
   /** Force UPPERCASE: an editable input **enters and emits** its value in upper case
    *  (caret preserved); a static label is displayed upper case. */
   uppercase?: boolean;
-  /** Text colour; else inherits the nearest ancestor box / `font`. */
+  /** Text colour; else inherits the nearest ancestor box / `font`. (For a `"picker"`, this is the
+   *  TRIGGER colour.) */
   color?: string;
+  /** For a `"picker"` control only: the accent colour of its **menu** (flower petals / grid cells).
+   *  Defaults to `color` — set it to give the open menu a different accent than the trigger. No effect
+   *  on a carousel (no menu) or on non-picker text. */
+  menuColor?: string;
   /** Font size px; else inherits. */
   size?: number;
 }
