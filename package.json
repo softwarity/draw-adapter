@@ -1,6 +1,6 @@
 {
   "name": "@softwarity/draw-adapter",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Headless map adapter (grafts on MapLibre / OpenLayers / Leaflet, Terra-Draw-style) for the @softwarity drawing libs. Generic, data-driven, zero domain types.",
   "keywords": [
     "map",
