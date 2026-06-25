@@ -40,7 +40,8 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit, defaultCoordFormat } from "./index.js";
-import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
+import { complementRings, densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
+import { OutsideMask, maskRect } from "./mask.js";
 import { WidgetLayer } from "./widget.js";
 import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { num, str, rgba } from "./coerce.js";
@@ -173,6 +174,10 @@ export class LeafletAdapter implements MapAdapter {
    *  consumer commits+selects on `up`) is immediately undone by the trailing empty-hit click. */
   private moved = false;
   private viewHandler: (() => void) | undefined;
+  // viewArea "sticky" framing: the last request, re-applied (instantly) whenever the container resizes.
+  private lastFit: { extent: LngLatBounds; opts?: { padding?: number; duration?: number } } | undefined;
+  private resizeObs: ResizeObserver | undefined;
+  private resizeTimer: ReturnType<typeof setTimeout> | undefined;
   private widgets: WidgetLayer | undefined;
   /** Coord formatter, mirrored from {@link setCoordFormat} so sprites format `coord` leaves like cards. */
   private coordFmt: (ll: LatLng) => string = defaultCoordFormat;
@@ -185,6 +190,17 @@ export class LeafletAdapter implements MapAdapter {
   /** The non-interactive {@link highlightArea} frame + whether its dedicated pane exists. */
   private highlightPoly: L.Polygon | undefined;
   private highlightPaneReady = false;
+  /** highlightArea "outside" effects: `dimOutside` is a set of native rectangles on a top pane (follows
+   *  the map); `blurOutside` is a DOM overlay re-synced on `move`, hidden during a zoom anim.
+   *  The complement rectangles are drawn as SEPARATE polygons — NOT one multi-polygon — because
+   *  Leaflet renders a multi-polygon as a single `fill-rule: evenodd` path, where the rectangles
+   *  cancel each other out (the area ended up dimmed instead of its surroundings). */
+  private dimPolys: L.Polygon[] = [];
+  private dimPaneReady = false;
+  private outsideMask: OutsideMask | undefined;
+  private maskHandlers: { move: () => void; zoomstart: () => void; zoomend: () => void } | undefined;
+  private maskExtent: LngLatBounds | null = null;
+  private maskStyle: HighlightStyle | undefined;
 
   constructor(opts: { map: L.Map } & AdapterOptions) {
     this.map = opts.map;
@@ -282,7 +298,7 @@ export class LeafletAdapter implements MapAdapter {
       reason: LEAFLET_SNAPSHOT_UNSUPPORTED,
       snapshot: () => this.snapshot(),
     });
-    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.map.invalidateSize());
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.reframe());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
@@ -335,19 +351,62 @@ export class LeafletAdapter implements MapAdapter {
     warnOnce("draw-adapter (Leaflet): only Web Mercator is supported; the projection request was ignored. Use the OpenLayers adapter to reproject.");
   }
 
-  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+  viewArea(extent: LngLatBounds | null, opts?: { padding?: number; duration?: number }): void {
+    if (!extent) { this.lastFit = undefined; this.detachResizeObserver(); return; } // release sticky framing
+    this.lastFit = opts ? { extent, opts } : { extent };
+    this.attachResizeObserver();
+    this.applyFit(extent, opts);
+  }
+
+  /** The actual camera fit (dateline-aware); split out so {@link reframe} can re-run it on resize. */
+  private applyFit(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
     const [w, s, e0, n] = extent;
     const e = unwrapEast(w, e0); // antimeridian-crossing bbox ⇒ one continuous span
     const p = opts?.padding ?? 0;
-    this.map.fitBounds([[s, w], [n, e]], {
-      padding: [p, p],
-      ...(opts?.duration != null ? { duration: opts.duration } : {}),
+    // Leaflet snaps the fit zoom to whole steps (`zoomSnap`, default 1), so it never frames the extent
+    // as tightly as MapLibre/OpenLayers (fractional zoom) — the area "fits a bit more" loosely. Drop
+    // the snap for the duration of THIS fit only (then restore it, so wheel zoom keeps its steps).
+    const snap = this.map.options.zoomSnap;
+    this.map.options.zoomSnap = 0;
+    try {
+      this.map.fitBounds([[s, w], [n, e]], {
+        padding: [p, p],
+        ...(opts?.duration != null ? { duration: opts.duration } : {}),
+      });
+    } finally {
+      this.map.options.zoomSnap = snap;
+    }
+  }
+
+  /** Recompute the map size against its container, then (if a {@link viewArea} is sticky) re-fit it
+   *  instantly so the area stays framed to its extent + padding rather than just stretching. Without a
+   *  sticky framing this is just `invalidateSize()` — the previous fullscreen behaviour. */
+  private reframe(): void {
+    this.map.invalidateSize();
+    if (this.lastFit) this.applyFit(this.lastFit.extent, { ...this.lastFit.opts, duration: 0 });
+  }
+
+  /** Observe the container so window / panel / fullscreen resizes re-frame a sticky area (debounced).
+   *  Attached only while a framing is sticky (so without `viewArea` nothing new happens on resize). */
+  private attachResizeObserver(): void {
+    if (this.resizeObs || typeof ResizeObserver === "undefined") return;
+    this.resizeObs = new ResizeObserver(() => {
+      if (this.resizeTimer) clearTimeout(this.resizeTimer);
+      this.resizeTimer = setTimeout(() => this.reframe(), 100); // coalesce a drag-resize burst
     });
+    this.resizeObs.observe(this.map.getContainer());
+  }
+
+  private detachResizeObserver(): void {
+    if (this.resizeTimer) { clearTimeout(this.resizeTimer); this.resizeTimer = undefined; }
+    this.resizeObs?.disconnect();
+    this.resizeObs = undefined;
   }
 
   highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
     if (!extent) {
       if (this.highlightPoly) { this.highlightPoly.remove(); this.highlightPoly = undefined; }
+      this.applyOutsideEffects(null);
       return;
     }
     const ring = densifyBboxRing(extent, 64).map(([lon, lat]) => [lat, lon] as [number, number]);
@@ -365,6 +424,81 @@ export class LeafletAdapter implements MapAdapter {
     } else {
       this.highlightPoly = L.polygon(ring, opts).addTo(this.map);
     }
+    this.applyOutsideEffects(extent, style);
+  }
+
+  /**
+   * Apply the "outside the area" effects of {@link HighlightStyle}: the native `dimOutside` (a
+   * multi-polygon of rectangles on a top pane, so it follows the map and dims overlays too) and the DOM
+   * `blurOutside` ({@link OutsideMask}), re-synced on `move` and hidden during the zoom animation
+   * (`latLngToContainerPoint` lags the CSS zoom transform). `null` tears both down; absent ⇒ no-op.
+   */
+  private applyOutsideEffects(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    this.maskExtent = extent;
+    this.maskStyle = style;
+    // DIM — native complement: plain rectangles tiling everything but the area, reprojected with the
+    // map. Drawn as SEPARATE polygons (see the field doc) so Leaflet fills each one independently.
+    const dim = extent ? style?.dimOutside : undefined;
+    for (const p of this.dimPolys) p.remove();
+    this.dimPolys = [];
+    if (dim) {
+      const opts: L.PolylineOptions = { pane: this.ensureDimPane(), interactive: false, stroke: false, fill: true, fillColor: dim, fillOpacity: 1 };
+      for (const r of complementRings(extent!)) {
+        const ring = r.map(([lon, lat]) => [lat, lon] as [number, number]);
+        this.dimPolys.push(L.polygon(ring, opts).addTo(this.map));
+      }
+    }
+    // BLUR — DOM overlay; NOT a map layer, so re-place on `move`, and hide while a zoom anim is running.
+    const blur = extent ? style?.blurOutside : undefined;
+    if (blur && blur > 0) {
+      // z 650: above the tile (200) / overlay (400) / marker (600) panes so the map blurs around the
+      // area, but below popups (700) and controls (1000+) so they stay crisp. (The highlight cartouche
+      // sits in the area = inside the clip hole ⇒ never blurred regardless.)
+      this.outsideMask ??= new OutsideMask(this.getContainer(), "650");
+      this.syncOutsideBlur();
+      if (!this.maskHandlers) {
+        const move = () => this.syncOutsideBlur();
+        const zoomstart = () => this.outsideMask?.hide();
+        const zoomend = () => this.syncOutsideBlur();
+        this.maskHandlers = { move, zoomstart, zoomend };
+        this.map.on("move", move);
+        this.map.on("zoomstart", zoomstart);
+        this.map.on("zoomend", zoomend);
+      }
+    } else {
+      this.outsideMask?.hide();
+      this.detachMaskHandlers();
+    }
+  }
+
+  /** Re-place the {@link OutsideMask} clip from the current view (the `move`/`zoomend` cb for `blurOutside`). */
+  private syncOutsideBlur(): void {
+    const ext = this.maskExtent;
+    const blur = ext ? this.maskStyle?.blurOutside : undefined;
+    if (!ext || !blur || blur <= 0) return;
+    const r = maskRect(ext, (p) => this.project(p));
+    if (r) this.outsideMask?.show(r, blur);
+  }
+
+  private detachMaskHandlers(): void {
+    if (!this.maskHandlers) return;
+    this.map.off("move", this.maskHandlers.move);
+    this.map.off("zoomstart", this.maskHandlers.zoomstart);
+    this.map.off("zoomend", this.maskHandlers.zoomend);
+    this.maskHandlers = undefined;
+  }
+
+  /** A dedicated pane for the `dimOutside` fill, ABOVE the overlay panes (zIndex 400) so the dim covers
+   *  them too, but below markers (600); pointer-events off so it never intercepts clicks. */
+  private ensureDimPane(): string {
+    const name = "dap-highlight-dim";
+    if (!this.dimPaneReady) {
+      const pane = this.map.createPane(name);
+      pane.style.zIndex = "450";
+      pane.style.pointerEvents = "none";
+      this.dimPaneReady = true;
+    }
+    return name;
   }
 
   /** A dedicated pane for the frame, ABOVE the tiles and BELOW the drawing overlay panes
@@ -675,6 +809,15 @@ export class LeafletAdapter implements MapAdapter {
     if (this.highlightPoly) { this.highlightPoly.remove(); this.highlightPoly = undefined; }
     this.map.getPane("dap-highlight")?.remove();
     this.highlightPaneReady = false;
+    this.detachResizeObserver();
+    this.lastFit = undefined;
+    this.detachMaskHandlers();
+    this.outsideMask?.hide();
+    this.outsideMask = undefined;
+    for (const p of this.dimPolys) p.remove();
+    this.dimPolys = [];
+    this.map.getPane("dap-highlight-dim")?.remove();
+    this.dimPaneReady = false;
     for (const name of this.paneNames) this.map.getPane(name)?.remove();
     this.paneNames.length = 0;
     if (this.domDown) this.map.getContainer().removeEventListener("mousedown", this.domDown as EventListener, true);

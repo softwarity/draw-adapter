@@ -2,6 +2,37 @@
 
 ## NEXT RELEASE
 
+- **Add (viewArea):** **Cadrage « sticky » — la zone reste cadrée après un resize / plein écran.**
+  `viewArea(extent, opts)` mémorise désormais sa requête et la **ré-applique instantanément à chaque
+  redimensionnement du conteneur** (toggle plein écran, fenêtre, panneau latéral) via un `ResizeObserver`
+  debouncé + le handler plein écran. Avant, passer en plein écran gardait center+zoom ⇒ la zone
+  « remplissait » l'écran au nouveau ratio au lieu de rester cadrée à son extent + marge. Chaque appel
+  remplace le cadrage mémorisé ; **`viewArea(null)` le relâche** (la caméra n'est plus re-cadrée). Sans
+  `viewArea` préalable, les resize sont **inchangés** (l'observer n'est attaché que si un cadrage est
+  posé). Dateline-aware, identique sur les 3 moteurs. `viewArea` accepte maintenant `null` (élargissement
+  de signature, backward-compat). **Leaflet cadre désormais aussi serré que MapLibre/OpenLayers** : le
+  fit relâche temporairement `zoomSnap` (zoom fractionnaire le temps du cadrage, restauré ensuite — la
+  molette garde ses paliers), au lieu de snapper à un zoom entier qui laissait une marge plus lâche.
+
+- **Add (highlightArea):** **Estomper / flouter TOUT CE QUI EST AUTOUR d'une zone**, pour faire ressortir
+  le cartouche — l'intérieur reste intact. Deux options sur `HighlightStyle`, combinables :
+  - **`dimOutside?: string`** — assombrit l'extérieur avec cette couleur (mettre un alpha, ex.
+    `"rgba(0,0,0,.25)"`). **NATIF** : dessiné comme un *fill géo* sur une vraie couche carte ⇒ il **suit
+    pan/zoom tout seul**, comme le cadre. **Léger et robuste** (pas de DOM, pas de travail par frame ;
+    dateline-aware). **À préférer.** Le complément est tuilé en **rectangles simples, chacun dans un
+    seul monde** (`[-180,180]`, découpés à l'antiméridien) — pas de polygone-à-trou (donc pas de piège
+    de *fill-rule*/winding) ni de polygone qui croise l'antiméridien (qui faisait tout assombrir sur
+    MapLibre). Sur Leaflet, ces rectangles sont dessinés en **polygones séparés** (pas un multi-polygone
+    en un seul path `evenodd`, où ils s'annulaient et assombrissaient la zone au lieu de ses alentours).
+    Identique sur les 3 moteurs.
+  - **`blurOutside?: number`** — floute l'extérieur de ce rayon (px) ; l'intérieur reste net. Nécessite
+    un **overlay DOM** (`backdrop-filter`) clippé au rectangle écran de la zone (un fill carte ne sait
+    pas flouter). **Plus lourd que `dimOutside`** : ce n'est PAS une couche carte, donc son clip est
+    **re-projeté à chaque changement de vue** (par frame au pan ; sur Leaflet il est masqué pendant
+    l'animation de zoom puis replacé). Requiert le support `backdrop-filter` (navigateurs récents).
+  - `highlightArea(null)` retire les deux ; options absentes ⇒ comportement actuel **inchangé**.
+    Identique sur les 3 moteurs (MapLibre / OpenLayers / Leaflet), dateline-aware via `complementRing`.
+
 ---
 
 ## 0.7.6

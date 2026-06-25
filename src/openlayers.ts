@@ -54,7 +54,8 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit, defaultCoordFormat } from "./index.js";
-import { densifyBboxRing, warnOnce } from "./geo.js";
+import { complementRings, densifyBboxRing, warnOnce } from "./geo.js";
+import { OutsideMask, maskRect } from "./mask.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { num, str, rgba, deg2rad, wrapLabel } from "./coerce.js";
@@ -195,8 +196,16 @@ export class OpenLayersAdapter implements MapAdapter {
   private highlightLayer: VectorLayer | undefined;
   private highlightExtent: LngLatBounds | null = null;
   private highlightStyleOpts: HighlightStyle | undefined;
-  /** Last {@link viewArea} request, re-applied once an async projection swap settles. */
+  /** highlightArea "outside" effects: `dimOutside` is a native top vector layer (the complement fill,
+   *  follows the map); `blurOutside` is a DOM overlay re-synced on every `postrender`. */
+  private dimLayer: VectorLayer | undefined;
+  private outsideMask: OutsideMask | undefined;
+  private maskRenderKey: EventsKey | undefined;
+  /** Last {@link viewArea} request, re-applied once an async projection swap settles AND on resize. */
   private lastFit: { extent: LngLatBounds; opts?: { padding?: number; duration?: number } } | undefined;
+  /** Re-frame the sticky {@link lastFit} when the container resizes (window / panel / fullscreen). */
+  private resizeObs: ResizeObserver | undefined;
+  private resizeTimer: ReturnType<typeof setTimeout> | undefined;
   /** True while a `{kind:"proj4"}` view swap is loading proj4 (defers `viewArea` until it lands). */
   private projPending = false;
 
@@ -269,7 +278,7 @@ export class OpenLayersAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getViewport()),
     });
-    const full = fullscreenToolbarItem(options?.fullscreen, () => this.getContainer(), () => this.map.updateSize());
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.getContainer(), () => this.reframe());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getViewport()));
@@ -432,13 +441,43 @@ export class OpenLayersAdapter implements MapAdapter {
     const zoom = view.getZoom() ?? 2;
     this.map.setView(new View({ projection, center: fromLonLat([ll[0]!, ll[1]!], projection), zoom }));
     for (const [id, data] of this.lastData) this.loadInto(id, data);
-    if (this.highlightExtent) this.drawHighlight(this.highlightExtent, this.highlightStyleOpts);
+    if (this.highlightExtent) {
+      this.drawHighlight(this.highlightExtent, this.highlightStyleOpts);
+      this.applyOutsideEffects(this.highlightExtent, this.highlightStyleOpts); // re-read dim into the new projection
+    }
   }
 
-  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+  viewArea(extent: LngLatBounds | null, opts?: { padding?: number; duration?: number }): void {
+    if (!extent) { this.lastFit = undefined; this.detachResizeObserver(); return; } // release sticky framing
     this.lastFit = opts ? { extent, opts } : { extent };
+    this.attachResizeObserver();
     if (this.projPending) return; // view is mid-swap; applyFit runs when setProjection settles
     this.applyFit(extent, opts);
+  }
+
+  /** Resize the map to its container, then (if a {@link viewArea} is sticky) re-fit it instantly so the
+   *  area stays framed to its extent + padding rather than just stretching. Without a sticky framing
+   *  this is just `updateSize()` — the previous fullscreen behaviour. */
+  private reframe(): void {
+    this.map.updateSize();
+    if (this.lastFit && !this.projPending) this.applyFit(this.lastFit.extent, { ...this.lastFit.opts, duration: 0 });
+  }
+
+  /** Observe the container so window / panel / fullscreen resizes re-frame a sticky area (debounced).
+   *  Attached only while a framing is sticky (so without `viewArea` nothing new happens on resize). */
+  private attachResizeObserver(): void {
+    if (this.resizeObs || typeof ResizeObserver === "undefined") return;
+    this.resizeObs = new ResizeObserver(() => {
+      if (this.resizeTimer) clearTimeout(this.resizeTimer);
+      this.resizeTimer = setTimeout(() => this.reframe(), 100); // coalesce a drag-resize burst
+    });
+    this.resizeObs.observe(this.getContainer());
+  }
+
+  private detachResizeObserver(): void {
+    if (this.resizeTimer) { clearTimeout(this.resizeTimer); this.resizeTimer = undefined; }
+    this.resizeObs?.disconnect();
+    this.resizeObs = undefined;
   }
 
   /** Project the (densified, dateline-aware) area ring into the view projection and fit its bounding
@@ -467,8 +506,64 @@ export class OpenLayersAdapter implements MapAdapter {
   highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
     this.highlightExtent = extent;
     this.highlightStyleOpts = style;
-    if (!extent) { this.highlightLayer?.getSource()?.clear(); return; }
+    if (!extent) { this.highlightLayer?.getSource()?.clear(); this.applyOutsideEffects(null); return; }
     this.drawHighlight(extent, style);
+    this.applyOutsideEffects(extent, style);
+  }
+
+  /**
+   * Apply the "outside the area" effects of {@link HighlightStyle}: the native `dimOutside` (a top
+   * vector layer holding the complement fill, so it follows the map) and the DOM `blurOutside`
+   * ({@link OutsideMask}, re-synced on `postrender`). `null` tears both down; absent options ⇒ no-op.
+   */
+  private applyOutsideEffects(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    // DIM — native complement fill on a top layer (so it dims overlays too); reprojected with the view.
+    const dim = extent ? style?.dimOutside : undefined;
+    if (dim) {
+      const layer = this.ensureDimLayer();
+      const source = layer.getSource();
+      if (source) {
+        source.clear();
+        const feature = this.format.readFeature(
+          { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: complementRings(extent!).map((r) => [r]) } },
+          { dataProjection: "EPSG:4326", featureProjection: this.viewProj() },
+        );
+        source.addFeature(feature as never);
+        layer.setStyle(new Style({ fill: new Fill({ color: dim }) }));
+      }
+    } else {
+      this.dimLayer?.getSource()?.clear();
+    }
+    // BLUR — DOM overlay; NOT a layer, so re-place its clip on every rendered frame.
+    const blur = extent ? style?.blurOutside : undefined;
+    if (blur && blur > 0) {
+      // Viewport (holds the canvas): above the map imagery. NB the OL control/overlay containers may
+      // also blur if they fall outside the area — acceptable for the heavy DOM path (verify visually).
+      this.outsideMask ??= new OutsideMask(this.map.getViewport(), "2");
+      this.syncOutsideBlur();
+      if (!this.maskRenderKey) this.maskRenderKey = this.map.on("postrender", () => this.syncOutsideBlur()) as EventsKey;
+    } else {
+      this.outsideMask?.hide();
+      if (this.maskRenderKey) { unByKey(this.maskRenderKey); this.maskRenderKey = undefined; }
+    }
+  }
+
+  /** Re-place the {@link OutsideMask} clip from the current view (the `postrender` cb for `blurOutside`). */
+  private syncOutsideBlur(): void {
+    const ext = this.highlightExtent;
+    const blur = ext ? this.highlightStyleOpts?.blurOutside : undefined;
+    if (!ext || !blur || blur <= 0) return;
+    const r = maskRect(ext, (p) => this.project(p));
+    if (r) this.outsideMask?.show(r, blur);
+  }
+
+  /** The `dimOutside` complement layer, pushed to the TOP of the stack so the dim covers overlays too. */
+  private ensureDimLayer(): VectorLayer {
+    if (this.dimLayer) return this.dimLayer;
+    const layer = new VectorLayer({ source: new VectorSource() });
+    this.map.getLayers().push(layer);
+    this.dimLayer = layer;
+    return layer;
   }
 
   /** (Re)draw the frame polygon (densified, reprojected to the view) into the highlight layer. */
@@ -795,9 +890,14 @@ export class OpenLayersAdapter implements MapAdapter {
     for (const id of this.spriteIds) clearSpriteCache(id);
     this.spriteIds.clear();
     if (this.highlightLayer) { this.map.removeLayer(this.highlightLayer); this.highlightLayer = undefined; }
+    if (this.maskRenderKey) { unByKey(this.maskRenderKey); this.maskRenderKey = undefined; }
+    this.outsideMask?.hide();
+    this.outsideMask = undefined;
+    if (this.dimLayer) { this.map.removeLayer(this.dimLayer); this.dimLayer = undefined; }
     this.highlightExtent = null;
     this.highlightStyleOpts = undefined;
     this.lastData.clear();
+    this.detachResizeObserver();
     this.lastFit = undefined;
     this.projPending = false;
     unByKey(this.olKeys);

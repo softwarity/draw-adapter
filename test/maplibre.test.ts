@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MapLibreAdapter } from "../src/maplibre.js";
 import type { LayerSpec, MarkerWidget, PointerEvent } from "../src/index.js";
@@ -65,7 +65,9 @@ class FakeMlMap {
   getCenter() { return { lat: 10, lng: 20 }; }
   getBounds() { return { getEast: () => 30, getWest: () => 10, getNorth: () => 40, getSouth: () => 20 }; }
   triggerRepaint = vi.fn();
+  resize = vi.fn();
   getCanvas() { return this.canvas; }
+  getCanvasContainer() { return this.container; }
   getContainer() { return this.container; }
 }
 
@@ -366,6 +368,62 @@ describe("MapLibreAdapter — setProjection / viewArea / highlightArea", () => {
     adapter.highlightArea(null);
     expect(map.sources.has("__dap-highlight")).toBe(false);
     expect(map.getLayer("__dap-highlight-line")).toBeFalsy();
+  });
+});
+
+describe("MapLibreAdapter — viewArea sticky reframe on resize", () => {
+  // Capture the ResizeObserver callback + observe/disconnect so we can drive a resize deterministically.
+  let observers: { cb: () => void; active: boolean }[];
+  let observedCount: number;
+  beforeEach(() => {
+    observers = [];
+    observedCount = 0;
+    vi.stubGlobal("ResizeObserver", class {
+      private i: number;
+      constructor(cb: () => void) { this.i = observers.push({ cb, active: true }) - 1; }
+      observe() { observedCount++; }
+      disconnect() { if (observers[this.i]) observers[this.i]!.active = false; }
+      unobserve() {}
+    });
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+  const fireResize = (): void => { for (const o of observers) if (o.active) o.cb(); };
+
+  it("re-fits the remembered area (instantly) when the container resizes", () => {
+    const { map, adapter } = build();
+    adapter.viewArea([10, 0, 40, 50], { padding: 20 });
+    expect(map.fitBounds).toHaveBeenCalledOnce();
+    expect(observedCount).toBe(1); // observer attached once a framing is sticky
+
+    fireResize();
+    vi.advanceTimersByTime(100); // debounce
+    expect(map.resize).toHaveBeenCalledOnce();
+    expect(map.fitBounds).toHaveBeenCalledTimes(2);
+    expect(map.fitBounds.mock.calls[1]![1]).toMatchObject({ duration: 0 }); // instant on resize
+  });
+
+  it("coalesces a burst of resizes into a single reframe (debounce)", () => {
+    const { map, adapter } = build();
+    adapter.viewArea([10, 0, 40, 50]);
+    fireResize(); fireResize(); fireResize();
+    vi.advanceTimersByTime(100);
+    expect(map.fitBounds).toHaveBeenCalledTimes(2); // 1 initial + 1 coalesced
+  });
+
+  it("viewArea(null) releases the framing — later resizes do nothing", () => {
+    const { map, adapter } = build();
+    adapter.viewArea([10, 0, 40, 50]);
+    adapter.viewArea(null);
+    fireResize();
+    vi.advanceTimersByTime(100);
+    expect(map.resize).not.toHaveBeenCalled(); // observer disconnected
+    expect(map.fitBounds).toHaveBeenCalledOnce(); // only the initial fit
+  });
+
+  it("without viewArea, no observer is attached (resize behaviour unchanged)", () => {
+    build();
+    expect(observedCount).toBe(0);
   });
 });
 

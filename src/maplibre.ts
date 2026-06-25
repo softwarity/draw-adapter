@@ -45,7 +45,8 @@ import type {
   WidgetEdit,
 } from "./index.js";
 import { cursorForHit, defaultCoordFormat, EMPTY_FC } from "./index.js";
-import { densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
+import { complementRings, densifyBboxRing, unwrapEast, warnOnce } from "./geo.js";
+import { OutsideMask, maskRect } from "./mask.js";
 import { WidgetLayer, snapshotWithWidgets } from "./widget.js";
 import { rasterizeWidget, clearSpriteCache, type SpriteResult } from "./sprite.js";
 import { colorizeSprite, loadSpriteImage } from "./symbols.js";
@@ -75,6 +76,11 @@ export type Projection = "mercator" | "globe";
 const HL_SOURCE = "__dap-highlight";
 const HL_FILL = "__dap-highlight-fill";
 const HL_LINE = "__dap-highlight-line";
+/** Source + fill layer for the native `dimOutside` complement (a multi-polygon of plain rectangles
+ *  tiling everything but the area) — a real GL layer, so it follows pan/zoom for free. The blur
+ *  (`blurOutside`) is a DOM overlay ({@link OutsideMask}) instead, since a GL fill cannot blur. */
+const HL_DIM_SOURCE = "__dap-highlight-dim";
+const HL_DIM = "__dap-highlight-dim";
 
 /** Source + symbol layer for `static` marker-widget sprites (read-only cartouches rendered as native
  *  icons). The layer is mapped to the {@link WSPRITE_HIT_OVERLAY} overlay for hit-testing, so a sprite
@@ -154,6 +160,15 @@ export class MapLibreAdapter implements MapAdapter {
   private pressDown = false;
   private justSynthClick = false;
   private viewHandler: (() => void) | undefined;
+  // viewArea "sticky" framing: the last request, re-applied (instantly) whenever the container resizes.
+  private lastFit: { extent: LngLatBounds; opts?: { padding?: number; duration?: number } } | undefined;
+  private resizeObs: ResizeObserver | undefined;
+  private resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  // highlightArea "outside" effects: blur is a DOM overlay re-synced on `move`; dim is a native layer.
+  private outsideMask: OutsideMask | undefined;
+  private maskMove: (() => void) | undefined;
+  private maskExtent: LngLatBounds | null = null;
+  private maskStyle: HighlightStyle | undefined;
   private toolbarEl: HTMLElement | undefined;
   private tooltipEl: HTMLElement | undefined;
   private tooltipStyle: TooltipStyle | undefined;
@@ -357,7 +372,7 @@ export class MapLibreAdapter implements MapAdapter {
       snapshot: (o) => this.snapshot(o),
       flash: () => shutterFlash(this.map.getContainer()),
     });
-    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.map.resize());
+    const full = fullscreenToolbarItem(options?.fullscreen, () => this.map.getContainer(), () => this.reframe());
     const lock = lockToolbarItem(options?.lock, (on) => this.setInteractive(on));
     const chrome = [snap, full, lock].filter((x): x is ToolbarItem => x != null);
     populateToolbar(el, [...items, ...chrome], options, () => refocusMap(this.map.getContainer()));
@@ -469,7 +484,15 @@ export class MapLibreAdapter implements MapAdapter {
     warnOnce("draw-adapter (MapLibre): a custom proj4 projection is not supported; staying in Web Mercator. Use the OpenLayers adapter to reproject.");
   }
 
-  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
+  viewArea(extent: LngLatBounds | null, opts?: { padding?: number; duration?: number }): void {
+    if (!extent) { this.lastFit = undefined; this.detachResizeObserver(); return; } // release sticky framing
+    this.lastFit = opts ? { extent, opts } : { extent };
+    this.attachResizeObserver();
+    this.applyFit(extent, opts);
+  }
+
+  /** The actual camera fit (dateline-aware); split out so {@link reframe} can re-run it on resize. */
+  private applyFit(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void {
     const [w, s, e0, n] = extent;
     const e = unwrapEast(w, e0); // antimeridian-crossing bbox ⇒ one continuous span
     this.map.fitBounds([[w, s], [e, n]], {
@@ -478,10 +501,36 @@ export class MapLibreAdapter implements MapAdapter {
     });
   }
 
+  /** Resize the map to its container, then (if a {@link viewArea} is sticky) re-fit it instantly so the
+   *  area stays framed to its extent + padding rather than just stretching to the new aspect ratio.
+   *  Without a sticky framing this is just `map.resize()` — the previous fullscreen behaviour. */
+  private reframe(): void {
+    this.map.resize();
+    if (this.lastFit) this.applyFit(this.lastFit.extent, { ...this.lastFit.opts, duration: 0 });
+  }
+
+  /** Observe the container so window / panel / fullscreen resizes re-frame a sticky area (debounced).
+   *  Attached only while a framing is sticky (so without `viewArea` nothing new happens on resize). */
+  private attachResizeObserver(): void {
+    if (this.resizeObs || typeof ResizeObserver === "undefined") return;
+    this.resizeObs = new ResizeObserver(() => {
+      if (this.resizeTimer) clearTimeout(this.resizeTimer);
+      this.resizeTimer = setTimeout(() => this.reframe(), 100); // coalesce a drag-resize burst
+    });
+    this.resizeObs.observe(this.map.getContainer());
+  }
+
+  private detachResizeObserver(): void {
+    if (this.resizeTimer) { clearTimeout(this.resizeTimer); this.resizeTimer = undefined; }
+    this.resizeObs?.disconnect();
+    this.resizeObs = undefined;
+  }
+
   highlightArea(extent: LngLatBounds | null, style?: HighlightStyle): void {
     if (!extent) {
       for (const id of [HL_FILL, HL_LINE]) if (this.map.getLayer(id)) this.map.removeLayer(id);
       if (this.map.getSource(HL_SOURCE)) this.map.removeSource(HL_SOURCE);
+      this.applyOutsideEffects(null);
       return;
     }
     const data: FeatureCollection = {
@@ -508,6 +557,56 @@ export class MapLibreAdapter implements MapAdapter {
       this.map.setPaintProperty(HL_FILL, "fill-color", style?.fill ?? "#000");
       this.map.setPaintProperty(HL_FILL, "fill-opacity", style?.fill ? 1 : 0);
     }
+    this.applyOutsideEffects(extent, style);
+  }
+
+  /**
+   * Apply the "outside the area" effects of {@link HighlightStyle}: the native `dimOutside` (a GL
+   * complement fill that follows the map) and the DOM `blurOutside` ({@link OutsideMask}, re-synced on
+   * `move`). Called with `null` to tear both down. Absent options ⇒ no-op (current behaviour unchanged).
+   */
+  private applyOutsideEffects(extent: LngLatBounds | null, style?: HighlightStyle): void {
+    this.maskExtent = extent;
+    this.maskStyle = style;
+    // DIM — native complement fill (rectangles tiling everything but the area); follows pan/zoom free.
+    const dim = extent ? style?.dimOutside : undefined;
+    if (dim) {
+      const data: FeatureCollection = {
+        type: "FeatureCollection",
+        features: [{ type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: complementRings(extent!).map((r) => [r]) } }],
+      };
+      const src = this.map.getSource(HL_DIM_SOURCE) as { setData?: (d: FeatureCollection) => void } | undefined;
+      if (src?.setData) src.setData(data);
+      else {
+        // Above the frame/overlays (no beforeId) so the surroundings dim over everything below.
+        this.map.addSource(HL_DIM_SOURCE, { type: "geojson", data } as never);
+        this.map.addLayer({ id: HL_DIM, type: "fill", source: HL_DIM_SOURCE, paint: { "fill-color": dim, "fill-opacity": 1 } } as never);
+      }
+      if (this.map.getLayer(HL_DIM)) this.map.setPaintProperty(HL_DIM, "fill-color", dim);
+    } else {
+      if (this.map.getLayer(HL_DIM)) this.map.removeLayer(HL_DIM);
+      if (this.map.getSource(HL_DIM_SOURCE)) this.map.removeSource(HL_DIM_SOURCE);
+    }
+    // BLUR — DOM overlay; NOT a layer, so re-place its clip on every view change.
+    const blur = extent ? style?.blurOutside : undefined;
+    if (blur && blur > 0) {
+      // Canvas container (not the outer one): the control-container is a later sibling, so it keeps
+      // painting above the blur ⇒ map controls stay crisp; only the canvas + markers around blur.
+      this.outsideMask ??= new OutsideMask(this.map.getCanvasContainer(), "2");
+      this.syncOutsideBlur();
+      if (!this.maskMove) { this.maskMove = () => this.syncOutsideBlur(); this.map.on("move", this.maskMove); }
+    } else {
+      this.outsideMask?.hide();
+      if (this.maskMove) { this.map.off("move", this.maskMove); this.maskMove = undefined; }
+    }
+  }
+
+  /** Re-place the {@link OutsideMask} clip from the current view (the `move` callback for `blurOutside`). */
+  private syncOutsideBlur(): void {
+    const blur = this.maskExtent ? this.maskStyle?.blurOutside : undefined;
+    if (!this.maskExtent || !blur || blur <= 0) return;
+    const r = maskRect(this.maskExtent, (p) => this.project(p));
+    if (r) this.outsideMask?.show(r, blur);
   }
 
   project(p: LatLng): [number, number] | null {
@@ -810,8 +909,13 @@ export class MapLibreAdapter implements MapAdapter {
       this.map.off("styleimagemissing", this.imgMissing);
       this.imgMissing = undefined;
     }
-    for (const id of [HL_FILL, HL_LINE]) if (this.map.getLayer(id)) this.map.removeLayer(id);
-    if (this.map.getSource(HL_SOURCE)) this.map.removeSource(HL_SOURCE);
+    this.detachResizeObserver();
+    this.lastFit = undefined;
+    if (this.maskMove) { this.map.off("move", this.maskMove); this.maskMove = undefined; }
+    this.outsideMask?.hide();
+    this.outsideMask = undefined;
+    for (const id of [HL_FILL, HL_LINE, HL_DIM]) if (this.map.getLayer(id)) this.map.removeLayer(id);
+    for (const id of [HL_SOURCE, HL_DIM_SOURCE]) if (this.map.getSource(id)) this.map.removeSource(id);
     for (const id of this.builtLayers) if (this.map.getLayer(id)) this.map.removeLayer(id);
     this.builtLayers.length = 0;
     this.renderedToOverlay.clear();

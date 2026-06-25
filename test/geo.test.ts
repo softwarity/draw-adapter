@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { densifyBboxRing, unwrapEast, warnOnce } from "../src/geo.js";
+import { complementRings, densifyBboxRing, unwrapEast, warnOnce } from "../src/geo.js";
 import type { LngLatBounds } from "../src/index.js";
 
 describe("geo — unwrapEast (antimeridian)", () => {
@@ -55,6 +55,47 @@ describe("geo — densifyBboxRing", () => {
   it("clamps perEdge to at least 1 segment", () => {
     const ring = densifyBboxRing(ext, 0);
     expect(ring.length).toBe(4 * 1 + 1);
+  });
+});
+
+describe("geo — complementRings (dimOutside)", () => {
+  /** Bounds of a rectangle ring. */
+  const bounds = (ring: [number, number][]) => ({
+    minLon: Math.min(...ring.map(([lon]) => lon)), maxLon: Math.max(...ring.map(([lon]) => lon)),
+    minLat: Math.min(...ring.map(([, lat]) => lat)), maxLat: Math.max(...ring.map(([, lat]) => lat)),
+  });
+  /** Is [lon,lat] inside ANY of the complement rectangles? (i.e. would it be dimmed). */
+  const dimmed = (lon: number, lat: number, rings: [number, number][][]): boolean =>
+    rings.some((r) => { const b = bounds(r); return lon >= b.minLon && lon <= b.maxLon && lat >= b.minLat && lat <= b.maxLat; });
+
+  it("every rectangle stays within one world and the Mercator latitudes (no huge/wrapping coords)", () => {
+    for (const ext of [[-90, -30, 30, 60], [110, -10, -110, 72]] as LngLatBounds[]) {
+      for (const r of complementRings(ext)) {
+        expect(r[0]).toEqual(r[r.length - 1]); // closed
+        const b = bounds(r);
+        expect(b.minLon).toBeGreaterThanOrEqual(-180);
+        expect(b.maxLon).toBeLessThanOrEqual(180);
+        expect(b.minLon).toBeLessThan(b.maxLon); // never crosses the antimeridian (a < b)
+        expect(Math.abs(b.minLat)).toBeLessThanOrEqual(85);
+        expect(Math.abs(b.maxLat)).toBeLessThanOrEqual(85);
+      }
+    }
+  });
+
+  it("leaves the area itself uncovered but dims its surroundings (normal extent)", () => {
+    const rings = complementRings([-90, -30, 30, 60]);
+    expect(dimmed(-30, 15, rings)).toBe(false); // inside the area ⇒ NOT dimmed
+    expect(dimmed(-120, 0, rings)).toBe(true);  // west of the area ⇒ dimmed
+    expect(dimmed(0, -50, rings)).toBe(true);   // south of the area ⇒ dimmed
+    expect(dimmed(100, 0, rings)).toBe(true);   // east of the area ⇒ dimmed
+  });
+
+  it("dateline-crossing area (M): inside stays clear, the opposite hemisphere dims — NOT everything", () => {
+    const rings = complementRings([110, -10, -110, 72]); // 110°E → −110°W across the antimeridian
+    expect(dimmed(180, 30, rings)).toBe(false); // antimeridian, inside the area ⇒ NOT dimmed (the bug)
+    expect(dimmed(150, 0, rings)).toBe(false);  // also inside the area ⇒ NOT dimmed
+    expect(dimmed(0, 0, rings)).toBe(true);     // opposite hemisphere ⇒ dimmed
+    expect(dimmed(180, 80, rings)).toBe(true);  // same lon but north of the area ⇒ dimmed
   });
 });
 

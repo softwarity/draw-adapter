@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DragPan from "ol/interaction/DragPan.js";
 import DoubleClickZoom from "ol/interaction/DoubleClickZoom.js";
 import Overlay from "ol/Overlay.js";
@@ -55,6 +55,7 @@ class FakeOlMap {
   emit(ev: string, payload: unknown) { for (const fn of this.handlers.get(ev) ?? []) fn(payload); }
   getView() { return this.view; }
   getSize() { return [800, 600]; }
+  updateSize = vi.fn();
   getTargetElement() { return this.target; }
   getViewport() {
     return {
@@ -473,5 +474,54 @@ describe("OpenLayersAdapter — setProjection / viewArea / highlightArea", () =>
     expect(hl.getSource()!.getFeatures().length).toBe(1);
     adapter.highlightArea(null);
     expect(hl.getSource()!.getFeatures().length).toBe(0); // cleared, layer kept
+  });
+
+  describe("viewArea sticky reframe on resize", () => {
+    let observers: { cb: () => void; active: boolean }[];
+    let observedCount: number;
+    beforeEach(() => {
+      observers = [];
+      observedCount = 0;
+      vi.stubGlobal("ResizeObserver", class {
+        private i: number;
+        constructor(cb: () => void) { this.i = observers.push({ cb, active: true }) - 1; }
+        observe() { observedCount++; }
+        disconnect() { if (observers[this.i]) observers[this.i]!.active = false; }
+        unobserve() {}
+      });
+      vi.useFakeTimers();
+    });
+    afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+    const fireResize = (): void => { for (const o of observers) if (o.active) o.cb(); };
+
+    it("re-fits the remembered area + updateSize when the container resizes", () => {
+      const { map, adapter } = build();
+      const fit = vi.spyOn(map.getView(), "fit");
+      adapter.viewArea([10, 0, 40, 50], { padding: 20 });
+      expect(fit).toHaveBeenCalledOnce();
+      expect(observedCount).toBe(1);
+
+      fireResize();
+      vi.advanceTimersByTime(100);
+      expect(map.updateSize).toHaveBeenCalledOnce();
+      expect(fit).toHaveBeenCalledTimes(2);
+      expect(fit.mock.calls[1]![1]).toMatchObject({ duration: 0 }); // instant on resize
+    });
+
+    it("viewArea(null) releases the framing — later resizes do nothing", () => {
+      const { map, adapter } = build();
+      const fit = vi.spyOn(map.getView(), "fit");
+      adapter.viewArea([10, 0, 40, 50]);
+      adapter.viewArea(null);
+      fireResize();
+      vi.advanceTimersByTime(100);
+      expect(map.updateSize).not.toHaveBeenCalled();
+      expect(fit).toHaveBeenCalledOnce(); // only the initial fit
+    });
+
+    it("without viewArea, no observer is attached", () => {
+      build();
+      expect(observedCount).toBe(0);
+    });
   });
 });

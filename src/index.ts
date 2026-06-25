@@ -73,6 +73,22 @@ export interface HighlightStyle {
   dash?: number[];
   /** Fill colour; omit ⇒ no fill (outline only). */
   fill?: string;
+  /**
+   * **Dim everything OUTSIDE the area** with this colour (use an alpha, e.g. `"rgba(0,0,0,.25)"`) so the
+   * area stands out; the inside stays untouched. **NATIVE** — drawn as a geo fill (a world-sized polygon
+   * with the area as a hole) on a real map layer, so it follows pan/zoom for free, like the frame.
+   * **Cheap & robust** (no DOM, no per-frame work; dateline-aware). Prefer this over {@link blurOutside}
+   * unless you specifically want a blur. Omit ⇒ no dim (unchanged).
+   */
+  dimOutside?: string;
+  /**
+   * **Blur everything OUTSIDE the area** by this radius (px) so the area stands out; the inside stays
+   * crisp. Needs a **DOM overlay** (`backdrop-filter`) clipped to the area's screen rectangle — a map
+   * `fill` cannot blur. **Heavier than {@link dimOutside}**: it is NOT a map layer, so its clip is
+   * re-projected on every view change (per-frame on pan; on Leaflet it is hidden during the zoom
+   * animation then re-placed). Requires `backdrop-filter` support (modern browsers). Omit / `0` ⇒ no blur.
+   */
+  blurOutside?: number;
 }
 
 /** How a layer is rendered. The overlay's source shares the layer `id`. */
@@ -705,8 +721,14 @@ export interface MapAdapter {
    * crossing the dateline and framed as one span, not the whole globe — and **projection-aware**
    * (under a non-Mercator OpenLayers view it fits the projected, possibly-curved area). Use it to
    * frame a fixed chart area; the host otherwise owns the camera.
+   *
+   * The framing is **sticky**: the extent + opts are remembered and **re-applied (instantly) whenever
+   * the container resizes** — fullscreen toggle, window, or a side panel — so the area stays framed to
+   * its extent + padding instead of just stretching to the new aspect ratio. Each call replaces the
+   * remembered framing; pass **`null` to release it** (the camera is left as-is, no longer re-framed
+   * on resize). Without a prior `viewArea`, resizes behave exactly as before.
    */
-  viewArea(extent: LngLatBounds, opts?: { padding?: number; duration?: number }): void;
+  viewArea(extent: LngLatBounds | null, opts?: { padding?: number; duration?: number }): void;
 
   /**
    * Outline an area with a **non-interactive** dashed frame, in a dedicated overlay drawn ABOVE the

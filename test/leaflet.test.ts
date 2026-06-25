@@ -53,6 +53,84 @@ describe("LeafletAdapter", () => {
     a.destroy();
   });
 
+  describe("viewArea sticky reframe on resize", () => {
+    let observers: { cb: () => void; active: boolean }[];
+    let observedCount: number;
+    beforeEach(() => {
+      observers = [];
+      observedCount = 0;
+      vi.stubGlobal("ResizeObserver", class {
+        private i: number;
+        constructor(cb: () => void) { this.i = observers.push({ cb, active: true }) - 1; }
+        observe() { observedCount++; }
+        disconnect() { if (observers[this.i]) observers[this.i]!.active = false; }
+        unobserve() {}
+      });
+      vi.useFakeTimers();
+    });
+    afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+    const fireResize = (): void => { for (const o of observers) if (o.active) o.cb(); };
+
+    it("re-fits the remembered area + invalidateSize when the container resizes", () => {
+      const a = new LeafletAdapter({ map, layers: LAYERS });
+      const inval = vi.spyOn(map, "invalidateSize").mockImplementation(() => map);
+      const fit = vi.spyOn(map, "fitBounds").mockImplementation(() => map);
+      a.viewArea([10, 0, 40, 50], { padding: 20 });
+      expect(fit).toHaveBeenCalledOnce();
+      expect(observedCount).toBe(1);
+
+      fireResize();
+      vi.advanceTimersByTime(100);
+      expect(inval).toHaveBeenCalledOnce();
+      expect(fit).toHaveBeenCalledTimes(2);
+      expect(fit.mock.calls[1]![1]).toMatchObject({ duration: 0 }); // instant on resize
+      a.destroy();
+    });
+
+    it("viewArea(null) releases the framing — later resizes do nothing", () => {
+      const a = new LeafletAdapter({ map, layers: LAYERS });
+      const inval = vi.spyOn(map, "invalidateSize").mockImplementation(() => map);
+      const fit = vi.spyOn(map, "fitBounds").mockImplementation(() => map);
+      a.viewArea([10, 0, 40, 50]);
+      a.viewArea(null);
+      fireResize();
+      vi.advanceTimersByTime(100);
+      expect(inval).not.toHaveBeenCalled();
+      expect(fit).toHaveBeenCalledOnce(); // only the initial fit
+      a.destroy();
+    });
+
+    it("without viewArea, no observer is attached", () => {
+      const a = new LeafletAdapter({ map, layers: LAYERS });
+      expect(observedCount).toBe(0);
+      a.destroy();
+    });
+  });
+
+  it("dimOutside draws SEPARATE complement rectangles (not one self-cancelling multi-polygon)", async () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    await a.ready();
+    a.highlightArea([-170, -55, -30, 72], { color: "#000", dimOutside: "rgba(0,0,0,.3)" });
+    const pane = el.querySelector(".leaflet-dap-highlight-dim-pane");
+    expect(pane).not.toBeNull();
+    // ≥4 separate <path> rects (a single multi-polygon path would self-cancel under evenodd → the bug)
+    expect(pane!.querySelectorAll("path").length).toBeGreaterThanOrEqual(4);
+    a.highlightArea(null);
+    expect(pane!.querySelectorAll("path").length).toBe(0); // all removed
+    a.destroy();
+  });
+
+  it("viewArea fits with fractional zoom (drops zoomSnap during the fit, restores it after)", () => {
+    const a = new LeafletAdapter({ map, layers: LAYERS });
+    expect(map.options.zoomSnap).toBe(1); // Leaflet default ⇒ integer zoom steps (loose fit)
+    let snapDuringFit: number | undefined;
+    vi.spyOn(map, "fitBounds").mockImplementation(function (this: L.Map) { snapDuringFit = map.options.zoomSnap; return this; });
+    a.viewArea([-170, -55, -30, 72], { padding: 20 });
+    expect(snapDuringFit).toBe(0);        // fractional fit during the call ⇒ tight, like MapLibre/OpenLayers
+    expect(map.options.zoomSnap).toBe(1); // restored afterwards ⇒ wheel zoom keeps its steps
+    a.destroy();
+  });
+
   it("renders handle features into the handles pane (the regression: handles must be visible)", async () => {
     const a = new LeafletAdapter({ map, layers: LAYERS, hitOverlays: new Set(["handles"]) });
     await a.ready();
